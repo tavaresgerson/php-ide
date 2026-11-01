@@ -1,0 +1,10 @@
+[package]
+name = "phpide-php"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Suporte à linguagem PHP no phpide: metadados e highlight via syntect"
+
+[dependencies]
+eframe = "0.31"
+syntect = "5"

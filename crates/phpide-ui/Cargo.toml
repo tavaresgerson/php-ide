@@ -1,0 +1,16 @@
+[package]
+name = "phpide-ui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Interface gráfica (egui/eframe) do phpide"
+
+[dependencies]
+eframe = "0.31"
+notify = "7"
+serde_json = "1"
+phpide-core = { path = "../phpide-core" }
+phpide-dbgp = { path = "../phpide-dbgp" }
+phpide-lsp = { path = "../phpide-lsp" }
+phpide-php = { path = "../phpide-php" }
+phpide-syntax = { path = "../phpide-syntax" }
