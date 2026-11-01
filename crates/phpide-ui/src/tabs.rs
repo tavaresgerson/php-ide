@@ -1,4 +1,4 @@
-//! Editor tabs (paridade REQUISITOS 1.4): preview tab em itálico, pin 📌,
+//! Editor tabs (paridade REQUISITOS 1.4): preview tab em itálico, pin,
 //! context menu (Close / Close Others / Pin), Closing Policy de 10 abas no
 //! core. Navegação por atalhos fica no `handle_shortcuts` de main.
 
@@ -23,10 +23,10 @@ pub fn tab_strip(app: &mut PhpIdeApp, ctx: &egui::Context) {
                 };
                 let mut title = name.clone();
                 if pinned {
-                    title = format!("📌 {title}");
+                    title = format!("[P] {title}");
                 }
                 if dirty {
-                    title.push_str(" ●");
+                    title.push_str(" *");
                 }
                 let text = if preview {
                     egui::RichText::new(title).italics()

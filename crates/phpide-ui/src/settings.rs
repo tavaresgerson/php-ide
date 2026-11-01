@@ -35,6 +35,19 @@ pub struct Settings {
     pub indent: String,
     /// Projetos recentes (MRU) da Welcome Screen.
     pub recent_projects: Vec<String>,
+    /// New UI: reduz alturas de barras e espaçamentos.
+    pub compact_mode: bool,
+    /// Posição da Navigation Bar: "Bottom" | "Top" | "Hidden".
+    pub navigation_bar: String,
+    /// Servidor de deployment exibido na status bar.
+    pub deployment_server: String,
+    /// Column Selection Mode (Alt+Shift+Insert).
+    pub column_selection: bool,
+    /// Editor: sticky lines e inlay hints (preferências visuais).
+    pub sticky_lines: bool,
+    pub inlay_hints: bool,
+    /// Keymap selecionado no Customize/Settings.
+    pub keymap: String,
 }
 
 impl Default for Settings {
@@ -46,6 +59,13 @@ impl Default for Settings {
             line_ending: "LF".to_string(),
             indent: "4 spaces".to_string(),
             recent_projects: Vec::new(),
+            compact_mode: false,
+            navigation_bar: "Bottom".to_string(),
+            deployment_server: "None".to_string(),
+            column_selection: false,
+            sticky_lines: true,
+            inlay_hints: true,
+            keymap: "Default".to_string(),
         }
     }
 }
@@ -81,7 +101,33 @@ impl Settings {
             s.indent = i.to_string();
         }
         if let Some(arr) = v["recent_projects"].as_array() {
-            s.recent_projects = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            s.recent_projects = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+        }
+        if let Some(value) = v["compact_mode"].as_bool() {
+            s.compact_mode = value;
+        }
+        if let Some(value) = v["navigation_bar"].as_str() {
+            if matches!(value, "Bottom" | "Top" | "Hidden") {
+                s.navigation_bar = value.to_string();
+            }
+        }
+        if let Some(value) = v["deployment_server"].as_str() {
+            s.deployment_server = value.to_string();
+        }
+        if let Some(value) = v["column_selection"].as_bool() {
+            s.column_selection = value;
+        }
+        if let Some(value) = v["sticky_lines"].as_bool() {
+            s.sticky_lines = value;
+        }
+        if let Some(value) = v["inlay_hints"].as_bool() {
+            s.inlay_hints = value;
+        }
+        if let Some(value) = v["keymap"].as_str() {
+            s.keymap = value.to_string();
         }
         s
     }
@@ -98,6 +144,13 @@ impl Settings {
             "line_ending": self.line_ending,
             "indent": self.indent,
             "recent_projects": self.recent_projects,
+            "compact_mode": self.compact_mode,
+            "navigation_bar": self.navigation_bar,
+            "deployment_server": self.deployment_server,
+            "column_selection": self.column_selection,
+            "sticky_lines": self.sticky_lines,
+            "inlay_hints": self.inlay_hints,
+            "keymap": self.keymap,
         });
         let _ = std::fs::write(dir.join("settings.json"), v.to_string());
     }
@@ -121,6 +174,17 @@ mod tests {
         assert_eq!(s.theme, "islands-dark");
         assert!(s.theme != "islands-light");
         assert_eq!(s.php_level, "8.1");
+    }
+
+    #[test]
+    fn new_ui_defaults_follow_requirements() {
+        let settings = Settings::default();
+        assert_eq!(settings.navigation_bar, "Bottom");
+        assert_eq!(settings.deployment_server, "None");
+        assert!(!settings.compact_mode);
+        assert!(settings.sticky_lines);
+        assert!(settings.inlay_hints);
+        assert_eq!(settings.keymap, "Default");
     }
 
     #[test]

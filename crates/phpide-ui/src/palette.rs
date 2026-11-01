@@ -56,6 +56,7 @@ pub enum PaletteCommand {
     PrevProblem,
     OpenWelcome,
     OpenScheme,
+    OpenSettings,
     GotoDefinition,
     RunCurrent,
     DebugCurrent,
@@ -127,8 +128,14 @@ const COMMANDS: &[(&str, PaletteCommand)] = &[
     ("Ver: Run Tool Window", PaletteCommand::ToggleRun),
     ("Ver: Debug Tool Window", PaletteCommand::ToggleDebug),
     ("Ver: Problems Tool Window", PaletteCommand::ToggleProblems),
-    ("Ver: Structure Tool Window", PaletteCommand::ToggleStructure),
-    ("Ver: Hide All Tool Windows", PaletteCommand::HideAllToolWindows),
+    (
+        "Ver: Structure Tool Window",
+        PaletteCommand::ToggleStructure,
+    ),
+    (
+        "Ver: Hide All Tool Windows",
+        PaletteCommand::HideAllToolWindows,
+    ),
     ("Navegar: Back", PaletteCommand::NavigateBack),
     ("Navegar: Forward", PaletteCommand::NavigateForward),
     ("Navegar: Ir para definição", PaletteCommand::GotoDefinition),
@@ -136,9 +143,13 @@ const COMMANDS: &[(&str, PaletteCommand)] = &[
     ("Navegar: Próximo problema", PaletteCommand::NextProblem),
     ("Navegar: Problema anterior", PaletteCommand::PrevProblem),
     ("Executar: Rodar arquivo atual", PaletteCommand::RunCurrent),
-    ("Executar: Debug arquivo atual", PaletteCommand::DebugCurrent),
+    (
+        "Executar: Debug arquivo atual",
+        PaletteCommand::DebugCurrent,
+    ),
     ("Ajuda: Welcome Screen", PaletteCommand::OpenWelcome),
     ("Ajuda: Quick Switch Scheme", PaletteCommand::OpenScheme),
+    ("Arquivo: Settings", PaletteCommand::OpenSettings),
 ];
 
 /// Fuzzy match por subsequência: retorna pontuação maior = melhor.
@@ -356,7 +367,9 @@ pub fn show(
                             format!("{}   —   {} [{}]", entry.label, entry.detail, entry.hint)
                         };
                         let row = ui.selectable_label(selected, label);
-                        if row.clicked() || (selected && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                        if row.clicked()
+                            || (selected && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        {
                             action = Some(match &entry.action {
                                 PaletteActionKind::Open(p) => PaletteAction::Open(p.clone()),
                                 PaletteActionKind::Run(c) => PaletteAction::Run(*c),

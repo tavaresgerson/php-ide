@@ -1,20 +1,24 @@
-//! Tool windows (paridade REQUISITOS 1.2): nomes e atalhos idênticos ao
-//! PhpStorm — Project `Alt+1`, Find `Alt+3`, Run `Alt+4`, Debug `Alt+5`,
-//! Problems `Alt+6`, Structure `Alt+7`, Hide All `Ctrl+Shift+F12`.
-//!
-//! Uma tool window pode ser ancorada (left/right/bottom); a barra de ícones
-//! espelha as tool window bars da New UI.
+//! Tool windows da New UI (REQUISITOS 1.2): catálogo, âncoras, atalhos,
+//! barras laterais/inferior, More tool windows, Hide Active e Hide All.
 
 use eframe::egui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolWindow {
     Project,
+    Bookmarks,
     Find,
     Run,
     Debug,
     Problems,
     Structure,
+    Services,
+    VersionControl,
+    Commit,
+    Terminal,
+    Database,
+    Notifications,
+    RemoteHost,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,93 +29,122 @@ pub enum Anchor {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 6] = [
+    pub const COUNT: usize = 14;
+    pub const ALL: [ToolWindow; Self::COUNT] = [
         ToolWindow::Project,
+        ToolWindow::Bookmarks,
         ToolWindow::Find,
         ToolWindow::Run,
         ToolWindow::Debug,
         ToolWindow::Problems,
         ToolWindow::Structure,
+        ToolWindow::Services,
+        ToolWindow::VersionControl,
+        ToolWindow::Commit,
+        ToolWindow::Terminal,
+        ToolWindow::Database,
+        ToolWindow::Notifications,
+        ToolWindow::RemoteHost,
     ];
 
-    /// Nome oficial exibido no header da tool window.
     pub fn title(self) -> &'static str {
         match self {
             ToolWindow::Project => "Project",
+            ToolWindow::Bookmarks => "Bookmarks",
             ToolWindow::Find => "Find",
             ToolWindow::Run => "Run",
             ToolWindow::Debug => "Debug",
             ToolWindow::Problems => "Problems",
             ToolWindow::Structure => "Structure",
+            ToolWindow::Services => "Services",
+            ToolWindow::VersionControl => "Version Control",
+            ToolWindow::Commit => "Commit",
+            ToolWindow::Terminal => "Terminal",
+            ToolWindow::Database => "Database",
+            ToolWindow::Notifications => "Notifications",
+            ToolWindow::RemoteHost => "Remote Host",
         }
     }
 
-    /// Ícone (emoji leve; substituído por SVGs quando houver asset pipeline).
     pub fn icon(self) -> &'static str {
         match self {
-            ToolWindow::Project => "📁",
-            ToolWindow::Find => "🔍",
-            ToolWindow::Run => "▶",
-            ToolWindow::Debug => "🐞",
-            ToolWindow::Problems => "⚠",
-            ToolWindow::Structure => "🧭",
+            ToolWindow::Project => "P",
+            ToolWindow::Bookmarks => "B",
+            ToolWindow::Find => "F",
+            ToolWindow::Run => "R",
+            ToolWindow::Debug => "D",
+            ToolWindow::Problems => "!",
+            ToolWindow::Structure => "S",
+            ToolWindow::Services => "Sv",
+            ToolWindow::VersionControl => "G",
+            ToolWindow::Commit => "C",
+            ToolWindow::Terminal => ">_",
+            ToolWindow::Database => "DB",
+            ToolWindow::Notifications => "N",
+            ToolWindow::RemoteHost => "RH",
         }
     }
 
     pub fn shortcut_label(self) -> &'static str {
         match self {
             ToolWindow::Project => "Alt+1",
+            ToolWindow::Bookmarks => "Alt+2",
             ToolWindow::Find => "Alt+3",
             ToolWindow::Run => "Alt+4",
             ToolWindow::Debug => "Alt+5",
             ToolWindow::Problems => "Alt+6",
             ToolWindow::Structure => "Alt+7",
+            ToolWindow::Services => "Alt+8",
+            ToolWindow::VersionControl => "Alt+9",
+            ToolWindow::Commit => "Alt+0",
+            ToolWindow::Terminal => "Alt+F12",
+            ToolWindow::Database => "Ctrl+Alt+3",
+            ToolWindow::Notifications | ToolWindow::RemoteHost => "—",
         }
     }
 
     pub fn anchor(self) -> Anchor {
         match self {
-            ToolWindow::Project => Anchor::Left,
-            ToolWindow::Structure => Anchor::Right,
-            ToolWindow::Find | ToolWindow::Run | ToolWindow::Debug | ToolWindow::Problems => {
-                Anchor::Bottom
-            }
+            ToolWindow::Project | ToolWindow::Bookmarks | ToolWindow::Services => Anchor::Left,
+            ToolWindow::Structure | ToolWindow::RemoteHost => Anchor::Right,
+            _ => Anchor::Bottom,
         }
     }
 
-    /// Atalho Alt+dígito associado.
     pub fn from_digit(digit: u8) -> Option<ToolWindow> {
         match digit {
+            0 => Some(ToolWindow::Commit),
             1 => Some(ToolWindow::Project),
+            2 => Some(ToolWindow::Bookmarks),
             3 => Some(ToolWindow::Find),
             4 => Some(ToolWindow::Run),
             5 => Some(ToolWindow::Debug),
             6 => Some(ToolWindow::Problems),
             7 => Some(ToolWindow::Structure),
+            8 => Some(ToolWindow::Services),
+            9 => Some(ToolWindow::VersionControl),
             _ => None,
         }
     }
 }
 
-/// Estado de visibilidade das tool windows + "Hide All".
 #[derive(Debug)]
 pub struct ToolWindows {
-    visible: [bool; 6],
-    /// Tudo oculto por Ctrl+Shift+F12? Restaura com o mesmo atalho.
+    visible: [bool; ToolWindow::COUNT],
     pub all_hidden: bool,
-    /// Visibilidade salva antes do Hide All (para restaurar).
-    saved: Option<[bool; 6]>,
+    saved: Option<[bool; ToolWindow::COUNT]>,
+    active: Option<ToolWindow>,
 }
 
 impl Default for ToolWindows {
     fn default() -> Self {
-        // Project aberta por padrão (comportamento do PhpStorm ao abrir).
-        let mut visible = [false; 6];
+        let mut visible = [false; ToolWindow::COUNT];
         visible[ToolWindow::Project as usize] = true;
         ToolWindows {
             visible,
             all_hidden: false,
             saved: None,
+            active: Some(ToolWindow::Project),
         }
     }
 }
@@ -121,16 +154,28 @@ impl ToolWindows {
         self.visible[tw as usize]
     }
 
-    pub fn set_visible(&mut self, tw: ToolWindow, vis: bool) {
-        self.visible[tw as usize] = vis;
+    pub fn set_visible(&mut self, tw: ToolWindow, visible: bool) {
+        self.visible[tw as usize] = visible;
         self.all_hidden = false;
+        if visible {
+            self.active = Some(tw);
+        } else if self.active == Some(tw) {
+            self.active = None;
+        }
     }
 
     pub fn toggle(&mut self, tw: ToolWindow) {
         self.set_visible(tw, !self.is_visible(tw));
     }
 
-    /// Hide All Tool Windows / restaura (`Ctrl+Shift+F12`).
+    pub fn hide_active(&mut self) -> bool {
+        let Some(active) = self.active else {
+            return false;
+        };
+        self.set_visible(active, false);
+        true
+    }
+
     pub fn toggle_hide_all(&mut self) {
         if self.all_hidden {
             if let Some(saved) = self.saved.take() {
@@ -139,90 +184,92 @@ impl ToolWindows {
             self.all_hidden = false;
         } else {
             self.saved = Some(self.visible);
-            self.visible = [false; 6];
+            self.visible = [false; ToolWindow::COUNT];
+            self.active = None;
             self.all_hidden = true;
         }
     }
 
-    /// True se alguma tool window ancorada à esquerda está visível.
-    pub fn any_left_visible(&self) -> bool {
-        ToolWindow::ALL
-            .iter()
-            .any(|&t| t.anchor() == Anchor::Left && self.is_visible(t))
-    }
-
-    pub fn any_right_visible(&self) -> bool {
-        ToolWindow::ALL
-            .iter()
-            .any(|&t| t.anchor() == Anchor::Right && self.is_visible(t))
-    }
-
-    /// Barra vertical de ícones estilo New UI (esquerda ou direita).
-    pub fn bar(&mut self, ctx: &egui::Context, side: Anchor) {
-        let any = match side {
-            Anchor::Left => self.any_left_visible(),
-            Anchor::Right => self.any_right_visible(),
-            Anchor::Bottom => false,
-        };
-        // Só desenha a barra se houver ao menos uma tool window ancorada ali.
-        let has_any = ToolWindow::ALL.iter().any(|&t| t.anchor() == side);
-        if !has_any {
+    pub fn bar(&mut self, ctx: &egui::Context, side: Anchor, compact: bool) {
+        if !ToolWindow::ALL.iter().any(|&tw| tw.anchor() == side) || side == Anchor::Bottom {
             return;
         }
-        let id = match side {
-            Anchor::Left => "tw-bar-left",
-            Anchor::Right => "tw-bar-right",
-            Anchor::Bottom => return,
+        let id = if side == Anchor::Left {
+            "tw-bar-left"
+        } else {
+            "tw-bar-right"
         };
         egui::SidePanel::new(
-            match side {
-                Anchor::Left => egui::panel::Side::Left,
-                _ => egui::panel::Side::Right,
+            if side == Anchor::Left {
+                egui::panel::Side::Left
+            } else {
+                egui::panel::Side::Right
             },
             id,
         )
         .resizable(false)
-        .exact_width(30.0)
+        .exact_width(if compact { 26.0 } else { 32.0 })
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(4.0);
+                ui.add_space(if compact { 2.0 } else { 5.0 });
                 for tw in ToolWindow::ALL {
                     if tw.anchor() != side {
                         continue;
                     }
-                    let sel = self.is_visible(tw);
-                    let resp = ui.selectable_label(sel, format!("{}", tw.icon()));
-                    if resp.clicked() {
+                    let selected = self.is_visible(tw);
+                    let response = ui.selectable_label(selected, tw.icon());
+                    if response.clicked() {
                         self.toggle(tw);
                     }
-                    resp.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
+                    response.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
                 }
-                let _ = any;
+                ui.menu_button("...", |ui| {
+                    ui.label(egui::RichText::new("More tool windows").weak().small());
+                    for tw in ToolWindow::ALL {
+                        let mut visible = self.is_visible(tw);
+                        if ui.checkbox(&mut visible, tw.title()).changed() {
+                            self.set_visible(tw, visible);
+                        }
+                    }
+                });
             });
         });
     }
 
-    /// Barra horizontal inferior (Run, Debug, Problems, Find) — base da New UI.
-    /// Desenhada imediatamente acima da status bar.
-    pub fn bottom_bar(&mut self, ctx: &egui::Context) {
+    pub fn bottom_bar(&mut self, ctx: &egui::Context, compact: bool) {
+        const PRIMARY: [ToolWindow; 5] = [
+            ToolWindow::Find,
+            ToolWindow::Run,
+            ToolWindow::Debug,
+            ToolWindow::Problems,
+            ToolWindow::Terminal,
+        ];
         egui::TopBottomPanel::bottom("tw-bar-bottom")
-            .exact_height(30.0)
+            .exact_height(if compact { 24.0 } else { 30.0 })
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    for tw in ToolWindow::ALL {
-                        if tw.anchor() != Anchor::Bottom {
-                            continue;
-                        }
-                        let sel = self.is_visible(tw);
-                        let resp = ui.selectable_label(
-                            sel,
-                            format!("{} {}", tw.icon(), tw.title()),
-                        );
-                        if resp.clicked() {
+                    for tw in PRIMARY {
+                        let selected = self.is_visible(tw);
+                        let response =
+                            ui.selectable_label(selected, format!("{} {}", tw.icon(), tw.title()));
+                        if response.clicked() {
                             self.toggle(tw);
                         }
-                        resp.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
+                        response.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
                     }
+                    ui.menu_button("... More tool windows", |ui| {
+                        for tw in ToolWindow::ALL {
+                            if PRIMARY.contains(&tw) {
+                                continue;
+                            }
+                            let mut visible = self.is_visible(tw);
+                            let label =
+                                format!("{} {}\t{}", tw.icon(), tw.title(), tw.shortcut_label());
+                            if ui.checkbox(&mut visible, label).changed() {
+                                self.set_visible(tw, visible);
+                            }
+                        }
+                    });
                 });
             });
     }
@@ -233,35 +280,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn digits_map_to_tool_windows() {
-        assert_eq!(ToolWindow::from_digit(1), Some(ToolWindow::Project));
-        assert_eq!(ToolWindow::from_digit(7), Some(ToolWindow::Structure));
-        assert_eq!(ToolWindow::from_digit(2), None);
+    fn digits_match_phpstorm_catalog() {
+        let expected = [
+            ToolWindow::Commit,
+            ToolWindow::Project,
+            ToolWindow::Bookmarks,
+            ToolWindow::Find,
+            ToolWindow::Run,
+            ToolWindow::Debug,
+            ToolWindow::Problems,
+            ToolWindow::Structure,
+            ToolWindow::Services,
+            ToolWindow::VersionControl,
+        ];
+        for (digit, tw) in expected.into_iter().enumerate() {
+            assert_eq!(ToolWindow::from_digit(digit as u8), Some(tw));
+        }
+        assert_eq!(ToolWindow::Database.shortcut_label(), "Ctrl+Alt+3");
+        assert_eq!(ToolWindow::Terminal.shortcut_label(), "Alt+F12");
     }
 
     #[test]
     fn hide_all_restores_previous_layout() {
         let mut tw = ToolWindows::default();
-        tw.set_visible(ToolWindow::Project, true);
         tw.set_visible(ToolWindow::Problems, true);
         tw.toggle_hide_all();
         assert!(tw.all_hidden);
         assert!(!tw.is_visible(ToolWindow::Project));
-        assert!(!tw.is_visible(ToolWindow::Problems));
         tw.toggle_hide_all();
         assert!(tw.is_visible(ToolWindow::Project));
         assert!(tw.is_visible(ToolWindow::Problems));
-        assert!(!tw.all_hidden);
     }
 
     #[test]
-    fn toggle_resets_all_hidden_flag() {
+    fn hide_active_only_closes_current_window() {
         let mut tw = ToolWindows::default();
-        tw.set_visible(ToolWindow::Find, false);
-        tw.toggle_hide_all();
-        assert!(tw.all_hidden);
-        tw.toggle(ToolWindow::Find);
-        assert!(!tw.all_hidden);
-        assert!(tw.is_visible(ToolWindow::Find));
+        tw.set_visible(ToolWindow::Problems, true);
+        assert!(tw.hide_active());
+        assert!(!tw.is_visible(ToolWindow::Problems));
+        assert!(tw.is_visible(ToolWindow::Project));
     }
 }

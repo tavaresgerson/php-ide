@@ -28,17 +28,22 @@ pub fn scheme_popup(app: &mut PhpIdeApp, ctx: &egui::Context) {
             let current = ThemeId::from_name(&app.settings.theme);
             for theme in ThemeId::ALL {
                 let sel = theme == current;
-                let text = format!("{}   {}", if sel { "●" } else { " " }, theme.label());
+                let text = format!("{}   {}", if sel { ">" } else { " " }, theme.label());
                 if ui.selectable_label(sel, text).clicked() {
                     app.apply_theme(theme, ctx);
                     close = true;
                 }
             }
             ui.separator();
-            ui.add_enabled_ui(false, |ui| {
-                ui.selectable_label(false, "   Keymap: Default").on_hover_text("Estágio 6");
-                ui.selectable_label(false, "   Color Scheme: segue o tema").on_hover_text("Estágio 6");
-            });
+            if ui
+                .button(format!("   Keymap: {}", app.settings.keymap))
+                .clicked()
+            {
+                app.settings_dialog
+                    .open(crate::settings_dialog::SettingsPage::Keymap);
+                close = true;
+            }
+            ui.label(egui::RichText::new(format!("   Color Scheme: {}", current.label())).weak());
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Escape) {
                     close = true;

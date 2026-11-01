@@ -66,7 +66,21 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
       pin, Close Others, Closing Policy de 10; breadcrumbs estruturais clicáveis
       (tree-sitter, offline); F2/Shift+F2 entre problemas; Alt+←/→ no histórico
       de navegação; debug zero-config (listener DBGp + `XDEBUG_CONFIG` automático);
-      Stop `Ctrl+F2`. Ver `../docs/roadmap-paridade-phpstorm.md`.
+      Stop `Ctrl+F2`. A especificação de referência está em `REQUISITOS.md`.
+- [x] **Estágio 6.1 — Paridade visual da shell (REQUISITOS Parte 1)**:
+      catálogo completo de tool windows e atalhos (`Alt+1…0`, `Alt+F12`,
+      `Ctrl+Alt+3`), More tool windows, Hide Active `Shift+Escape`, painéis
+      Bookmarks/Services/Git/Commit/Terminal/Database/Notifications/Remote Host;
+      Settings `Ctrl+Alt+S` com a árvore oficial e páginas funcionais de aparência,
+      keymap, editor e PHP; Navigation Bar inferior/topo; status bar com Processes,
+      Column Selection Mode e deployment; Welcome Screen com Projects/Customize/
+      Plugins/Learn/Remote Development; sete temas oficiais; Compact Mode e
+      importação de configurações. O Terminal executa comandos no shell do projeto.
+- [ ] **Próximos recortes visuais**: modos adicionais do Main Menu, split de tool
+      windows e foco teclado completo; gutter com breakpoints sobre números,
+      folding/blame/coverage, sticky lines, inlay hints/code vision, lens mode e
+      split/detach de editor. Database exibido neste estágio é a shell; conexões
+      e query console pertencem ao RF-DB, não à paridade visual.
 
 ## Atalhos
 
@@ -77,8 +91,12 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 | Ctrl+S / Ctrl+Z / Ctrl+Shift+Z | salvar / desfazer / refazer |
 | Ctrl+N | novo arquivo |
 | Ctrl+F4 | fechar aba |
-| Alt+1 / Alt+3..7 | toggle tool windows (Project, Find, Run, Debug, Problems, Structure) |
-| Ctrl+Shift+F12 | Hide All Tool Windows |
+| Alt+1…0 | Project, Bookmarks, Find, Run, Debug, Problems, Structure, Services, Version Control, Commit |
+| Alt+F12 / Ctrl+Alt+3 | Terminal / Database |
+| Shift+Escape / Ctrl+Shift+F12 | Hide Active / Hide All Tool Windows |
+| Ctrl+Alt+S | Settings |
+| F11 | Toggle Bookmark |
+| Alt+Shift+. / Alt+Shift+, | aumentar / reduzir fonte da IDE |
 | Ctrl+Shift+F | busca em arquivos (tool window Find) |
 | F2 / Shift+F2 | próximo / anterior problema |
 | Alt+← / Alt+→ | navegação back/forward |
