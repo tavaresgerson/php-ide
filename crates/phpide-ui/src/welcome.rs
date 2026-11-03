@@ -106,7 +106,7 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
             if ui.button("Open — navegar pastas").clicked() {
                 let p = PathBuf::from(&app.welcome.path_input);
                 if p.is_dir() {
-                    app.load_project(p, ui.ctx());
+                    app.request_load_project(p, ui.ctx());
                     *close = true;
                 } else {
                     app.welcome.err = format!("diretório não existe: {}", p.display());
@@ -124,7 +124,7 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
                     let target = base.join(name);
                     match create_project(&target) {
                         Ok(()) => {
-                            app.load_project(target, ui.ctx());
+                            app.request_load_project(target, ui.ctx());
                             *close = true;
                         }
                         Err(e) => app.welcome.err = format!("falha ao criar projeto: {e}"),
@@ -137,7 +137,7 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
             if ui.button("Get from VCS").clicked() {
                 match clone_from_vcs(&app.welcome.vcs_url, PathBuf::from(&app.welcome.path_input)) {
                     Ok(target) => {
-                        app.load_project(target, ui.ctx());
+                        app.request_load_project(target, ui.ctx());
                         *close = true;
                     }
                     Err(error) => app.welcome.err = error,
@@ -159,7 +159,7 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
                     format!("{p}  (não existe)")
                 };
                 if ui.add_enabled(exists, egui::Button::new(label)).clicked() {
-                    app.load_project(PathBuf::from(p), ui.ctx());
+                    app.request_load_project(PathBuf::from(p), ui.ctx());
                     *close = true;
                 }
             }
@@ -181,7 +181,7 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
                     .on_hover_text("Abrir este diretório como projeto")
                     .clicked()
                 {
-                    app.load_project(app.welcome.browser_dir.clone(), ui.ctx());
+                    app.request_load_project(app.welcome.browser_dir.clone(), ui.ctx());
                     *close = true;
                 }
             });
@@ -326,7 +326,7 @@ fn remote_development_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bo
     if ui.button("Open Remote Project").clicked() {
         let path = PathBuf::from(&app.welcome.path_input);
         if path.is_dir() {
-            app.load_project(path, ui.ctx());
+            app.request_load_project(path, ui.ctx());
             *close = true;
         } else {
             app.welcome.err = "o caminho remoto/montado não está acessível".to_string();

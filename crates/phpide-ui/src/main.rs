@@ -7,6 +7,7 @@
 //! editor tabs com preview/pin/Closing Policy e breadcrumbs.
 
 mod completion;
+mod editor_view;
 mod exec;
 mod header;
 mod palette;
@@ -34,7 +35,11 @@ use egui::widgets::text_edit::TextEditState;
 use exec::ExecState;
 use notify::Watcher as _;
 use palette::{PaletteAction, PaletteCommand, PaletteMode, PaletteState};
-use phpide_core::Workspace;
+use phpide_core::jobs::JobSystem;
+use phpide_core::{
+    log::{Correlation, Logger},
+    Component, Revisioned, Workspace,
+};
 use phpide_dbgp::{run_with_breakpoints, DebugMsg};
 use phpide_lsp::{detect_server, uri_to_path, LspClient, LspDiagnostic, LspStatus};
 use phpide_php::{Language, PhpLanguage};
@@ -43,6 +48,20 @@ use serde_json::Value;
 use themes::ThemeId;
 use toolwindows::ToolWindow;
 use welcome::WelcomeState;
+
+/// Fechamento pendente que exige confirmação de buffers sujos (NFR-007:
+/// "Dirty buffers precisam de confirmação ao fechar").
+#[derive(Debug, Clone)]
+pub enum PendingClose {
+    /// Fechar a aba `i` (do contexto, Ctrl+F4 ou palette).
+    Tab(usize),
+    /// Fechar as outras abas (Close Others).
+    Others(usize),
+    /// Fechar todas as abas e abrir outro projeto (Welcome).
+    Project(std::path::PathBuf),
+    /// Sair da IDE (janela fechada com buffers sujos).
+    Exit,
+}
 
 fn main() -> eframe::Result<()> {
     // Uso: phpide [projeto] [arquivos...]. Sem projeto, abre a Welcome Screen;
@@ -87,6 +106,13 @@ struct PhpIdeApp {
     zoom: f32,
     watcher: Option<(notify::RecommendedWatcher, mpsc::Receiver<()>)>,
     change_pending_since: Option<Instant>,
+    // NFR-001 — jobs da sessão (busca, workers; shutdown ao trocar/fechar).
+    jobs: JobSystem,
+    // NFR-005 — log correlacionado por sessão/job/documento.
+    logger: Logger,
+    session: u64,
+    // NFR-007 — confirmação de buffers sujos ao fechar.
+    pending_close: Option<PendingClose>,
     // Estágio 3 — LSP
     lsp: Option<LspClient>,
     lsp_init: Option<mpsc::Receiver<Value>>,
@@ -98,8 +124,9 @@ struct PhpIdeApp {
     last_outline_key: Option<(PathBuf, u64)>,
     // Estágio 3.1 — completamento
     completion: CompletionState,
-    // Estágio 3.1 — análise estrutural local (tree-sitter)
-    syntax: Option<(PathBuf, u64, Vec<phpide_syntax::Block>)>,
+    // Estágio 3.1 — análise estrutural local (tree-sitter); anexada à
+    // revisão do documento: edição invalida, análise reanexa (NFR-002).
+    syntax: Option<(PathBuf, Revisioned<Vec<phpide_syntax::Block>>)>,
     // Estágio 4 — executor
     exec: ExecState,
     /// Comandos dinâmicos da palette (composer/phpunit), recalculados ao abrir.
@@ -136,10 +163,18 @@ struct PhpIdeApp {
 
 impl PhpIdeApp {
     fn new(root: PathBuf, start_welcome: bool, files: Vec<PathBuf>) -> Self {
-        let settings = settings::Settings::load();
+        let (settings, settings_err) = settings::Settings::load_or_default();
         let theme = ThemeId::from_name(&settings.theme);
         let (lsp, lsp_init, lsp_name) = start_lsp(&root);
         let plugins = plugins::discover_plugins(&root, &settings::config_dir());
+        let logger = Logger::stderr();
+        let session = std::process::id() as u64;
+        logger.info(
+            Component::Ui,
+            &Correlation::session(session),
+            "app_start",
+            &[("root", &root.display().to_string())],
+        );
         let mut app = PhpIdeApp {
             watcher: start_watcher(&root),
             ws: Workspace::open(root),
@@ -150,6 +185,10 @@ impl PhpIdeApp {
             search: SearchState::new(),
             zoom: settings.zoom,
             change_pending_since: None,
+            jobs: JobSystem::new(),
+            logger,
+            session,
+            pending_close: None,
             lsp,
             lsp_init,
             lsp_name,
@@ -194,6 +233,16 @@ impl PhpIdeApp {
             };
             app.ws.open_file_ex(&path, true);
         }
+        if let Some(err) = settings_err {
+            // Configuração inválida: defaults em uso, original preservado.
+            app.ws.message = err.to_string();
+            app.logger.warn(
+                Component::Settings,
+                &Correlation::session(app.session),
+                "settings_recovered",
+                &[("error", &err.log_line())],
+            );
+        }
         app
     }
 
@@ -201,10 +250,38 @@ impl PhpIdeApp {
     // Estágio 6 — shell: projetos, temas, helpers compartilhados
     // -----------------------------------------------------------------
 
+    /// Troca de projeto a partir da UI: com buffers sujos, confirma antes
+    /// (NFR-007-02); limpo, carrega direto.
+    pub fn request_load_project(&mut self, root: PathBuf, ctx: &egui::Context) {
+        if self.ws.buffers.iter().any(|b| b.dirty) {
+            self.pending_close = Some(PendingClose::Project(root));
+        } else {
+            self.load_project(root, ctx);
+        }
+    }
+
     /// Carrega outro projeto no lugar (Welcome Screen / Project widget).
+    /// NFR-001: troca de projeto cancela workers da sessão anterior, para
+    /// a execução em andamento e encerra o LSP antigo.
     pub fn load_project(&mut self, root: PathBuf, ctx: &egui::Context) {
         self.settings.touch_project(&root);
         self.persist_settings();
+        // Isola o trabalho do projeto anterior (NFR-001-04).
+        let report = self.jobs.shutdown(Duration::from_secs(2));
+        self.search.cancel();
+        self.exec.stop_if_running();
+        self.logger.info(
+            Component::Ui,
+            &Correlation::session(self.session),
+            "project_switch",
+            &[
+                ("cancelled_jobs", &report.cancelled.to_string()),
+                ("unresponsive", &report.unresponsive.to_string()),
+            ],
+        );
+        if let Some(old) = self.lsp.take() {
+            old.stop();
+        }
         self.watcher = start_watcher(&root);
         let (lsp, lsp_init, lsp_name) = start_lsp(&root);
         self.lsp = lsp;
@@ -274,13 +351,14 @@ impl PhpIdeApp {
             .unwrap_or(0)
     }
 
-    /// F2 / Shift+F2: salta para o próximo/anterior problema (ordem global).
+    /// F2 / Shift+F2: salta para o próximo/anterior problema vigente
+    /// (revisão atual; diagnóstico obsoleto não entra na ordem).
     pub fn goto_problem(&mut self, dir: i32) {
-        if self.ws.diagnostics.is_empty() {
+        let diags: Vec<phpide_core::Diagnostic> = self.ws.current_diagnostics().cloned().collect();
+        if diags.is_empty() {
             self.ws.message = "nenhum problema detectado".to_string();
             return;
         }
-        let diags = &self.ws.diagnostics;
         let cur_line = self
             .ws
             .active_buffer()
@@ -345,11 +423,11 @@ impl PhpIdeApp {
             PaletteCommand::Save => self.save_active(),
             PaletteCommand::NewFile => self.ws.new_file(),
             PaletteCommand::CloseTab => {
-                self.ws.close_active();
+                self.request_close_active();
             }
             PaletteCommand::CloseOthers => {
                 let active = self.ws.active;
-                self.ws.close_other_tabs(active);
+                self.request_close_others(active);
             }
             PaletteCommand::PinTab => {
                 if let Some(buf) = self.ws.active_buffer_mut() {
@@ -401,14 +479,52 @@ impl PhpIdeApp {
         let _ = ctx;
     }
 
+    /// Fecha a aba ativa; com edição pendente, pede confirmação (NFR-007-02).
+    pub fn request_close_active(&mut self) {
+        let active = self.ws.active;
+        self.request_close_tab(active);
+    }
+
+    /// Fecha a aba `i`; buffer sujo exige confirmação (salvar/descartar/cancelar).
+    pub fn request_close_tab(&mut self, i: usize) {
+        let dirty = self.ws.buffers.get(i).map(|b| b.dirty).unwrap_or(false);
+        if dirty {
+            self.pending_close = Some(PendingClose::Tab(i));
+        } else {
+            self.ws.close_tab(i);
+        }
+    }
+
+    /// Close Others: confirma se alguma vítima estiver suja.
+    pub fn request_close_others(&mut self, keep: usize) {
+        let any_dirty = self
+            .ws
+            .buffers
+            .iter()
+            .enumerate()
+            .any(|(i, b)| i != keep && b.dirty);
+        if any_dirty {
+            self.pending_close = Some(PendingClose::Others(keep));
+        } else {
+            self.ws.close_other_tabs(keep);
+        }
+    }
+
     fn save_active(&mut self) {
-        let Some(buf) = self.ws.active_buffer_mut() else {
-            return;
+        let active = self.ws.active;
+        self.save_buffer_at(active);
+    }
+
+    /// Salva um buffer específico: escrita atômica (NFR-007-01), erro com
+    /// componente/operação/ação (NFR-005), didSave no LSP.
+    fn save_buffer_at(&mut self, i: usize) -> bool {
+        let Some(buf) = self.ws.buffers.get_mut(i) else {
+            return false;
         };
         if buf.readonly {
             self.ws.message =
                 "arquivo em modo somente leitura (destrave na status bar)".to_string();
-            return;
+            return false;
         }
         let path = buf.path.clone();
         // Line endings: converte \n -> \r\n ao salvar quando o widget for CRLF.
@@ -420,31 +536,55 @@ impl PhpIdeApp {
                 .replace('\n', "\r\n");
             buf.document = phpide_core::Document::new(&text);
         }
-        self.ws.message = match buf.save() {
-            Ok(()) => "salvo".to_string(),
-            Err(e) => format!("erro ao salvar: {e}"),
-        };
+        let corr = Correlation::session(self.session).with_document(
+            path.clone()
+                .unwrap_or_else(|| PathBuf::from("<sem-titulo>")),
+            buf.document.revision(),
+        );
+        match buf.try_save() {
+            Ok(()) => {
+                self.ws.message = "salvo".to_string();
+                self.logger
+                    .info(Component::Core, &corr, "buffer_saved", &[]);
+            }
+            Err(e) => {
+                // Buffer permanece sujo e intacto; mensagem curta + ação.
+                self.ws.message = e.to_string();
+                self.logger.error(
+                    Component::Core,
+                    &corr,
+                    "buffer_save_failed",
+                    &[("error", &e.log_line())],
+                );
+                return false;
+            }
+        }
         if let (Some(lsp), Some(path)) = (&self.lsp, path) {
             if phpide_php::Php::is_php_file(&path) {
                 let text = self
                     .ws
-                    .active_buffer()
+                    .buffers
+                    .get(i)
                     .map(|b| b.document.text())
                     .unwrap_or_default();
                 lsp.did_save(&path, &text);
             }
         }
+        true
     }
-}
 
-fn have_cmd(name: &str) -> bool {
-    std::process::Command::new("sh")
-        .args(["-c", &format!("command -v {name}")])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    /// Salva todos os buffers sujos (confirmação "Salvar Tudo").
+    fn save_all_dirty(&mut self) {
+        for i in 0..self.ws.buffers.len() {
+            if self.ws.buffers[i].dirty {
+                self.save_buffer_at(i);
+            }
+        }
+    }
+
+    fn any_dirty(&self) -> bool {
+        self.ws.buffers.iter().any(|b| b.dirty)
+    }
 }
 
 fn start_lsp(root: &Path) -> (Option<LspClient>, Option<mpsc::Receiver<Value>>, String) {
@@ -488,7 +628,38 @@ fn start_watcher(root: &Path) -> Option<(notify::RecommendedWatcher, mpsc::Recei
 }
 
 impl eframe::App for PhpIdeApp {
+    /// Encerramento da IDE: cancela workers, para processos e encerra o
+    /// LSP (NFR-001: "O encerramento da IDE deve terminar processos-filhos
+    /// gerenciados por ela").
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let report = self.jobs.shutdown(Duration::from_secs(2));
+        self.search.cancel();
+        self.exec.stop_if_running();
+        if let Some(lsp) = self.lsp.take() {
+            lsp.stop();
+        }
+        self.logger.info(
+            Component::Ui,
+            &Correlation::session(self.session),
+            "app_exit",
+            &[
+                ("cancelled_jobs", &report.cancelled.to_string()),
+                ("unresponsive", &report.unresponsive.to_string()),
+            ],
+        );
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Fechamento da janela com buffers sujos: cancela o close e abre a
+        // confirmação (NFR-007-02). O modal reenvia ViewportCommand::Close.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if matches!(self.pending_close, Some(PendingClose::Exit)) {
+                // Confirmação já resolvida como "sair": deixa fechar.
+            } else if self.any_dirty() {
+                self.pending_close = Some(PendingClose::Exit);
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+        }
         self.poll_watcher();
         self.detect_double_shift(ctx);
         if !self.palette.open && !self.settings_dialog.open {
@@ -517,6 +688,7 @@ impl eframe::App for PhpIdeApp {
         scheme::scheme_popup(self, ctx);
         self.goto_line_popup(ctx);
         settings_dialog::show(self, ctx);
+        self.dirty_close_modal(ctx);
 
         ctx.set_zoom_factor(self.zoom);
         let compact = self.settings.compact_mode;
@@ -626,7 +798,19 @@ impl PhpIdeApp {
     }
 
     fn poll_search(&mut self) {
+        let job_before = self.search.current_job();
+        let was_busy = self.search.busy();
         self.search.poll();
+        if was_busy && !self.search.busy() {
+            if let Some(job) = job_before {
+                self.logger.info(
+                    Component::Search,
+                    &Correlation::session(self.session).with_job(job),
+                    "search_finished",
+                    &[("results", &self.search.results.len().to_string())],
+                );
+            }
+        }
     }
 
     /// Shift×2 abre o Search Everywhere (edge da tecla Shift, janela de 400ms).
@@ -752,7 +936,7 @@ impl PhpIdeApp {
                 self.ws.message = "Navigation Bar".to_string();
             }
             if i.consume_key(ctrl, Key::F4) {
-                self.ws.close_active();
+                self.request_close_active();
             }
             if i.consume_key(alt, Key::ArrowLeft) {
                 if !self.ws.navigate_back() {
@@ -955,7 +1139,7 @@ impl PhpIdeApp {
                             .filter(|e| !e.is_dir && search::is_searchable(&e.path))
                             .map(|e| e.path.clone())
                             .collect();
-                        self.search.start(files);
+                        self.search.start(files, &self.jobs);
                     }
                     ui.checkbox(&mut self.search.case_sensitive, "Aa");
                     if ui.button("Buscar").clicked() {
@@ -966,7 +1150,7 @@ impl PhpIdeApp {
                             .filter(|e| !e.is_dir && search::is_searchable(&e.path))
                             .map(|e| e.path.clone())
                             .collect();
-                        self.search.start(files);
+                        self.search.start(files, &self.jobs);
                     }
                     if self.search.busy() {
                         ui.spinner();
@@ -999,21 +1183,21 @@ impl PhpIdeApp {
     }
 
     fn problems_panel(&mut self, ctx: &egui::Context) {
+        let diags: Vec<phpide_core::Diagnostic> = self.ws.current_diagnostics().cloned().collect();
         egui::TopBottomPanel::bottom("problems")
             .resizable(true)
             .show(ctx, |ui| {
                 tool_window_header(self, ui, ToolWindow::Problems);
                 ui.separator();
-                ui.label(format!("{} problemas", self.ws.diagnostics.len()));
+                ui.label(format!("{} problemas", diags.len()));
                 ui.separator();
-                if self.ws.diagnostics.is_empty() {
+                if diags.is_empty() {
                     ui.label("Sem problemas.");
                 } else {
                     egui::ScrollArea::vertical()
                         .max_height(200.0)
                         .show(ui, |ui| {
-                            let diags: Vec<_> = self.ws.diagnostics.clone();
-                            for d in diags {
+                            for d in &diags {
                                 let color = match d.severity {
                                     phpide_core::Severity::Error
                                     | phpide_core::Severity::Warning => egui::Color32::RED,
@@ -1089,6 +1273,128 @@ impl PhpIdeApp {
                         );
                     });
             });
+    }
+
+    /// Modal de confirmação para buffers sujos (NFR-007-02): aba, Close
+    /// Others, troca de projeto e fechamento da IDE. Salvar grava tudo o que
+    /// for necessário; Descartar fecha sem salvar; Cancelar volta ao fluxo.
+    fn dirty_close_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_close.clone() else {
+            return;
+        };
+        let (title, body) = match &pending {
+            PendingClose::Tab(i) => {
+                let name = self
+                    .ws
+                    .buffers
+                    .get(*i)
+                    .map(|b| b.name())
+                    .unwrap_or_else(|| "aba".to_string());
+                (
+                    "Fechar aba".to_string(),
+                    format!("\"{name}\" tem alterações não salvas."),
+                )
+            }
+            PendingClose::Others(_) => (
+                "Fechar outras abas".to_string(),
+                "Outras abas têm alterações não salvas.".to_string(),
+            ),
+            PendingClose::Project(path) => (
+                "Trocar de projeto".to_string(),
+                format!(
+                    "Há alterações não salvas.\nAbrir \"{}\" mesmo assim?",
+                    path.display()
+                ),
+            ),
+            PendingClose::Exit => (
+                "Sair da IDE".to_string(),
+                "Há alterações não salvas. Sair mesmo assim?".to_string(),
+            ),
+        };
+        let mut action: Option<&'static str> = None;
+        egui::Window::new("dirty-close")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .shadow(egui::epaint::Shadow::default())
+                    .inner_margin(egui::Margin::same(12)),
+            )
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(title).strong());
+                ui.add_space(4.0);
+                ui.label(body);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Salvar").clicked() {
+                        action = Some("save");
+                    }
+                    if ui.button("Não Salvar").clicked() {
+                        action = Some("discard");
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        action = Some("cancel");
+                    }
+                });
+            });
+        match action {
+            Some("save") => {
+                match pending {
+                    PendingClose::Tab(i) => {
+                        if self.save_buffer_at(i) {
+                            self.ws.close_tab(i);
+                        }
+                    }
+                    PendingClose::Others(keep) => {
+                        self.save_all_dirty();
+                        self.ws.close_other_tabs(keep);
+                    }
+                    PendingClose::Project(path) => {
+                        self.save_all_dirty();
+                        self.pending_close = None;
+                        self.load_project(path, ctx);
+                        return;
+                    }
+                    PendingClose::Exit => {
+                        self.save_all_dirty();
+                        self.pending_close = None;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        return;
+                    }
+                }
+                self.pending_close = None;
+            }
+            Some("discard") => {
+                match pending {
+                    PendingClose::Tab(i) => {
+                        self.ws.close_tab(i);
+                    }
+                    PendingClose::Others(keep) => {
+                        self.ws.close_other_tabs(keep);
+                    }
+                    PendingClose::Project(path) => {
+                        self.pending_close = None;
+                        self.load_project(path, ctx);
+                        return;
+                    }
+                    PendingClose::Exit => {
+                        // Descartar: fecha marcando os buffers como limpos
+                        // (a confirmação já cobriu a perda explícita).
+                        for buf in &mut self.ws.buffers {
+                            buf.dirty = false;
+                        }
+                        self.pending_close = None;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        return;
+                    }
+                }
+                self.pending_close = None;
+            }
+            _ => {}
+        }
     }
 
     fn goto_line_popup(&mut self, ctx: &egui::Context) {
@@ -1215,13 +1521,22 @@ impl PhpIdeApp {
         for path in closed {
             lsp.did_close(&path);
             self.lsp_opened.remove(&path);
-            self.ws.set_diagnostics(&path, Vec::new());
+            // Arquivo fechado: sem revisão viva; conjunto vazio remove as entradas.
+            self.ws.set_diagnostics(&path, 0, Vec::new());
         }
 
-        // 3. Diagnósticos publicados -> painel de problemas.
+        // 3. Diagnósticos publicados -> painel de problemas (anexados à
+        // revisão do buffer: edição posterior invalida até nova publicação).
         let published: Vec<(PathBuf, Vec<LspDiagnostic>)> =
             lsp.shared.diagnostics.lock().unwrap().drain().collect();
         for (path, items) in published {
+            let revision = self
+                .ws
+                .buffers
+                .iter()
+                .find(|b| b.path.as_deref() == Some(path.as_path()))
+                .map(|b| b.document.revision())
+                .unwrap_or(u64::MAX);
             let diags: Vec<phpide_core::Diagnostic> = items
                 .iter()
                 .map(|d| phpide_core::Diagnostic {
@@ -1238,7 +1553,7 @@ impl PhpIdeApp {
                     source: d.source.clone(),
                 })
                 .collect();
-            self.ws.set_diagnostics(&path, diags);
+            self.ws.set_diagnostics(&path, revision, diags);
         }
 
         // 4. Definição pendente (F12/Ctrl+B).
@@ -1522,17 +1837,18 @@ impl PhpIdeApp {
         if !phpide_php::Php::is_php_file(&path) {
             return;
         }
-        let version = buf.document.version;
-        if self
-            .syntax
-            .as_ref()
-            .map(|(p, v, _)| p == &path && *v == version)
-            .unwrap_or(false)
-        {
+        let version = buf.document.revision();
+        let fresh = matches!(&self.syntax, Some((p, cache)) if p == &path
+            && cache.revision() == version
+            && cache.is_current(&buf.document));
+        if fresh {
             return;
         }
         let report = phpide_syntax::analyze(&buf.document.text());
-        self.syntax = Some((path.clone(), version, report.blocks.clone()));
+        self.syntax = Some((
+            path.clone(),
+            Revisioned::new(version, report.blocks.clone()),
+        ));
         if !lsp_running {
             let diags: Vec<phpide_core::Diagnostic> = report
                 .errors
@@ -1546,7 +1862,7 @@ impl PhpIdeApp {
                     source: "tree-sitter".to_string(),
                 })
                 .collect();
-            self.ws.set_diagnostics(&path, diags);
+            self.ws.set_diagnostics(&path, version, diags);
         }
     }
 
@@ -1634,14 +1950,17 @@ impl PhpIdeApp {
             "debug:run" => self.debug_run(),
             _ => {
                 if let Some(script) = id.strip_prefix("composer:") {
-                    if !have_cmd("composer") {
-                        self.ws.message = "composer não encontrado no PATH".to_string();
-                        return;
-                    }
+                    let composer = match exec::resolve_composer(&self.settings) {
+                        Ok(program) => program,
+                        Err(e) => {
+                            self.ws.message = e.to_string();
+                            return;
+                        }
+                    };
                     let script = script.to_string();
                     self.exec.run(
                         format!("composer {script}"),
-                        "composer".into(),
+                        composer,
                         vec!["run-script".into(), script],
                         root,
                     );
@@ -1667,7 +1986,15 @@ impl PhpIdeApp {
             self.ws.message = "salve o arquivo antes de executar".to_string();
             return;
         };
-        let php = std::env::var("PHPIDE_PHP").unwrap_or_else(|_| "php".into());
+        // NFR-003-01: PHP por configuração (env/settings) antes do PATH;
+        // ausência vira mensagem acionável (NFR-005), nunca panic.
+        let php = match exec::resolve_php(&self.settings) {
+            Ok(program) => program,
+            Err(e) => {
+                self.ws.message = e.to_string();
+                return;
+            }
+        };
         let cwd = path
             .parent()
             .map(Path::to_path_buf)
@@ -1683,10 +2010,22 @@ impl PhpIdeApp {
             return;
         };
         let Some(path) = buf.path.clone() else { return };
+        if !phpide_php::Php::is_php_file(&path) {
+            return;
+        }
         let line = buf
             .document
             .line_col(self.cursor_char.min(buf.document.len_chars()))
             .0;
+        self.toggle_breakpoint_at(line);
+    }
+
+    /// Alterna breakpoint na linha informada (1-based) — usado por F9 e pelo
+    /// clique no gutter (Estágio 6.2).
+    fn toggle_breakpoint_at(&mut self, line: usize) {
+        let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
+            return;
+        };
         let set = self.breakpoints.entry(path.clone()).or_default();
         let action = if set.remove(&line) {
             "removido"
@@ -1762,7 +2101,16 @@ impl PhpIdeApp {
         });
         // Dispara o PHP com o XDEBUG_CONFIG conectando na IDE; stdout/stderr
         // vão para o painel Debug via canal dedicado.
-        let php = std::env::var("PHPIDE_PHP").unwrap_or_else(|_| "php".into());
+        let php = match exec::resolve_php(&self.settings) {
+            Ok(program) => program,
+            Err(e) => {
+                self.ws.message = e.to_string();
+                self.exec.running = false;
+                self.debug_rx = None;
+                self.debug_php_rx = None;
+                return;
+            }
+        };
         let cwd = path
             .parent()
             .map(Path::to_path_buf)
@@ -1854,12 +2202,17 @@ impl PhpIdeApp {
             .line_col(self.cursor_char.min(buf.document.len_chars()))
             .0
             .saturating_sub(1);
-        let Some((sp, _, blocks)) = &self.syntax else {
+        let Some((sp, cache)) = &self.syntax else {
             return;
         };
         if sp != &path {
             return;
         }
+        // Blocos vigentes na revisão atual (cache inválido ⇒ sem trilha).
+        let blocks = match self.ws.active_buffer() {
+            Some(buf) => cache.get(&buf.document).cloned().unwrap_or_default(),
+            None => Vec::new(),
+        };
         let trail: Vec<(String, usize)> = blocks
             .iter()
             .filter(|b| {
@@ -1897,21 +2250,113 @@ impl PhpIdeApp {
         ui.separator();
     }
 
+    /// Pinta a superfície do editor sobre o viewport (Estágio 6.2): gutter,
+    /// sticky lines e faixas de inspeção — usando a geometria exata da galley.
+    fn paint_editor_surface(
+        &mut self,
+        ui: &egui::Ui,
+        output: &egui::text_edit::TextEditOutput,
+        _offset: egui::Vec2,
+    ) {
+        use phpide_core::Severity;
+        let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
+            return;
+        };
+        // Snapshot: empréstimo imutável termina antes das mutações abaixo.
+        let (total_lines, cursor_line1, text, blocks) = {
+            let Some(buf) = self.ws.active_buffer() else {
+                return;
+            };
+            let blocks: Vec<phpide_syntax::Block> = self
+                .syntax
+                .as_ref()
+                .filter(|(p, _)| p == &path)
+                .and_then(|(_, cache)| cache.get(&buf.document).cloned())
+                .unwrap_or_default();
+            (
+                buf.document.line_count(),
+                buf.document
+                    .line_col(self.cursor_char.min(buf.document.len_chars()))
+                    .0,
+                buf.document.text(),
+                blocks,
+            )
+        };
+        let Some(first_row) = output.galley.rows.first() else {
+            return;
+        };
+        let row_height = first_row.rect.height();
+        // Espaço de tela egui: galley_pos já tem a rolagem fisicamente
+        // aplicada; o viewport visível é o clip do próprio painel.
+        let viewport = ui.clip_rect();
+        let geom = editor_view::EditorGeometry {
+            galley_pos: output.galley_pos,
+            viewport,
+            row_height,
+        };
+        let bps = self.breakpoints.get(&path).cloned().unwrap_or_default();
+        let bms = self.bookmarks.get(&path).cloned().unwrap_or_default();
+        let action = editor_view::paint_gutter(
+            ui,
+            &geom,
+            total_lines,
+            cursor_line1,
+            &bps,
+            &bms,
+            output.galley.rows.len(),
+        );
+        if let Some(line1) = action.toggle_breakpoint {
+            self.toggle_breakpoint_at(line1);
+        }
+        // Sticky lines: só para PHP com análise estrutural do arquivo ativo.
+        if !blocks.is_empty() {
+            let doc_lines: Vec<String> = text.lines().map(str::to_string).collect();
+            if let Some(line0) = editor_view::paint_sticky_lines(ui, &geom, &doc_lines, &blocks) {
+                if let Some(buf) = self.ws.active_buffer_mut() {
+                    buf.request_cursor(line0, 0);
+                }
+            }
+        }
+        // Faixas de inspeção na scrollbar (diagnósticos do arquivo ativo).
+        let diags: Vec<(u32, Severity)> = self
+            .ws
+            .diagnostics_for(&path)
+            .map(|d| (d.line as u32, d.severity))
+            .collect();
+        editor_view::paint_scrollbar_stripes(ui, &geom, &diags, total_lines);
+    }
+
     fn editor(&mut self, ctx: &egui::Context) {
         let mut want_completion = false;
+        // Hook de demonstração/teste: rola o editor para uma linha no startup
+        // (permite capturar sticky lines/gutter sem simulação de input).
+        let scroll_hook: Option<f32> = std::env::var("PHPIDE_SCROLL_TO_LINE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .map(|line| (line - 1.0).max(0.0));
         egui::CentralPanel::default().show(ctx, |ui| {
             self.breadcrumbs(ui);
             let active = self.ws.active;
-            let Some(buf) = self.ws.active_buffer_mut() else {
+            if self.ws.active_buffer().is_none() {
                 ui.centered_and_justified(|ui| {
                     ui.label("Nenhum arquivo aberto.");
                 });
                 return;
-            };
+            }
 
             // Salto pendente (palette, busca, problemas): posiciona cursor.
-            if let Some((line0, col0)) = buf.take_pending_cursor() {
-                let char_at = (buf.document.line_start(line0) + col0).min(buf.document.len_chars());
+            let pending = self
+                .ws
+                .active_buffer_mut()
+                .and_then(|buf| buf.take_pending_cursor());
+            if let Some((line0, col0)) = pending {
+                let char_at = self
+                    .ws
+                    .active_buffer()
+                    .map(|buf| {
+                        (buf.document.line_start(line0) + col0).min(buf.document.len_chars())
+                    })
+                    .unwrap_or(0);
                 let id = egui::Id::new(("editor", active));
                 let mut st = TextEditState::load(ui.ctx(), id).unwrap_or_default();
                 let cc = egui::text::CCursor {
@@ -1926,42 +2371,61 @@ impl PhpIdeApp {
                 self.cursor_char = char_at;
             }
 
-            let old = buf.document.text();
+            // Snapshot do estado necessário ao widget (borrow termina aqui).
+            let (old, readonly) = {
+                let buf = self.ws.active_buffer().unwrap();
+                (buf.document.text(), buf.readonly)
+            };
             let mut edited = old.clone();
             let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
                 let mut job = PhpLanguage.highlight(text, ui.style());
                 job.wrap.max_width = wrap_width;
                 ui.ctx().fonts(|fonts| fonts.layout_job(job))
             };
-            let output = egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
+            // O gutter é pintado por cima do viewport; o texto ganha um
+            // recuo à esquerda para nunca ficar sob ele.
+            let scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
+            let scroll_area = match scroll_hook {
+                Some(line) => scroll_area.vertical_scroll_offset(line * 18.0),
+                None => scroll_area,
+            };
+            let scroll = scroll_area.show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.add_space(editor_view::GUTTER_WIDTH);
                     egui::TextEdit::multiline(&mut edited)
                         .id(egui::Id::new(("editor", active)))
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY)
                         .desired_rows(40)
                         .lock_focus(true)
-                        .interactive(!buf.readonly)
+                        .interactive(!readonly)
                         .layouter(&mut layouter)
                         .show(ui)
                 })
-                .inner;
+                .inner
+            });
+            let output = scroll.inner;
 
             if let Some(cursor) = output.cursor_range {
                 self.cursor_char = cursor.primary.ccursor.index;
             }
 
+            // ---- Estágio 6.2: superfície do editor (gutter/sticky/stripes) ----
+            self.paint_editor_surface(ui, &output, scroll.state.offset);
+
             if edited != old {
                 if let Some((at, removed, inserted)) = Self::diff_edit(&old, &edited) {
-                    if removed > 0 {
-                        buf.delete(at, at + removed);
-                    }
-                    if !inserted.is_empty() {
-                        buf.insert(at, &inserted);
-                        // Gatilhos de completamento: $, -> e \ (namespace)
-                        if matches!(inserted.chars().last(), Some('$' | '>' | '\\')) {
-                            want_completion = true;
+                    let mut edited_buf = self.ws.active_buffer_mut();
+                    if let Some(buf) = edited_buf.take() {
+                        if removed > 0 {
+                            buf.delete(at, at + removed);
+                        }
+                        if !inserted.is_empty() {
+                            buf.insert(at, &inserted);
+                            // Gatilhos de completamento: $, -> e \ (namespace)
+                            if matches!(inserted.chars().last(), Some('$' | '>' | '\\')) {
+                                want_completion = true;
+                            }
                         }
                     }
                 }

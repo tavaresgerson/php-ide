@@ -18,11 +18,12 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 
 | Crate | Responsabilidade | Equivalente clássico |
 |---|---|---|
-| `phpide-core` | `Document` (rope), `Buffer` (aba + undo), `Workspace`, árvore de arquivos, diagnósticos | Document/FileEditorManager/ProblemsView |
+| `phpide-core` | `Document` (rope), `Buffer` (aba + undo), `Workspace`, árvore de arquivos, diagnósticos, offsets (byte/char/UTF-16), revisões, jobs, settings versionados, erros/logs | Document/FileEditorManager/ProblemsView |
 | `phpide-php` | Linguagem: metadados PHP, highlight (syntect), tipos de símbolo | Language/ParserDefinition |
 | `phpide-lsp` | Cliente LSP: framing JSON-RPC, threads, sync de documentos, completion | LanguageServerManager |
 | `phpide-syntax` | Análise estrutural tree-sitter: blocos, erros de sintaxe offline | LocalFileSystem/Folding (offline) |
 | `phpide-dbgp` | Protocolo DBGp (Xdebug): breakpoints, run, pilha, variáveis | XDebugger/DBGp driver |
+| `phpide-exec` | Processos externos: descoberta configurável de executáveis, spawn padronizado, timeout, Stop e kill de grupo | Execution infrastructure |
 | `phpide-ui` | Shell gráfica egui/eframe: abas, painéis, editor, execução, plugins | IdeFrame |
 
 ## Roadmap por estágios
@@ -76,11 +77,53 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
       Column Selection Mode e deployment; Welcome Screen com Projects/Customize/
       Plugins/Learn/Remote Development; sete temas oficiais; Compact Mode e
       importação de configurações. O Terminal executa comandos no shell do projeto.
-- [ ] **Próximos recortes visuais**: modos adicionais do Main Menu, split de tool
-      windows e foco teclado completo; gutter com breakpoints sobre números,
-      folding/blame/coverage, sticky lines, inlay hints/code vision, lens mode e
-      split/detach de editor. Database exibido neste estágio é a shell; conexões
-      e query console pertencem ao RF-DB, não à paridade visual.
+- [x] **Estágio 6.2 — Superfície do editor (REQUISITOS 1.4)**:
+      gutter com números de linha e **breakpoints sobre os números** (New UI),
+      marcadores de bookmark (F11) na borda do gutter, destaque da linha do
+      cursor e clique no gutter para alternar breakpoint; **sticky lines**
+      (máx. 5 declarações estruturais fixadas no topo ao rolar, clicáveis,
+      indentadas por profundidade — namespace → class → método → bloco);
+      **faixas de inspeção na scrollbar** (erros/avisos/info do arquivo ativo
+      pintados na borda direita na altura da linha). Implementado sobre a
+      geometria exata da galley do `TextEdit` (`TextEditOutput.galley_pos` +
+      `Row.rect`), sem widgets irmãos nem drift de rolagem. Hook de demo:
+      `PHPIDE_SCROLL_TO_LINE=<n>` pré-seleciona o scroll para capturas.
+      Folding/blame/coverage, inlay hints/code vision, lens mode e split/detach
+      de editor seguem pendentes; database neste estágio é a shell — conexões e
+      query console pertencem ao RF-DB.
+- [x] **Consolidação transversal NFR (marco 1 do plano — TAREFAS.md §3)**:
+      infraestrutura de concorrência, documentos, processos, settings, erros
+      e confiabilidade que os recortes ativos consomem. Entregas:
+      - **Jobs** (`phpide-core::jobs`, NFR-001): `JobSystem`/`JobHandle` com
+        ID, estados (running/completed/cancelled/failed), retorno por canal,
+        cancelamento cooperativo, descarte de resultados obsoletos por chave
+        (`JobRegistry`) e `shutdown` ao trocar de projeto ou fechar a IDE
+        (busca em arquivos já roda sobre isso).
+      - **Posições e revisões** (NFR-002): conversões centralizadas
+        byte/char/linha/UTF-16 com negociação de encoding (`offsets.rs`,
+        CRLF e astrais testados) e invalidação por revisão (`Revisioned`,
+        `PerFileRevision`); diagnósticos só valem para a revisão em que
+        foram calculados.
+      - **Processos externos** (crate `phpide-exec`, NFR-003): descoberta
+        configurável (env/settings antes do PATH), spawn por vetor de
+        args com cwd/env, stdout/stderr/exit separados, timeout, Stop e
+        encerramento do grupo de processos; erros distintos e acionáveis
+        (ausente/permissão/versão/path com espaços) com matriz de falhas em
+        testes de integração.
+      - **Settings versionados** (NFR-004): `settings_version` com migrações
+        incrementais (v1 legado migrado), escrita atômica com `.bak` e
+        recuperação de JSON inválido (original preservado como `.invalid`).
+      - **Erros e logs** (NFR-005): `IdeError` com componente/operação/ação,
+        logger com correlação por sessão/job/documento e redaction de
+        segredos (tokens, senhas, URIs, Bearer) testada com casos adversariais.
+      - **Confiabilidade** (NFR-007): save atômico (tmp+fsync+rename, buffer
+        preservado em erro) e confirmação de buffers sujos ao fechar aba,
+        trocar de projeto ou sair da IDE.
+      - **Baseline de performance** (NFR-006): fixtures determinísticos
+        (10k linhas, projeto grande) e benchmarks reproduzíveis com
+        resultados em `docs/baseline/T-NFR-006-02-perf-baseline.md`.
+      Baselines de fmt/clippy do código legado registrados em
+      `docs/baseline/` (sem formatação em massa fora do escopo).
 
 ## Atalhos
 
@@ -123,6 +166,16 @@ Verificação rápida do stack LSP (sobe intelephense real e espera diagnóstico
 
 ```bash
 cargo test -p phpide-lsp
+```
+
+Gate do workspace (com baselines legado registrados em `docs/baseline/`):
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo bench -p phpide-core --bench doc_ops      # baseline NFR-006
+cargo bench -p phpide-ui  --bench search_large
 ```
 
 ## Decisões técnicas do Estágio 1

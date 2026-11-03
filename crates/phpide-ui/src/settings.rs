@@ -4,10 +4,18 @@
 //! Agora cobre o que o Quick Switch Scheme / Welcome / Status Bar precisam:
 //! tema nomeado (família Islands), zoom, nível da linguagem PHP, quebra de
 //! linha/indentação padrão e a lista de projetos recentes da Welcome Screen.
+//!
+//! Persistência versionada com migração incremental e escrita atômica
+//! (`phpide_core::settings`, NFR-004 / T-NFR-004-01/02): o arquivo carrega
+//! `settings_version`; JSON inválido vira erro recuperável com o original
+//! preservado (`.invalid`); toda gravação mantém `.bak` da versão anterior.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
+
+use phpide_core::settings as store;
+use phpide_core::settings::Migration;
 
 pub fn config_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
@@ -19,6 +27,26 @@ pub fn config_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_default()
         .join(".config/phpide")
+}
+
+/// Migrações incrementais do settings.json da IDE:
+/// - v1 (Estágio 5: `theme: "dark"|"light"` sem versão) → v2 (schema atual,
+///   com nomes Islands e caminhos de ferramentas).
+pub fn migrations() -> store::MigrationChain {
+    store::MigrationChain::new(vec![Migration {
+        from: 1,
+        apply: |mut v| {
+            if let Some(t) = v.get("theme").and_then(Value::as_str) {
+                let mapped = match t {
+                    "dark" => "islands-dark",
+                    "light" => "islands-light",
+                    other => other,
+                };
+                v["theme"] = Value::from(mapped);
+            }
+            v
+        },
+    }])
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +76,10 @@ pub struct Settings {
     pub inlay_hints: bool,
     /// Keymap selecionado no Customize/Settings.
     pub keymap: String,
+    /// Caminho explícito do PHP ("" = descobrir no PATH, NFR-003-01).
+    pub php_path: String,
+    /// Caminho explícito do Composer ("" = descobrir no PATH).
+    pub composer_path: String,
 }
 
 impl Default for Settings {
@@ -66,21 +98,21 @@ impl Default for Settings {
             sticky_lines: true,
             inlay_hints: true,
             keymap: "Default".to_string(),
+            php_path: String::new(),
+            composer_path: String::new(),
         }
     }
 }
 
 impl Settings {
-    /// Compatibilidade com o arquivo do Estágio 5: `{theme: "dark"|"light", zoom}`.
-    pub fn load() -> Self {
-        let mut s = Self::default();
+    /// Carrega do disco com migração e recuperação (NFR-004). O segundo
+    /// elemento é um diagnóstico recuperável (settings inválido preservado
+    /// como `.invalid`, versão futura, E/S) para exibição na UI.
+    pub fn load_or_default() -> (Self, Option<phpide_core::IdeError>) {
         let path = config_dir().join("settings.json");
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return s;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
-            return s;
-        };
+        let report = store::load(&path, &migrations());
+        let mut s = Self::default();
+        let v = &report.value;
         if let Some(t) = v["theme"].as_str() {
             s.theme = match t {
                 "dark" => "islands-dark".to_string(),
@@ -129,9 +161,22 @@ impl Settings {
         if let Some(value) = v["keymap"].as_str() {
             s.keymap = value.to_string();
         }
-        s
+        if let Some(value) = v["php_path"].as_str() {
+            s.php_path = value.to_string();
+        }
+        if let Some(value) = v["composer_path"].as_str() {
+            s.composer_path = value.to_string();
+        }
+        (s, report.recovered)
     }
 
+    /// Compatibilidade com o arquivo do Estágio 5: `{theme: "dark"|"light", zoom}`.
+    pub fn load() -> Self {
+        Self::load_or_default().0
+    }
+
+    /// Grava versionado e atomicamente (tmp + rename + `.bak` anterior).
+    /// Falhas são logadas (nunca panic): a IDE continua com a config em memória.
     pub fn save(&self) {
         let dir = config_dir();
         if std::fs::create_dir_all(&dir).is_err() {
@@ -151,8 +196,12 @@ impl Settings {
             "sticky_lines": self.sticky_lines,
             "inlay_hints": self.inlay_hints,
             "keymap": self.keymap,
+            "php_path": self.php_path,
+            "composer_path": self.composer_path,
         });
-        let _ = std::fs::write(dir.join("settings.json"), v.to_string());
+        if let Err(e) = store::save(&dir.join("settings.json"), &v) {
+            eprintln!("{}", e.log_line());
+        }
     }
 
     /// Registra projeto aberto no topo do MRU (sem duplicatas, máx. 12).
@@ -167,6 +216,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Os testes abaixo alteram XDG_CONFIG_HOME (env global do processo):
+    /// mutuamente exclusivos para não ler o settings.json um do outro.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_xdg<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let key = "XDG_CONFIG_HOME";
+        let old = std::env::var(key).ok();
+        unsafe { std::env::set_var(key, dir) };
+        let result = f();
+        match old {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        result
+    }
 
     #[test]
     fn defaults_are_islands_dark() {
@@ -227,5 +293,69 @@ mod tests {
         s.touch_project(Path::new("/tmp/alpha"));
         assert_eq!(s.recent_projects[0], "/tmp/alpha");
         assert_eq!(s.recent_projects.len(), 2);
+    }
+
+    #[test]
+    fn legacy_v1_config_migrates_with_theme_mapping() {
+        // Config do Estágio 5 sem settings_version: migra para v2 e mapeia
+        // os temas legados (T-NFR-004-01: migrações com configs antigas).
+        let dir = std::env::temp_dir().join(format!("phpide-uimig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("phpide")).unwrap();
+        let file = dir.join("phpide").join("settings.json");
+        std::fs::write(&file, r#"{"theme": "dark", "zoom": 1.2}"#).unwrap();
+        let (s, err) = with_xdg(&dir, || {
+            let (s, err) = Settings::load_or_default();
+            assert!(err.is_none(), "sem erro recuperável: {err:?}");
+            assert_eq!(s.theme, "islands-dark", "dark legado → islands-dark");
+            assert!((s.zoom - 1.2).abs() < 1e-6);
+            // Salvar grava a versão corrente.
+            s.save();
+            (s, err)
+        });
+        let _ = (s, err);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("\"settings_version\": 2"),
+            "versão gravada: {text}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_settings_recovers_with_defaults_and_preserves_file() {
+        let dir = std::env::temp_dir().join(format!("phpide-uiinv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("phpide")).unwrap();
+        std::fs::write(dir.join("phpide").join("settings.json"), "{ quebrado").unwrap();
+        let (s, err) = with_xdg(&dir, Settings::load_or_default);
+        let err = err.expect("diagnóstico recuperável");
+        assert_eq!(err.kind, phpide_core::ErrorKind::InvalidConfig);
+        assert_eq!(s.theme, "islands-dark", "defaults em uso");
+        assert!(
+            dir.join("phpide").join("settings.json.invalid").exists(),
+            "arquivo original preservado"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tool_paths_default_to_empty_and_roundtrip() {
+        let mut s = Settings::default();
+        assert_eq!(s.php_path, "");
+        assert_eq!(s.composer_path, "");
+        s.php_path = "/opt/php bin/php".to_string();
+        s.composer_path = "/usr/local/bin/composer".to_string();
+        let dir = std::env::temp_dir().join(format!("phpide-uitool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (back, err) = with_xdg(&dir, || {
+            s.save();
+            Settings::load_or_default()
+        });
+        assert!(err.is_none());
+        assert_eq!(back.php_path, "/opt/php bin/php");
+        assert_eq!(back.composer_path, "/usr/local/bin/composer");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

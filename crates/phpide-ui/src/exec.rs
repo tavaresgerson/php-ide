@@ -6,15 +6,16 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub enum ExecMsg {
     Line(String),
     Done(i32),
-    /// PID do filho, logo após o spawn (para Stop — Ctrl+F2).
-    ChildPid(u32),
+    /// Processo filho, logo após o spawn (para Stop — Ctrl+F2).
+    Child(Arc<Mutex<Child>>),
 }
 
 #[derive(Default)]
@@ -23,8 +24,8 @@ pub struct ExecState {
     pub output: String,
     rx: Option<Receiver<ExecMsg>>,
     pub running: bool,
-    /// PID do processo filho (para Stop — Ctrl+F2).
-    child_id: Option<u32>,
+    /// Handle do processo filho (Stop mata o grupo inteiro, NFR-003-03).
+    child: Option<Arc<Mutex<Child>>>,
 }
 
 impl ExecState {
@@ -34,7 +35,7 @@ impl ExecState {
             output: String::new(),
             rx: None,
             running: false,
-            child_id: None,
+            child: None,
         }
     }
 
@@ -77,15 +78,19 @@ impl ExecState {
                     return;
                 }
             };
-            let child_id = child.id();
-            let _ = tx.send(ExecMsg::ChildPid(child_id));
             let streams: [(Option<Box<dyn Read + Send>>, bool); 2] = [
                 (
-                    child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>),
+                    child
+                        .stdout
+                        .take()
+                        .map(|s| Box::new(s) as Box<dyn Read + Send>),
                     false,
                 ),
                 (
-                    child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>),
+                    child
+                        .stderr
+                        .take()
+                        .map(|s| Box::new(s) as Box<dyn Read + Send>),
                     true,
                 ),
             ];
@@ -106,20 +111,46 @@ impl ExecState {
                     }
                 });
             }
-            let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-            let _ = tx.send(ExecMsg::Done(code));
+            // Compartilha o handle: a UI pode fazer Stop (kill do grupo) a
+            // qualquer momento; o worker detecta o término por try_wait.
+            let shared = Arc::new(Mutex::new(child));
+            let worker_child = shared.clone();
+            if tx.send(ExecMsg::Child(shared)).is_err() {
+                return;
+            }
+            loop {
+                let status = worker_child.lock().unwrap().try_wait();
+                match status {
+                    Ok(Some(s)) => {
+                        let _ = tx.send(ExecMsg::Done(s.code().unwrap_or(-1)));
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                    Err(_) => {
+                        let _ = tx.send(ExecMsg::Done(-1));
+                        break;
+                    }
+                }
+            }
         });
     }
 
-    /// Stop (Ctrl+F2): envia SIGTERM ao processo filho (Linux).
+    /// Stop (Ctrl+F2): encerra o grupo de processos do filho (Linux) — os
+    /// netos não ficam órfãos (NFR-003-03: cleanup de processos-filhos).
     pub fn stop(&mut self) {
-        if let Some(pid) = self.child_id.take() {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        if let Some(shared) = self.child.take() {
+            if let Ok(mut child) = shared.lock() {
+                phpide_exec::kill_process_tree(&mut child, true);
+            }
             self.output.push_str("\n[parado pelo usuário]");
+        }
+    }
+
+    /// Encerra qualquer processo em andamento (troca de projeto / fechamento
+    /// da IDE, NFR-001-04).
+    pub fn stop_if_running(&mut self) {
+        if self.running || self.child.is_some() {
+            self.stop();
         }
     }
 
@@ -131,7 +162,7 @@ impl ExecState {
                 match msg {
                     ExecMsg::Line(l) => lines.push(l),
                     ExecMsg::Done(c) => done = Some(c),
-                    ExecMsg::ChildPid(pid) => self.child_id = Some(pid),
+                    ExecMsg::Child(child) => self.child = Some(child),
                 }
             }
         }
@@ -141,7 +172,7 @@ impl ExecState {
         if let Some(code) = done {
             self.rx = None;
             self.running = false;
-            self.child_id = None;
+            self.child = None;
             self.output.push_str(&format!("\n[exit {code}]"));
         }
     }
@@ -174,7 +205,10 @@ pub fn composer_scripts(root: &PathBuf) -> Vec<(String, String)> {
                         .as_str()
                         .map(String::from)
                         .or_else(|| {
-                            v.as_array().and_then(|a| a.first()).and_then(|x| x.as_str()).map(String::from)
+                            v.as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|x| x.as_str())
+                                .map(String::from)
                         })
                         .unwrap_or_default();
                     (k.clone(), desc)
@@ -182,6 +216,47 @@ pub fn composer_scripts(root: &PathBuf) -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Resolução configurável de ferramentas (NFR-003-01): variável de ambiente
+/// da IDE > caminho em Settings > PATH. Erros vêm com ação recomendada
+/// (NFR-005) prontos para a status bar.
+pub fn resolve_tool(
+    name: &str,
+    label: &str,
+    env_key: &str,
+    setting_path: &str,
+) -> Result<phpide_exec::ToolInfo, phpide_core::IdeError> {
+    use phpide_exec::ToolRequest;
+    let explicit = std::env::var(env_key)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| (!setting_path.is_empty()).then(|| PathBuf::from(setting_path)));
+    let mut req = ToolRequest::new(name, label);
+    if let Some(path) = explicit {
+        req = req.explicit(path);
+    }
+    phpide_exec::discover(&req)
+}
+
+/// Resolve o interpretador PHP (PHPIDE_PHP > settings.php_path > PATH).
+pub fn resolve_php(settings: &crate::settings::Settings) -> Result<String, phpide_core::IdeError> {
+    resolve_tool("php", "PHP", "PHPIDE_PHP", &settings.php_path)
+        .map(|info| info.program.to_string_lossy().into_owned())
+}
+
+/// Resolve o Composer (PHPIDE_COMPOSER > settings.composer_path > PATH).
+pub fn resolve_composer(
+    settings: &crate::settings::Settings,
+) -> Result<String, phpide_core::IdeError> {
+    resolve_tool(
+        "composer",
+        "Composer",
+        "PHPIDE_COMPOSER",
+        &settings.composer_path,
+    )
+    .map(|info| info.program.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

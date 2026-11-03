@@ -11,6 +11,22 @@ use std::path::{Path, PathBuf};
 
 use ropey::Rope;
 
+pub mod error;
+pub mod fixtures;
+mod fsutil;
+pub mod jobs;
+pub mod log;
+pub mod offsets;
+pub mod redact;
+pub mod revision;
+pub mod settings;
+
+pub use error::{Component, ErrorKind, IdeError};
+pub use jobs::{JobHandle, JobId, JobOutcome, JobRegistry, JobState, JobSystem};
+pub use log::{Correlation, Level, Logger};
+pub use offsets::{negotiate_encoding, PositionEncoding};
+pub use revision::{PerFileRevision, Revision, Revisioned};
+
 /// Um documento de texto editável. Equivalente ao `Document` da IntelliJ Platform.
 #[derive(Debug)]
 pub struct Document {
@@ -30,6 +46,10 @@ impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
         let text = fs::read_to_string(path)?;
         Ok(Self::new(&text))
+    }
+
+    pub(crate) fn rope(&self) -> &Rope {
+        &self.rope
     }
 
     pub fn text(&self) -> String {
@@ -198,14 +218,30 @@ impl Buffer {
         }
     }
 
+    /// Salva o buffer de forma atômica (NFR-007): o arquivo nunca fica
+    /// parcialmente escrito; em falha, o buffer permanece intacto e sujo
+    /// (nada de perda silenciosa de edição).
     pub fn save(&mut self) -> io::Result<()> {
         let path = self
             .path
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "buffer sem caminho"))?;
-        fs::write(&path, self.document.text())?;
+        fsutil::write_atomic(&path, self.document.text().as_bytes())?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// Como `save`, mas com erro padronizado (componente/operação/ação, NFR-005).
+    pub fn try_save(&mut self) -> Result<(), IdeError> {
+        self.save().map_err(|e| {
+            let what = self
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "sem-titulo".to_string());
+            IdeError::from_io(Component::Core, "save", &what, &e)
+                .with_detail("edição preservada na memória; buffer continua sujo")
+        })
     }
 }
 
@@ -261,8 +297,11 @@ pub struct Workspace {
     pub buffers: Vec<Buffer>,
     pub active: usize,
     pub files: Vec<FileEntry>,
-    /// Diagnósticos agregados de todos os arquivos (LSP).
+    /// Diagnósticos agregados de todos os arquivos (LSP + sintaxe offline).
     pub diagnostics: Vec<Diagnostic>,
+    /// Revisão do documento à qual cada conjunto de diagnósticos se aplica
+    /// (invalidação por revisão, NFR-002).
+    diag_revisions: std::collections::HashMap<PathBuf, Revision>,
     /// Outline do arquivo ativo (LSP documentSymbol).
     pub outline: Vec<OutlineEntry>,
     /// Painel de problemas visível?
@@ -290,6 +329,7 @@ impl Workspace {
             active: 0,
             files,
             diagnostics: Vec::new(),
+            diag_revisions: std::collections::HashMap::new(),
             outline: Vec::new(),
             problems_visible: false,
             message: String::new(),
@@ -320,7 +360,11 @@ impl Workspace {
     /// [`open_file`] com controle de preview (aberturas internas de navegação,
     /// ex.: F2/F12, também viram preview; edições promovem a aba a permanente).
     pub fn open_file_ex(&mut self, path: &Path, preview: bool) {
-        if let Some(pos) = self.buffers.iter().position(|b| b.path.as_deref() == Some(path)) {
+        if let Some(pos) = self
+            .buffers
+            .iter()
+            .position(|b| b.path.as_deref() == Some(path))
+        {
             self.active = pos;
             self.touch_recent(path);
             return;
@@ -330,9 +374,11 @@ impl Workspace {
                 buf.preview = preview;
                 // Reutiliza a aba de preview limpa e não fixada.
                 if preview {
-                    if let Some(pos) = self.buffers.iter().position(|b| {
-                        b.preview && !b.pinned && !b.dirty && b.path.is_some()
-                    }) {
+                    if let Some(pos) = self
+                        .buffers
+                        .iter()
+                        .position(|b| b.preview && !b.pinned && !b.dirty && b.path.is_some())
+                    {
                         self.buffers[pos] = buf;
                         self.active = pos;
                         self.touch_recent(path);
@@ -363,7 +409,9 @@ impl Workspace {
                     let was_active = i == self.active;
                     self.buffers.remove(i);
                     if was_active {
-                        self.active = i.saturating_sub(1).min(self.buffers.len().saturating_sub(1));
+                        self.active = i
+                            .saturating_sub(1)
+                            .min(self.buffers.len().saturating_sub(1));
                     } else if i < self.active {
                         self.active -= 1;
                     }
@@ -387,7 +435,9 @@ impl Workspace {
         let was_active = i == self.active;
         self.buffers.remove(i);
         if was_active {
-            self.active = i.saturating_sub(1).min(self.buffers.len().saturating_sub(1));
+            self.active = i
+                .saturating_sub(1)
+                .min(self.buffers.len().saturating_sub(1));
         } else if i < self.active {
             self.active -= 1;
         }
@@ -412,7 +462,11 @@ impl Workspace {
             keep_me
         });
         self.active = keep_path
-            .and_then(|p| self.buffers.iter().position(|b| b.path.as_deref() == Some(p.as_path())))
+            .and_then(|p| {
+                self.buffers
+                    .iter()
+                    .position(|b| b.path.as_deref() == Some(p.as_path()))
+            })
             .unwrap_or(0);
         if self.buffers.is_empty() {
             self.new_file();
@@ -512,7 +566,10 @@ mod tests {
         // Abrir b.php deve REUTILIZAR a aba de preview limpa.
         ws.open_file_ex(&dir.join("b.php"), true);
         assert_eq!(ws.buffers.len(), 1, "preview limpa é reutilizada");
-        assert_eq!(ws.buffers[0].path.as_deref(), Some(dir.join("b.php").as_path()));
+        assert_eq!(
+            ws.buffers[0].path.as_deref(),
+            Some(dir.join("b.php").as_path())
+        );
         // Editar promove a permanente: abrir c.php cria segunda aba.
         let base = ws.buffers[0].document.len_chars();
         ws.buffers[0].insert(base, " ");
@@ -570,7 +627,10 @@ mod tests {
         assert_eq!(ws.active, 1, "índice ativo ajustado após fechar a ativa");
         ws.close_other_tabs(0);
         assert_eq!(ws.buffers.len(), 1);
-        assert_eq!(ws.buffers[0].path.as_deref(), Some(dir.join("x.php").as_path()));
+        assert_eq!(
+            ws.buffers[0].path.as_deref(),
+            Some(dir.join("x.php").as_path())
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -587,11 +647,20 @@ mod tests {
         ws.buffers.clear();
         ws.open_file_ex(&a, false);
         ws.open_file_at(&b, 0, 0);
-        assert_eq!(ws.active_buffer().and_then(|b| b.path.clone()), Some(b.clone()));
+        assert_eq!(
+            ws.active_buffer().and_then(|b| b.path.clone()),
+            Some(b.clone())
+        );
         assert!(ws.navigate_back());
-        assert_eq!(ws.active_buffer().and_then(|b| b.path.clone()), Some(a.clone()));
+        assert_eq!(
+            ws.active_buffer().and_then(|b| b.path.clone()),
+            Some(a.clone())
+        );
         assert!(ws.navigate_forward());
-        assert_eq!(ws.active_buffer().and_then(|b| b.path.clone()), Some(b.clone()));
+        assert_eq!(
+            ws.active_buffer().and_then(|b| b.path.clone()),
+            Some(b.clone())
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -614,8 +683,65 @@ mod tests {
         assert_eq!(ws.recent_files.len(), 2, "sem duplicatas");
         fs::remove_dir_all(&dir).ok();
     }
-}
 
+    #[test]
+    fn diagnostics_are_invalidated_by_document_revision() {
+        let dir = std::env::temp_dir().join(format!("phpide-diagrev-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.php");
+        fs::write(&a, "<?php echo 1;").unwrap();
+        let mut ws = Workspace::open(dir.clone());
+        ws.buffers.clear();
+        ws.open_file_ex(&a, false);
+        let mk = |msg: &str| Diagnostic {
+            path: a.clone(),
+            line: 1,
+            col: 1,
+            message: msg.to_string(),
+            severity: Severity::Error,
+            source: "test".to_string(),
+        };
+        let rev = ws.buffers[0].document.revision();
+        ws.set_diagnostics(&a, rev, vec![mk("erro-v1")]);
+        assert_eq!(ws.diagnostics_for(&a).count(), 1);
+        assert!(ws.diagnostics_current(&a));
+        // Editar o documento invalida o conjunto antigo (NFR-002).
+        let base = ws.buffers[0].document.len_chars();
+        ws.buffers[0].insert(base, " ");
+        assert!(!ws.diagnostics_current(&a), "edição invalida diagnósticos");
+        assert_eq!(ws.diagnostics_for(&a).count(), 0, "não exibir dados velhos");
+        assert_eq!(ws.current_diagnostics().count(), 0);
+        // Reanexo na nova revisão volta a exibir.
+        let rev2 = ws.buffers[0].document.revision();
+        ws.set_diagnostics(&a, rev2, vec![mk("erro-v2")]);
+        assert_eq!(ws.current_diagnostics().count(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_failure_keeps_buffer_dirty_and_original_intact() {
+        let dir = std::env::temp_dir().join(format!("phpide-savefail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.php");
+        let mut buf = Buffer::untitled();
+        buf.path = Some(file.clone());
+        buf.save().unwrap();
+        assert!(!buf.dirty);
+        // Destino vira diretório: a escrita atômica falha sem partial write.
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        buf.insert(0, "X");
+        assert!(buf.dirty);
+        let err = buf.try_save().unwrap_err();
+        assert_eq!(err.kind, crate::ErrorKind::Io);
+        assert!(buf.dirty, "buffer preservado sujo para nova tentativa");
+        assert!(file.is_dir(), "destino original intacto");
+        let _ = err;
+        fs::remove_dir_all(&dir).ok();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Estágio 2: diagnósticos, navegação com salto e recarga externa
@@ -727,7 +853,9 @@ impl Workspace {
 
     /// Alt+←: volta para a posição anterior da pilha.
     pub fn navigate_back(&mut self) -> bool {
-        let Some((path, line0, col0)) = self.nav_back.pop() else { return false };
+        let Some((path, line0, col0)) = self.nav_back.pop() else {
+            return false;
+        };
         if let Some(cur) = self.active_buffer() {
             if let Some(cur_path) = cur.path.clone() {
                 self.nav_forward.push((cur_path, 0, 0));
@@ -742,7 +870,9 @@ impl Workspace {
 
     /// Alt+→: refaz a navegação desfeita por Alt+←.
     pub fn navigate_forward(&mut self) -> bool {
-        let Some((path, line0, col0)) = self.nav_forward.pop() else { return false };
+        let Some((path, line0, col0)) = self.nav_forward.pop() else {
+            return false;
+        };
         if let Some(cur) = self.active_buffer() {
             if let Some(cur_path) = cur.path.clone() {
                 self.nav_back.push((cur_path, 0, 0));
@@ -755,22 +885,52 @@ impl Workspace {
         true
     }
 
-    /// Substitui os diagnósticos de um arquivo pelos novos (ordena por posição).
-    pub fn set_diagnostics(&mut self, path: &Path, mut diags: Vec<Diagnostic>) {
+    /// Substitui os diagnósticos de um arquivo, anexando-os à revisão do
+    /// documento em que foram calculados (NFR-002). Diagnósticos cuja
+    /// revisão divergiu do buffer aberto são desconsiderados: um resultado
+    /// velho nunca descreve o texto atual.
+    pub fn set_diagnostics(&mut self, path: &Path, revision: Revision, mut diags: Vec<Diagnostic>) {
         self.diagnostics.retain(|d| d.path != path);
         diags.sort_by_key(|d| (d.line, d.col));
         self.diagnostics.extend(diags);
         self.diagnostics
             .sort_by_key(|d| (d.path.clone(), d.line, d.col));
+        self.diag_revisions.insert(path.to_path_buf(), revision);
     }
 
     pub fn clear_diagnostics(&mut self) {
         self.diagnostics.clear();
+        self.diag_revisions.clear();
     }
 
-    /// Problemas do arquivo ativo (para outline/problemas filtrados se necessário).
-    pub fn diagnostics_for<'a>(&'a self, path: &'a Path) -> impl Iterator<Item = &'a Diagnostic> + 'a {
-        self.diagnostics.iter().filter(move |d| d.path == path)
+    /// `true` se os diagnósticos de `path` ainda descrevem o buffer aberto.
+    pub fn diagnostics_current(&self, path: &Path) -> bool {
+        let Some(stored) = self.diag_revisions.get(path) else {
+            return false;
+        };
+        self.buffers
+            .iter()
+            .find(|b| b.path.as_deref() == Some(path))
+            .map(|b| b.document.revision() == *stored)
+            .unwrap_or(false)
+    }
+
+    /// Problemas de `path` que ainda refletem a revisão do documento.
+    pub fn diagnostics_for<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> impl Iterator<Item = &'a Diagnostic> + 'a {
+        let current = self.diagnostics_current(path);
+        self.diagnostics
+            .iter()
+            .filter(move |d| d.path == path && current)
+    }
+
+    /// Problemas vigentes de todos os arquivos (painel Problems).
+    pub fn current_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.diagnostics
+            .iter()
+            .filter(|d| self.diagnostics_current(&d.path))
     }
 
     /// Recarrega buffers abertos afetados por mudança externa (git, build, ...).
@@ -778,7 +938,9 @@ impl Workspace {
     pub fn reload_clean_buffers(&mut self, changed: &[PathBuf]) -> Vec<PathBuf> {
         let mut reloaded = Vec::new();
         for buf in &mut self.buffers {
-            let Some(path) = buf.path.clone() else { continue };
+            let Some(path) = buf.path.clone() else {
+                continue;
+            };
             if changed.iter().any(|c| c == &path) {
                 match buf.reload_from_disk() {
                     Ok(true) => reloaded.push(path),

@@ -9,8 +9,17 @@ description = "Interface gráfica (egui/eframe) do phpide"
 eframe = "0.31"
 notify = "7"
 serde_json = "1"
+libc = "0.2"
 phpide-core = { path = "../phpide-core" }
 phpide-dbgp = { path = "../phpide-dbgp" }
+phpide-exec = { path = "../phpide-exec" }
 phpide-lsp = { path = "../phpide-lsp" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bench]]
+name = "search_large"
+harness = false

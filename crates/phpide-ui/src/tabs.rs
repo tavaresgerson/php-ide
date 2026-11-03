@@ -61,10 +61,10 @@ pub fn tab_strip(app: &mut PhpIdeApp, ctx: &egui::Context) {
                 app.ws.active = i;
             }
             if let Some(i) = close {
-                app.ws.close_tab(i);
+                app.request_close_tab(i);
             }
             if let Some(i) = close_others {
-                app.ws.close_other_tabs(i);
+                app.request_close_others(i);
             }
             if let Some(i) = pin_toggle {
                 if let Some(buf) = app.ws.buffers.get_mut(i) {
