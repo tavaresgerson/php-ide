@@ -80,6 +80,17 @@ pub struct Settings {
     pub php_path: String,
     /// Caminho explícito do Composer ("" = descobrir no PATH).
     pub composer_path: String,
+    /// Closing Policy: máximo de abas (default 10, como o PhpStorm).
+    pub tab_limit: u32,
+}
+
+/// Limites de zoom da IDE (UI-ED-010): NaN volta a 1.0; fora da faixa
+/// (inclusive ±infinito) cai nos extremos 0.5/3.0.
+pub fn clamp_zoom(zoom: f32) -> f32 {
+    if zoom.is_nan() {
+        return 1.0;
+    }
+    zoom.clamp(0.5, 3.0)
 }
 
 impl Default for Settings {
@@ -100,6 +111,7 @@ impl Default for Settings {
             keymap: "Default".to_string(),
             php_path: String::new(),
             composer_path: String::new(),
+            tab_limit: 10,
         }
     }
 }
@@ -121,7 +133,7 @@ impl Settings {
             };
         }
         if let Some(z) = v["zoom"].as_f64() {
-            s.zoom = (z as f32).clamp(0.5, 3.0);
+            s.zoom = clamp_zoom(z as f32);
         }
         if let Some(p) = v["php_level"].as_str() {
             s.php_level = p.to_string();
@@ -167,6 +179,10 @@ impl Settings {
         if let Some(value) = v["composer_path"].as_str() {
             s.composer_path = value.to_string();
         }
+        if let Some(value) = v["tab_limit"].as_u64() {
+            // Limites seguros: pelo menos 1 aba, no máximo 99.
+            s.tab_limit = value.clamp(1, 99) as u32;
+        }
         (s, report.recovered)
     }
 
@@ -198,6 +214,7 @@ impl Settings {
             "keymap": self.keymap,
             "php_path": self.php_path,
             "composer_path": self.composer_path,
+            "tab_limit": self.tab_limit,
         });
         if let Err(e) = store::save(&dir.join("settings.json"), &v) {
             eprintln!("{}", e.log_line());
@@ -356,6 +373,45 @@ mod tests {
         assert!(err.is_none());
         assert_eq!(back.php_path, "/opt/php bin/php");
         assert_eq!(back.composer_path, "/usr/local/bin/composer");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn zoom_limits_clamp_and_non_finite_reset() {
+        // UI-ED-010: limites 0.5..=3.0; valores inválidos voltam a 1.0.
+        assert_eq!(clamp_zoom(1.5), 1.5);
+        assert_eq!(clamp_zoom(0.1), 0.5);
+        assert_eq!(clamp_zoom(9.9), 3.0);
+        assert_eq!(clamp_zoom(f32::NAN), 1.0);
+        assert_eq!(clamp_zoom(f32::INFINITY), 3.0);
+        assert_eq!(clamp_zoom(f32::NEG_INFINITY), 0.5);
+    }
+
+    #[test]
+    fn zoom_and_tab_limit_persist_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("phpide-uizoom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (back, err) = with_xdg(&dir, || {
+            let s = Settings {
+                zoom: clamp_zoom(2.2),
+                tab_limit: 4,
+                ..Default::default()
+            };
+            s.save();
+            Settings::load_or_default()
+        });
+        assert!(err.is_none());
+        assert!((back.zoom - 2.2).abs() < 1e-6, "zoom persistido");
+        assert_eq!(back.tab_limit, 4, "tab_limit persistido");
+        // Valor fora da faixa é clampado na leitura.
+        let clamped = with_xdg(&dir, || {
+            let file = config_dir().join("settings.json");
+            std::fs::write(&file, r#"{"tab_limit": 500, "zoom": 99.0}"#).unwrap();
+            Settings::load_or_default().0
+        });
+        assert_eq!(clamped.tab_limit, 99);
+        assert_eq!(clamped.zoom, 3.0);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

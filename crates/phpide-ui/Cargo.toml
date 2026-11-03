@@ -23,3 +23,7 @@ tempfile = "3"
 [[bench]]
 name = "search_large"
 harness = false
+
+[[bench]]
+name = "viewport"
+harness = false

@@ -124,6 +124,24 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
         resultados em `docs/baseline/T-NFR-006-02-perf-baseline.md`.
       Baselines de fmt/clippy do código legado registrados em
       `docs/baseline/` (sem formatação em massa fora do escopo).
+- [x] **Baseline e geometria do editor (UI-ED-000, T-UI-ED-000-01…04)**:
+      mapa centralizado documento → linha visual → coordenada em
+      `phpide-ui::geometry` (puro, sem egui; `EditorGeometry` é wrapper no
+      espaço de tela) — gutter, viewport, clamp/máximo de scroll, hit tests,
+      `scroll_to_line` com margem e coluna visual de tabs; cobertura UT de
+      arquivo vazio, Unicode, tabs, linhas longas, zoom e largura de gutter
+      por dígitos; baseline de scroll medido no fixture de 10 mil linhas
+      (`benches/viewport.rs`: ~7.5 ns/frame de geometria) registrado em
+      `docs/baseline/T-UI-ED-000-01-editor-baseline.md`. Verificação do modo
+      offline (highlight syntect + diagnósticos tree-sitter sem LSP) e gate
+      de fluxo abrir→editar→desfazer→salvar→fechar cobertos por testes
+      (`phpide-core/tests/editor_flow.rs`, `gate_tests` no binário).
+- [x] **Tabs e zoom consolidados (T-UI-ED-003-01, T-UI-ED-010-01)**:
+      Closing Policy configurável (`settings.tab_limit`, default 10, clamp
+      1–99) aplicada ao `Workspace`; auditoria de preview/pin/Close
+      Others/dirty confirmation/tabs acessíveis em
+      `docs/baseline/T-UI-ED-003-01-tabs-audit.md`; `clamp_zoom` central
+      (0.5–3.0, NaN → 1.0) com UT e roundtrip de persistência.
 
 ## Atalhos
 

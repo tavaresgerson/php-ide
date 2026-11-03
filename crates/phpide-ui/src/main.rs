@@ -9,6 +9,7 @@
 mod completion;
 mod editor_view;
 mod exec;
+mod geometry;
 mod header;
 mod palette;
 mod plugins;
@@ -224,6 +225,8 @@ impl PhpIdeApp {
             terminal_input: String::new(),
             commit_message: String::new(),
         };
+        // Closing Policy configurável (UI-ED-003): limite vem do settings.
+        app.ws.tab_limit = app.settings.tab_limit.max(1) as usize;
         // Arquivos passados na CLI: abertos em abas (o último fica ativo).
         for f in &files {
             let path = if f.is_absolute() {
@@ -293,6 +296,7 @@ impl PhpIdeApp {
         self.last_outline_key = None;
         self.syntax = None;
         self.ws = Workspace::open(root.clone());
+        self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.collapsed.clear();
         self.selected = None;
         self.git_branch_cache = None;
@@ -2184,7 +2188,7 @@ impl PhpIdeApp {
     }
 
     fn set_zoom(&mut self, zoom: f32) {
-        self.zoom = zoom.clamp(0.5, 3.0);
+        self.zoom = settings::clamp_zoom(zoom);
         self.persist_settings();
     }
 
@@ -2334,6 +2338,14 @@ impl PhpIdeApp {
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .map(|line| (line - 1.0).max(0.0));
+        // Offset de scroll calculado pelo mapa centralizado com a altura de
+        // linha efetiva do zoom (antes: 18.0 fixo, que desalinhava com zoom).
+        let scroll_hook = scroll_hook.map(|line0| {
+            let zoom = self.zoom.max(0.01);
+            let row = 18.0 * zoom;
+            let g = geometry::Geometry::new(row, 600.0, usize::MAX);
+            g.line_to_content_y(line0 as usize)
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
             self.breadcrumbs(ui);
             let active = self.ws.active;
@@ -2530,4 +2542,78 @@ fn symbol_kind_label(kind: u64) -> String {
         _ => "símbolo",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod gate_tests {
+    //! Gate do recorte UI-ED-000 e verificação do modo offline.
+
+    use crate::settings;
+
+    /// Modo offline (sem LSP): highlight sintático e diagnósticos estruturais
+    /// locais continuam funcionais — são a degradação prevista pelo NFR
+    /// (tree-sitter cobre estrutura e erros de sintaxe offline).
+    #[test]
+    fn offline_highlight_and_structural_diagnostics_still_work() {
+        // Highlight: código PHP produz fragments com formatação colorida.
+        let style = eframe::egui::Style::default();
+        let job = phpide_php::highlight("<?php\n$nome = 'phpide';\n", &style);
+        assert!(!job.sections.is_empty(), "highlight gera seções");
+        let colored = job
+            .sections
+            .iter()
+            .any(|s| s.format.color != eframe::egui::Color32::default());
+        assert!(colored, "alguma seção recebe cor do syntect");
+
+        // Diagnósticos estruturais: código inválido gera erros do tree-sitter.
+        let ok =
+            phpide_syntax::analyze("<?php class Ok { public function a(): int { return 1; } }");
+        assert!(
+            ok.errors.is_empty(),
+            "código válido sem erros: {:?}",
+            ok.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let broken = phpide_syntax::analyze("<?php class Quebrado { public function a( {");
+        assert!(
+            !broken.errors.is_empty(),
+            "código inválido produz diagnóstico estrutural offline"
+        );
+        // Decisão do poll_syntax replicada com as peças reais: sem LSP, os
+        // erros locais alimentam o painel de problemas do arquivo.
+        let lsp_running = false;
+        let diags: Vec<phpide_core::Diagnostic> = if lsp_running {
+            Vec::new()
+        } else {
+            broken
+                .errors
+                .iter()
+                .map(|e| phpide_core::Diagnostic {
+                    path: std::path::PathBuf::from("/p/offline.php"),
+                    line: e.line0 + 1,
+                    col: e.col0 + 1,
+                    message: e.message.clone(),
+                    severity: phpide_core::Severity::Error,
+                    source: "tree-sitter".to_string(),
+                })
+                .collect()
+        };
+        assert_eq!(diags.len(), broken.errors.len());
+        assert!(diags.iter().all(|d| d.source == "tree-sitter"));
+    }
+
+    /// Zoom: atalhos e limites consolidados (UI-ED-010-01).
+    #[test]
+    fn zoom_shortcut_values_are_clamped() {
+        // Mesma função usada por set_zoom e pela carga do settings.
+        assert_eq!(settings::clamp_zoom(1.0 * 1.1f32.powi(20)), 3.0);
+        assert_eq!(settings::clamp_zoom(1.0 / 1.1f32.powi(20)), 0.5);
+        // Roundtrip: persistir e recarregar preserva o valor dentro dos limites.
+        let s = settings::Settings {
+            zoom: settings::clamp_zoom(1.7),
+            ..Default::default()
+        };
+        let v = serde_json::json!({ "zoom": s.zoom });
+        let back = v["zoom"].as_f64().unwrap() as f32;
+        assert_eq!(settings::clamp_zoom(back), 1.7);
+    }
 }

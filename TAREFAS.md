@@ -158,10 +158,10 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-000-01` | `UI-ED-000` | Caracterizar comportamento atual de scroll, caret, seleção, gutter, tabs e zoom; DOC/UI de baseline | BASE |
-| [ ] | `T-UI-ED-000-02` | `UI-ED-000` | Centralizar mapa documento→linha visual→coordenada, incluindo gutter e viewport; UT | `T-UI-ED-000-01`, `T-NFR-002-01` |
-| [ ] | `T-UI-ED-000-03` | `UI-ED-000` | Cobrir arquivo vazio, linhas longas, tabs, Unicode, zoom e gutters de diferentes larguras; UT/UI | `T-UI-ED-000-02` |
-| [ ] | `T-UI-ED-000-04` | `UI-ED-000` | Medir digitação e scroll no fixture de 10 mil linhas antes das novas camadas; PERF | `T-NFR-006-02`, `T-UI-ED-000-02` |
+| [x] | `T-UI-ED-000-01` | `UI-ED-000` | Caracterizar comportamento atual de scroll, caret, seleção, gutter, tabs e zoom; DOC/UI de baseline  — entregue: `docs/baseline/T-UI-ED-000-01-editor-baseline.md` (caracterização DOC/UI) | BASE |
+| [x] | `T-UI-ED-000-02` | `UI-ED-000` | Centralizar mapa documento→linha visual→coordenada, incluindo gutter e viewport; UT  — entregue: `phpide-ui::geometry` puro + wrapper `EditorGeometry`; UT (15 testes) | `T-UI-ED-000-01`, `T-NFR-002-01` |
+| [x] | `T-UI-ED-000-03` | `UI-ED-000` | Cobrir arquivo vazio, linhas longas, tabs, Unicode, zoom e gutters de diferentes larguras; UT/UI  — entregue: UT de vazio/Unicode/tabs/linhas longas/zoom/gutter por dígitos | `T-UI-ED-000-02` |
+| [x] | `T-UI-ED-000-04` | `UI-ED-000` | Medir digitação e scroll no fixture de 10 mil linhas antes das novas camadas; PERF  — entregue: bench `viewport` (7.5ns/frame, 9.7ns/salto) registrado no baseline | `T-NFR-006-02`, `T-UI-ED-000-02` |
 
 ### 5.2 Gutter, bookmarks e breakpoints
 
@@ -186,7 +186,7 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-003-01` | `UI-ED-003` | Auditar e completar Closing Policy, preview, pin, Close Others, dirty confirmation e tabs ocultas; UT/FT | BASE |
+| [x] | `T-UI-ED-003-01` | `UI-ED-003` | Auditar e completar Closing Policy, preview, pin, Close Others, dirty confirmation e tabs ocultas; UT/FT  — entregue: matriz em `docs/baseline/T-UI-ED-003-01-tabs-audit.md`; `tab_limit` configurável com UT | BASE |
 | [ ] | `T-UI-ED-003-02` | `UI-ED-003` | Implementar Switcher `Ctrl+Tab` com ordem MRU e roteamento de teclado; UT/FT | `T-UI-ED-003-01` |
 | [ ] | `T-UI-ED-003-03` | `UI-ED-003` | Criar modelo de editor groups com vistas independentes e documento compartilhado; UT | `T-NFR-002-04`, `T-UI-ED-003-01` |
 | [ ] | `T-UI-ED-003-04` | `UI-ED-003` | Implementar Split Right/Down, foco, caret, scroll e fechamento por vista; UT/UI/FT | `T-UI-ED-003-03` |
@@ -232,7 +232,7 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 | [ ] | `T-UI-ED-008-02` | `UI-ED-008` | Implementar method separators e HTML tag tree highlighting; UT/UI | `T-UI-ED-008-01`, `T-FE-001-01` |
 | [ ] | `T-UI-ED-009-01` | `UI-ED-009` | Criar registry de ações contextuais e menu `Alt+Enter`; CT/FT | `T-PHP-010-01` |
 | [ ] | `T-UI-ED-009-02` | `UI-ED-009` | Implementar lâmpada e preview de quick-fix com diff/undo; IT/UI | `T-UI-ED-009-01`, `T-PHP-010-03` |
-| [ ] | `T-UI-ED-010-01` | `UI-ED-010` | Auditar atalhos, limites e persistência de zoom; UT/FT | BASE |
+| [x] | `T-UI-ED-010-01` | `UI-ED-010` | Auditar atalhos, limites e persistência de zoom; UT/FT  — entregue: auditoria no baseline do editor; `clamp_zoom` com UT e roundtrip | BASE |
 | [ ] | `T-UI-ED-010-02` | `UI-ED-010` | Implementar Ctrl+wheel opcional, line height e ligatures; UT/UI | `T-UI-ED-010-01`, `T-UI-THEME-001-03` |
 | [ ] | `T-UI-ED-GATE-01` | `UI-ED-000` | Executar gate integrado: gutter+folding+tabs sob scroll/zoom, smoke gráfico e fixture de 10 mil linhas; UI/PERF/DOC | `T-UI-ED-001-05`, `T-UI-ED-002-04`, `T-UI-ED-003-04`, `T-UI-ED-000-04` |
 | [ ] | `T-UI-ED-GATE-02` | `UI-ED-003` | Atualizar README, roadmap e pendências P1 sem declarar recursos ausentes como prontos; DOC | `T-UI-ED-GATE-01` |

@@ -13,15 +13,16 @@ use eframe::egui;
 
 use phpide_core::Severity;
 
-/// Largura do gutter (px, em escala 1.0; multiplicar pelo zoom se necessário).
-pub const GUTTER_WIDTH: f32 = 46.0;
-/// Altura máxima da pilha de sticky lines (REQUISITOS: máx. 5).
-pub const STICKY_MAX: usize = 5;
+pub use crate::geometry::{GUTTER_WIDTH, STICKY_MAX};
 
 /// Geometria do viewport do editor em espaço de TELA. O `galley_pos` do egui
 /// já inclui a trava de rolagem fisicamente aplicada: a linha 0 ocupa
 /// `[galley_pos.y, galley_pos.y + row_height)`, mesmo que fora da janela
 /// (confirmado empiricamente — ver `geometry_line_mapping`).
+///
+/// Wrapper fino sobre [`crate::geometry::Geometry`] (a fonte única das
+/// fórmulas, T-UI-ED-000-02): o modelo do egui equivale ao mapa puro com
+/// `origin_y = galley_pos.y` e `scroll = 0`.
 pub struct EditorGeometry {
     /// Posição da galley na tela: linha 0 começa em `galley_pos.y`.
     pub galley_pos: egui::Pos2,
@@ -32,6 +33,17 @@ pub struct EditorGeometry {
 }
 
 impl EditorGeometry {
+    /// Scroll lógico implícito: quanto o conteúdo subiu em relação ao topo
+    /// do viewport.
+    pub fn scroll_y(&self) -> f32 {
+        (self.viewport.top() - self.galley_pos.y).max(0.0)
+    }
+
+    /// O mapa puro equivalente para `total_lines` linhas.
+    pub fn map(&self, total_lines: usize) -> crate::geometry::Geometry {
+        crate::geometry::Geometry::new(self.row_height, self.viewport.height(), total_lines)
+    }
+
     /// Y de tela do topo da linha `line0` (0-based).
     pub fn row_y(&self, line0: usize) -> f32 {
         self.galley_pos.y + line0 as f32 * self.row_height
@@ -39,17 +51,18 @@ impl EditorGeometry {
 
     /// Linha (0-based) cuja banda vertical contém `screen_y`, se houver.
     pub fn line_at_screen_y(&self, screen_y: f32) -> Option<usize> {
-        let rel = screen_y - self.galley_pos.y;
-        if rel < 0.0 {
-            return None;
-        }
-        Some((rel / self.row_height) as usize)
+        self.map(usize::MAX)
+            .screen_y_to_line(screen_y, 0.0, self.galley_pos.y)
     }
 
     /// Primeira linha visível no topo do viewport.
     pub fn first_visible_line(&self) -> usize {
-        let rel = self.viewport.top() - self.galley_pos.y;
-        (rel / self.row_height).max(0.0) as usize
+        self.visible_line_range(usize::MAX).0
+    }
+
+    /// Intervalo inclusivo de linhas visíveis (clampado a `total_lines`).
+    pub fn visible_line_range(&self, total_lines: usize) -> (usize, usize) {
+        self.map(total_lines).visible_lines(self.scroll_y())
     }
 }
 
@@ -113,8 +126,7 @@ pub fn paint_gutter(
     );
 
     let lines_to_paint = total_lines.min(galley_rows);
-    let first = geom.first_visible_line();
-    let last = ((vp.bottom() - geom.galley_pos.y) / geom.row_height) as usize;
+    let (first, last) = geom.visible_line_range(lines_to_paint);
     let last = last.min(lines_to_paint.saturating_sub(1));
 
     let num_font = egui::FontId::monospace(12.0);

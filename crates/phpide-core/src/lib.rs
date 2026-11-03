@@ -314,6 +314,10 @@ pub struct Workspace {
     pub nav_forward: Vec<(PathBuf, usize, usize)>,
     /// Arquivos recentes (MRU) para Search Everywhere / Recent Files (Ctrl+E).
     pub recent_files: Vec<PathBuf>,
+    /// Limite da Closing Policy (UI-ED-003): máximo de abas antes de fechar a
+    /// mais antiga não fixada. Default: [`TAB_LIMIT`]; configurável via
+    /// Settings (`tab_limit`).
+    pub tab_limit: usize,
 }
 
 /// Máximo de abas antes da Closing Policy fechar a mais antiga não fixada
@@ -336,6 +340,7 @@ impl Workspace {
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             recent_files: Vec::new(),
+            tab_limit: TAB_LIMIT,
         };
         ws.new_file();
         ws
@@ -395,10 +400,11 @@ impl Workspace {
         }
     }
 
-    /// Closing Policy: excedido o limite, fecha a aba mais antiga não fixada
-    /// e sem edição (suja só fecha se for a única candidata — evita perda).
+    /// Closing Policy: excedido o limite configurável, fecha a aba mais
+    /// antiga não fixada e sem edição (suja só fecha se for a única
+    /// candidata — evita perda).
     fn enforce_tab_limit(&mut self) {
-        while self.buffers.len() > TAB_LIMIT {
+        while self.buffers.len() > self.tab_limit {
             let victim = self
                 .buffers
                 .iter()
@@ -605,6 +611,35 @@ mod tests {
             "aba fixada sobrevive à política"
         );
         assert!(ws.buffers.len() <= TAB_LIMIT);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn closing_policy_uses_configured_tab_limit() {
+        // UI-ED-003: o limite é configurável via Workspace::tab_limit.
+        let dir = std::env::temp_dir().join(format!("phpide-limit2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..8 {
+            fs::write(dir.join(format!("f{i:02}.php")), "<?php").unwrap();
+        }
+        let mut ws = Workspace::open(dir.clone());
+        ws.buffers.clear();
+        ws.tab_limit = 3;
+        for i in 0..8 {
+            ws.open_file_ex(&dir.join(format!("f{i:02}.php")), false);
+        }
+        assert!(
+            ws.buffers.len() <= 3,
+            "limite configurado respeitado: {}",
+            ws.buffers.len()
+        );
+        ws.tab_limit = 6;
+        ws.open_file_ex(&dir.join("f00.php"), false);
+        for i in 1..8 {
+            ws.open_file_ex(&dir.join(format!("f{i:02}.php")), false);
+        }
+        assert!(ws.buffers.len() <= 6, "novo limite aplicado");
         fs::remove_dir_all(&dir).ok();
     }
 
