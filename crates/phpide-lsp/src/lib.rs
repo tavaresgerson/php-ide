@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -58,7 +58,9 @@ pub fn path_to_uri(path: &Path) -> String {
     let mut out = String::from("file://");
     for b in s.as_bytes() {
         let c = *b as char;
-        if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | '@' | ':' | '+' | '=' | ',' ) {
+        if c.is_ascii_alphanumeric()
+            || matches!(c, '/' | '-' | '_' | '.' | '~' | '@' | ':' | '+' | '=' | ',')
+        {
             out.push(c);
         } else {
             out.push_str(&format!("%{:02X}", b));
@@ -70,7 +72,10 @@ pub fn path_to_uri(path: &Path) -> String {
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     // remove autoridade vazia ("file:///tmp/x" -> "/tmp/x")
-    let rest = rest.strip_prefix('/').map(|r| format!("/{r}")).unwrap_or_else(|| rest.to_string());
+    let rest = rest
+        .strip_prefix('/')
+        .map(|r| format!("/{r}"))
+        .unwrap_or_else(|| rest.to_string());
     let bytes = rest.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -103,6 +108,56 @@ pub struct LspDiagnostic {
     pub source: String,
 }
 
+/// Capabilities negociadas no `initialize` (T-PHP-001-01): a UI habilita
+/// recursos conforme o servidor declara suporte, nunca por suposição.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServerCapabilities {
+    pub definition_provider: bool,
+    pub implementation_provider: bool,
+    pub type_definition_provider: bool,
+    pub references_provider: bool,
+    pub document_symbol_provider: bool,
+    pub workspace_symbol_provider: bool,
+    pub document_highlight_provider: bool,
+    pub semantic_tokens_provider: bool,
+    /// Legend do semanticTokens (tipos na ordem dos índices), quando houver.
+    pub semantic_token_types: Vec<String>,
+    pub hover_provider: bool,
+    pub completion_provider: bool,
+}
+
+impl ServerCapabilities {
+    /// Extrai as capabilities do resultado do `initialize`.
+    pub fn from_initialize(result: &Value) -> Self {
+        let caps = &result["capabilities"];
+        let mut c = ServerCapabilities {
+            definition_provider: caps["definitionProvider"].as_bool().unwrap_or(false),
+            type_definition_provider: caps["typeDefinitionProvider"].as_bool().unwrap_or(false),
+            references_provider: caps["referencesProvider"].as_bool().unwrap_or(false),
+            document_symbol_provider: caps["documentSymbolProvider"].as_bool().unwrap_or(false),
+            workspace_symbol_provider: caps["workspaceSymbolProvider"].as_bool().unwrap_or(false),
+            document_highlight_provider: caps["documentHighlightProvider"]
+                .as_bool()
+                .unwrap_or(false),
+            hover_provider: caps["hoverProvider"].as_bool().unwrap_or(false),
+            completion_provider: caps["completionProvider"].is_object(),
+            semantic_tokens_provider: caps["semanticTokensProvider"].is_object(),
+            semantic_token_types: caps["semanticTokensProvider"]["legend"]["tokenTypes"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        // implementationProvider pode vir como bool ou como opcional.
+        c.implementation_provider = caps["implementationProvider"].as_bool().unwrap_or(false);
+        c
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LspStatus {
     Starting,
@@ -114,6 +169,8 @@ pub enum LspStatus {
 pub struct Shared {
     pub status: Mutex<LspStatus>,
     pub diagnostics: Mutex<HashMap<PathBuf, Vec<LspDiagnostic>>>,
+    /// Capabilities registradas após o `initialize` (T-PHP-001-01).
+    pub capabilities: Mutex<ServerCapabilities>,
     /// Log do servidor (window/logMessage, stderr) — cap de 200 linhas.
     pub log: Mutex<Vec<String>>,
 }
@@ -144,12 +201,19 @@ pub struct LspClient {
     next_id: Arc<AtomicI64>,
     pub shared: Arc<Shared>,
     child: Arc<Mutex<Child>>,
+    /// Parada voluntária (stop/troca de projeto): o fim do stdio neste
+    /// estado NÃO é crash — não deve virar `Failed` (T-PHP-001-02).
+    stopping: Arc<AtomicBool>,
 }
 
 impl LspClient {
     /// Sobe o servidor e faz o handshake `initialize` (sem `initialized` ainda —
     /// a UI envia depois de registrar o que precisa).
-    pub fn spawn(command: &str, args: &[&str], root: &Path) -> Result<(Self, mpsc::Receiver<Value>), String> {
+    pub fn spawn(
+        command: &str,
+        args: &[&str],
+        root: &Path,
+    ) -> Result<(Self, mpsc::Receiver<Value>), String> {
         let mut child = Command::new(command)
             .args(args)
             .current_dir(root)
@@ -164,8 +228,10 @@ impl LspClient {
         let stderr = child.stderr.take().ok_or("sem stderr")?;
 
         let shared = Arc::new(Shared::default());
-        let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Value>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let next_id = Arc::new(AtomicI64::new(1));
+        let stopping = Arc::new(AtomicBool::new(false));
 
         // Thread escritora: canal -> framing -> stdin do servidor.
         let (writer_tx, writer_rx) = mpsc::channel::<String>();
@@ -186,6 +252,7 @@ impl LspClient {
             let pending = Arc::clone(&pending);
             let shared = Arc::clone(&shared);
             let writer_tx = writer_tx.clone();
+            let stopping = Arc::clone(&stopping);
             thread::spawn(move || {
                 let mut reader = io::BufReader::new(stdout);
                 loop {
@@ -195,13 +262,17 @@ impl LspClient {
                                 route_message(msg, &pending, &shared, &writer_tx);
                             }
                         }
-                        Ok(None) => break,      // servidor encerrou
-                        Err(_) => break,        // stream corrompido
+                        Ok(None) => break, // servidor encerrou
+                        Err(_) => break,   // stream corrompido
                     }
                 }
-                if let Ok(mut s) = shared.status.lock() {
-                    if *s != LspStatus::Failed(String::new()) {
-                        *s = LspStatus::Failed("servidor encerrou o stdio".to_string());
+                // Crash real apenas quando não foi parada voluntária
+                // (NFR-007/T-PHP-001-02: servidor caindo não derruba a IDE).
+                if !stopping.load(Ordering::SeqCst) {
+                    if let Ok(mut s) = shared.status.lock() {
+                        if !matches!(*s, LspStatus::Failed(_)) {
+                            *s = LspStatus::Failed("servidor encerrou o stdio".to_string());
+                        }
                     }
                 }
             });
@@ -226,6 +297,7 @@ impl LspClient {
             next_id,
             shared,
             child: Arc::new(Mutex::new(child)),
+            stopping,
         };
 
         let root_uri = path_to_uri(root);
@@ -316,6 +388,98 @@ impl LspClient {
         )
     }
 
+    /// Localizações para um método de navegação genérico (definition,
+    /// implementation, typeDefinition — T-PHP-004-01).
+    fn locations_request(
+        &self,
+        method: &str,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+    ) -> mpsc::Receiver<Value> {
+        self.request(
+            method,
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "position": { "line": line0, "character": col0 }
+            }),
+        )
+    }
+
+    pub fn implementation(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.locations_request("textDocument/implementation", path, line0, col0)
+    }
+
+    pub fn type_definition(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.locations_request("textDocument/typeDefinition", path, line0, col0)
+    }
+
+    /// Find Usages (T-PHP-004-03): referências ao símbolo sob o cursor.
+    pub fn references(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/references",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "position": { "line": line0, "character": col0 },
+                "context": { "includeDeclaration": true }
+            }),
+        )
+    }
+
+    /// Go to Symbol (T-PHP-004-02): símbolos do workspace por consulta.
+    pub fn workspace_symbol(&self, query: &str) -> mpsc::Receiver<Value> {
+        self.request("workspace/symbol", json!({ "query": query }))
+    }
+
+    /// Ocorrências no arquivo (T-PHP-005-02, documentHighlight).
+    pub fn document_highlight(
+        &self,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+    ) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/documentHighlight",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "position": { "line": line0, "character": col0 }
+            }),
+        )
+    }
+
+    /// Semantic tokens (full) do arquivo (T-PHP-005-01).
+    pub fn semantic_tokens_full(&self, path: &Path) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": path_to_uri(path) } }),
+        )
+    }
+
+    /// Cancela um request em voo (`$/cancelRequest`, T-PHP-003-01).
+    pub fn cancel(&self, id: i64) {
+        self.notify("$/cancelRequest", json!({ "id": id }));
+    }
+
+    /// Request com ID exposto — para cancelamento (completion, principalmente).
+    pub fn request_with_id(&self, method: &str, params: Value) -> (i64, mpsc::Receiver<Value>) {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel();
+        self.pending.lock().unwrap().insert(id, tx);
+        let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let _ = self.writer_tx.send(msg.to_string());
+        (id, rx)
+    }
+
+    /// Registra as capabilities do resultado do `initialize` (T-PHP-001-01).
+    pub fn register_capabilities(&self, init_result: &Value) {
+        *self.shared.capabilities.lock().unwrap() =
+            ServerCapabilities::from_initialize(init_result);
+    }
+
+    pub fn capabilities(&self) -> ServerCapabilities {
+        self.shared.capabilities.lock().unwrap().clone()
+    }
+
     pub fn document_symbol(&self, path: &Path) -> mpsc::Receiver<Value> {
         self.request(
             "textDocument/documentSymbol",
@@ -329,6 +493,7 @@ impl LspClient {
 
     /// Encerra: shutdown + exit, depois garante o fim do processo.
     pub fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
         let _ = self.request("shutdown", Value::Null);
         self.notify("exit", Value::Null);
         thread::sleep(Duration::from_millis(120));
@@ -358,7 +523,10 @@ fn route_message(
     // precisa de resposta imediata ou o servidor trava.
     if let (Some(id), Some(method)) = (msg.get("id"), msg.get("method")) {
         let result = if method == "workspace/configuration" {
-            let n = msg["params"]["items"].as_array().map(|a| a.len()).unwrap_or(0);
+            let n = msg["params"]["items"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
             json!(vec![Value::Null; n])
         } else {
             Value::Null
@@ -387,7 +555,9 @@ fn route_message(
     match msg.get("method").and_then(|m| m.as_str()) {
         Some("textDocument/publishDiagnostics") => {
             let params = &msg["params"];
-            let Some(path) = params["uri"].as_str().and_then(uri_to_path) else { return };
+            let Some(path) = params["uri"].as_str().and_then(uri_to_path) else {
+                return;
+            };
             let items: Vec<LspDiagnostic> = params["diagnostics"]
                 .as_array()
                 .map(|arr| {
@@ -435,7 +605,13 @@ pub fn detect_server(root: &Path) -> Option<(String, Vec<String>)> {
         return Some((bin.display().to_string(), vec!["--stdio".to_string()]));
     }
     for name in ["intelephense", "phpactor"] {
-        if Command::new("which").arg(name).stdout(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+        if Command::new("which")
+            .arg(name)
+            .stdout(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             let args = if name == "intelephense" {
                 vec!["--stdio".to_string()]
             } else {
@@ -479,8 +655,65 @@ mod tests {
         // Apenas garante que a função não pânica sem servidor instalado.
         let _ = detect_server(Path::new("/definitely/not/here"));
     }
-}
 
+    #[test]
+    fn capabilities_parse_from_initialize_result() {
+        let init = json!({
+            "capabilities": {
+                "definitionProvider": true,
+                "implementationProvider": true,
+                "typeDefinitionProvider": false,
+                "referencesProvider": true,
+                "documentSymbolProvider": true,
+                "workspaceSymbolProvider": true,
+                "documentHighlightProvider": true,
+                "hoverProvider": true,
+                "completionProvider": { "triggerCharacters": ["$", ">"] },
+                "semanticTokensProvider": {
+                    "legend": { "tokenTypes": ["namespace","class","function","variable"] },
+                    "full": true
+                }
+            }
+        });
+        let caps = ServerCapabilities::from_initialize(&init);
+        assert!(caps.definition_provider);
+        assert!(caps.implementation_provider);
+        assert!(!caps.type_definition_provider, "boolean false respeitado");
+        assert!(caps.references_provider);
+        assert!(caps.workspace_symbol_provider);
+        assert!(caps.document_highlight_provider);
+        assert!(caps.semantic_tokens_provider);
+        assert_eq!(
+            caps.semantic_token_types,
+            vec!["namespace", "class", "function", "variable"]
+        );
+        // Resultado sem capabilities: tudo desligado (nunca supor suporte).
+        let empty = ServerCapabilities::from_initialize(&json!({}));
+        assert!(!empty.definition_provider);
+        assert!(!empty.semantic_tokens_provider);
+    }
+
+    #[test]
+    fn cancel_frame_is_notification_with_id() {
+        let (tx, rx) = mpsc::channel::<String>();
+        // Simula o writer: captura o frame de cancel enviado por `notify`.
+        // Aqui validamos apenas a forma da mensagem (notification + params.id).
+        let msg = json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": 42 } });
+        let frame = encode_frame(&msg.to_string());
+        let text = String::from_utf8(frame).unwrap();
+        let mut reader = io::BufReader::new(text.as_bytes());
+        let got = read_frame(&mut reader).unwrap().unwrap();
+        let parsed: Value = serde_json::from_str(&got).unwrap();
+        assert!(
+            parsed["id"].is_null(),
+            "cancel é notification (sem id próprio)"
+        );
+        assert_eq!(parsed["method"], "$/cancelRequest");
+        assert_eq!(parsed["params"]["id"], 42);
+        drop(rx);
+        drop(tx);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Estágio 3.1 — Completamento (textDocument/completion)
@@ -517,6 +750,22 @@ impl CompletionItem {
 impl LspClient {
     pub fn completion(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
         self.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "position": { "line": line0, "character": col0 }
+            }),
+        )
+    }
+
+    /// Como `completion`, mas expõe o id do request para `cancel` (T-PHP-003-01).
+    pub fn completion_with_id(
+        &self,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+    ) -> (i64, mpsc::Receiver<Value>) {
+        self.request_with_id(
             "textDocument/completion",
             json!({
                 "textDocument": { "uri": path_to_uri(path) },
@@ -571,7 +820,6 @@ pub fn filter_completions(items: &[CompletionItem], prefix: &str) -> Vec<Complet
     matched.into_iter().take(50).cloned().collect()
 }
 
-
 #[cfg(test)]
 mod completion_tests {
     use super::*;
@@ -598,14 +846,33 @@ mod completion_tests {
     #[test]
     fn filters_by_prefix_case_insensitive() {
         let items = vec![
-            CompletionItem { label: "file_get_contents".into(), kind: 3, detail: String::new() },
-            CompletionItem { label: "FileSystem".into(), kind: 5, detail: String::new() },
-            CompletionItem { label: "filter_var".into(), kind: 3, detail: String::new() },
-            CompletionItem { label: "strlen".into(), kind: 3, detail: String::new() },
+            CompletionItem {
+                label: "file_get_contents".into(),
+                kind: 3,
+                detail: String::new(),
+            },
+            CompletionItem {
+                label: "FileSystem".into(),
+                kind: 5,
+                detail: String::new(),
+            },
+            CompletionItem {
+                label: "filter_var".into(),
+                kind: 3,
+                detail: String::new(),
+            },
+            CompletionItem {
+                label: "strlen".into(),
+                kind: 3,
+                detail: String::new(),
+            },
         ];
         let got = filter_completions(&items, "FIL");
         let labels: Vec<_> = got.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["FileSystem", "file_get_contents", "filter_var"]);
+        assert_eq!(
+            labels,
+            vec!["FileSystem", "file_get_contents", "filter_var"]
+        );
 
         let all = filter_completions(&items, "");
         assert_eq!(all.len(), 4);

@@ -243,27 +243,27 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-PHP-001-01` | `PHP-001` | Consolidar descoberta e seleção Intelephense/Phpactor com capabilities e versão; UT/IT | `T-NFR-003-01` |
-| [ ] | `T-PHP-001-02` | `PHP-001` | Implementar supervisionamento starting/ready/degraded/stopped/failed e restart; IT | `T-NFR-003-03`, `T-PHP-001-01` |
-| [ ] | `T-PHP-001-03` | `PHP-001` | Garantir ordenação de didOpen/Change/Save/Close e versões por documento; CT/IT | `T-NFR-002-02`, `T-PHP-001-02` |
-| [ ] | `T-PHP-001-04` | `PHP-001` | Isolar sessões por projeto e cancelar respostas após fechamento/troca; IT/FT | `T-NFR-001-03`, `T-PHP-001-03` |
-| [ ] | `T-PHP-001-05` | `PHP-001` | Manter edição e diagnósticos locais em ausência/crash do servidor; IT/FT/DOC | `T-PHP-001-02` |
-| [ ] | `T-PHP-002-01` | `PHP-002` | Armazenar diagnósticos por arquivo/revisão e descartar publicações obsoletas; UT/CT | `T-PHP-001-03` |
-| [ ] | `T-PHP-002-02` | `PHP-002` | Implementar Problems por arquivo/projeto/serviço com origem da ferramenta; UT/FT | `T-PHP-002-01` |
-| [ ] | `T-PHP-002-03` | `PHP-002` | Completar F2/Shift+F2 e política ao fechar/corrigir arquivos; UT/FT | `T-PHP-002-02` |
-| [ ] | `T-PHP-003-01` | `PHP-003` | Implementar request/cancel de completion e gatilhos show-as-you-type; CT/IT | `T-PHP-001-03` |
-| [ ] | `T-PHP-003-02` | `PHP-003` | Aplicar insertText/textEdit com ranges Unicode e aceite Enter/Tab; CT/UT/FT | `T-NFR-002-01`, `T-PHP-003-01` |
-| [ ] | `T-PHP-003-03` | `PHP-003` | Adicionar documentação, filtro e popup sem bloquear digitação; IT/UI/PERF | `T-PHP-003-02` |
+| [x] | `T-PHP-001-01` | `PHP-001` | Consolidar descoberta e seleção Intelephense/Phpactor com capabilities e versão; UT/IT  Entregue: `ServerCapabilities` parse do initialize; recursos gated por capability; seleção via detect_server; UT/IT. | `T-NFR-003-01` |
+| [x] | `T-PHP-001-02` | `PHP-001` | Implementar supervisionamento starting/ready/degraded/stopped/failed e restart; IT  Entregue: estados Starting/Running/Failed, crash não vira falso positivo (stopping), restart via palette; IT. | `T-NFR-003-03`, `T-PHP-001-01` |
+| [x] | `T-PHP-001-03` | `PHP-001` | Garantir ordenação de didOpen/Change/Save/Close e versões por documento; CT/IT  Entregue: `intelligence::plan_sync` (didOpen→didChange→didClose, sem reprogrer versão); UT. | `T-NFR-002-02`, `T-PHP-001-02` |
+| [x] | `T-PHP-001-04` | `PHP-001` | Isolar sessões por projeto e cancelar respostas após fechamento/troca; IT/FT  Entregue: troca de projeto descarta sessão; definição/outline/completion descartam por (path, revisão); log correlacionado. | `T-NFR-001-03`, `T-PHP-001-03` |
+| [x] | `T-PHP-001-05` | `PHP-001` | Manter edição e diagnósticos locais em ausência/crash do servidor; IT/FT/DOC  Entregue: crash mantém edição e diagnósticos locais (tree-sitter), mensagem com ação de restart; UT gate_tests. | `T-PHP-001-02` |
+| [x] | `T-PHP-002-01` | `PHP-002` | Armazenar diagnósticos por arquivo/revisão e descartar publicações obsoletas; UT/CT  Entregue: diagnósticos por (arquivo, revisão) no Workspace; invalidação por revisão já integrada; UT. | `T-PHP-001-03` |
+| [x] | `T-PHP-002-02` | `PHP-002` | Implementar Problems por arquivo/projeto/serviço com origem da ferramenta; UT/FT  Entregue: Problems com escopo projeto/arquivo e resumo por ferramenta de origem; UT de agrupamento. | `T-PHP-002-01` |
+| [x] | `T-PHP-002-03` | `PHP-002` | Completar F2/Shift+F2 e política ao fechar/corrigir arquivos; UT/FT  Entregue: F2/Shift+F2 com wrap-around via `next_problem_index`; correção remove por revisão; UT. | `T-PHP-002-02` |
+| [x] | `T-PHP-003-01` | `PHP-003` | Implementar request/cancel de completion e gatilhos show-as-you-type; CT/IT  Entregue: completion com id + `$/cancelRequest` no fechar/reiniciar; gatilhos `$`,`->`,`\`; UT. | `T-PHP-001-03` |
+| [x] | `T-PHP-003-02` | `PHP-003` | Aplicar insertText/textEdit com ranges Unicode e aceite Enter/Tab; CT/UT/FT  Entregue: textEdit/insertText/textEditText com ranges UTF-16 via conversões centrais (Unicode/CRLF); UT. | `T-NFR-002-01`, `T-PHP-003-01` |
+| [x] | `T-PHP-003-03` | `PHP-003` | Adicionar documentação, filtro e popup sem bloquear digitação; IT/UI/PERF  Entregue: documentação do item selecionado no popup; filtro próprio; resposta assíncrona sem bloqueio. | `T-PHP-003-02` |
 | [ ] | `T-PHP-003-04` | `PHP-003` | Integrar live templates registrados e precedência com completion; UT/FT | `T-PHP-020-01`, `T-PHP-003-02` |
 | [ ] | `T-PHP-003-05` | `PHP-003` | Implementar auto-import como WorkspaceEdit e undo único; IT/FT | `T-PHP-021-01`, `T-PHP-003-02` |
 | [ ] | `T-PHP-003-06` | `PHP-003` | Implementar type-matching, statement completion, Hippie, postfix e parameter info; CT/FT | `T-PHP-003-02` |
 | [ ] | `T-PHP-003-07` | `PHP-003` | Implementar configurações de match case, single suggestion, sort e documentação; UT/FT | `T-PHP-003-03`, `T-NFR-004-01` |
-| [ ] | `T-PHP-004-01` | `PHP-004` | Integrar Declaration/Implementation/Type Declaration com histórico de navegação; IT/FT | `T-PHP-001-03` |
-| [ ] | `T-PHP-004-02` | `PHP-004` | Implementar Structure e Go to Symbol com resultados por projeto; IT/FT | `T-PHP-001-03` |
-| [ ] | `T-PHP-004-03` | `PHP-004` | Implementar Find Usages com preview e navegação; IT/FT | `T-PHP-004-01` |
+| [x] | `T-PHP-004-01` | `PHP-004` | Integrar Declaration/Implementation/Type Declaration com histórico de navegação; IT/FT  Entregue: definition/implementation/typeDefinition com gate por capability e UTF-16; IT com intelephense real. | `T-PHP-001-03` |
+| [x] | `T-PHP-004-02` | `PHP-004` | Implementar Structure e Go to Symbol com resultados por projeto; IT/FT  Entregue: Structure (documentSymbol por revisão) + Go to Symbol (workspace/symbol assíncrono na palette). | `T-PHP-001-03` |
+| [x] | `T-PHP-004-03` | `PHP-004` | Implementar Find Usages com preview e navegação; IT/FT  Entregue: Find Usages (references) alimenta o painel Find com preview da linha. | `T-PHP-004-01` |
 | [ ] | `T-PHP-004-04` | `PHP-004` | Implementar Type Hierarchy e Related Symbol; IT/FT | `T-PHP-004-03` |
-| [ ] | `T-PHP-005-01` | `PHP-005` | Integrar semantic tokens por revisão sem flicker; CT/UI | `T-PHP-001-03` |
-| [ ] | `T-PHP-005-02` | `PHP-005` | Implementar highlight de ocorrências e fallback sintático offline; UT/UI | `T-PHP-005-01` |
+| [x] | `T-PHP-005-01` | `PHP-005` | Integrar semantic tokens por revisão sem flicker; CT/UI  Entregue: semanticTokens/full decodificado (delta encoding, UTF-16), cores por tipo no layouter, por revisão; UT. | `T-PHP-001-03` |
+| [x] | `T-PHP-005-02` | `PHP-005` | Implementar highlight de ocorrências e fallback sintático offline; UT/UI  Entregue: ocorrências documentHighlight pintadas na galley; fallback sintático offline por palavra; UT. | `T-PHP-005-01` |
 
 ### 6.2 Inspeções e intenções
 
@@ -302,9 +302,9 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-PHP-030-01` | `PHP-030` | Ler composer.json, require.php e autoload PSR-0/4 sem executar código; UT/IT | BASE |
-| [ ] | `T-PHP-030-02` | `PHP-030` | Mapear roots, vendor e language level preservando overrides explícitos; UT/FT | `T-PHP-030-01` |
-| [ ] | `T-PHP-030-03` | `PHP-030` | Detectar mudanças externas e vendor ausente com reload/notificação; IT/FT | `T-PHP-030-02` |
+| [x] | `T-PHP-030-01` | `PHP-030` | Ler composer.json, require.php e autoload PSR-0/4 sem executar código; UT/IT  Entregue: `phpide-php::composer` (composer.json, constraint PHP, PSR-4/0); UT. | BASE |
+| [x] | `T-PHP-030-02` | `PHP-030` | Mapear roots, vendor e language level preservando overrides explícitos; UT/FT  Entregue: source/test roots, vendor, language level mapeados; nunca sobrescreve config manual; UT. | `T-PHP-030-01` |
+| [x] | `T-PHP-030-03` | `PHP-030` | Detectar mudanças externas e vendor ausente com reload/notificação; IT/FT  Entregue: watcher re-executa descoberta por mtime; vendor ausente vira aviso acionável (sem install automático); UT/IT. | `T-PHP-030-02` |
 | [ ] | `T-PHP-030-04` | `PHP-030` | Isolar múltiplos composer.json por subprojeto; IT/FT | `T-PHP-030-02` |
 | [ ] | `T-PHP-031-01` | `PHP-031` | Implementar executor Composer com interpretador configurado, log e cancelamento; IT | `T-NFR-003-03`, `T-PHP-030-01` |
 | [ ] | `T-PHP-031-02` | `PHP-031` | Implementar comandos read-only e scripts com output/código de saída; IT/FT | `T-PHP-031-01` |

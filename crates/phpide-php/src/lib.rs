@@ -43,7 +43,14 @@ fn dark_theme() -> &'static Theme {
         ThemeSet::load_defaults()
             .themes
             .remove("base16-ocean.dark")
-            .unwrap_or_else(|| ThemeSet::load_defaults().themes.values().next().unwrap().clone())
+            .unwrap_or_else(|| {
+                ThemeSet::load_defaults()
+                    .themes
+                    .values()
+                    .next()
+                    .unwrap()
+                    .clone()
+            })
     })
 }
 
@@ -73,7 +80,7 @@ fn to_text_format(style: syntect::highlighting::Style) -> TextFormat {
 
 /// Gera um `LayoutJob` com highlight de PHP para o código-fonte inteiro.
 ///
- /// O pipeline (lexer/grammar -> estilos -> layout) espelha o "annotator" dos IDEs
+/// O pipeline (lexer/grammar -> estilos -> layout) espelha o "annotator" dos IDEs
 /// clássicos: aqui o syntect faz o papel do lexer+colorir, e a análise semântica
 /// entra no Estágio 3 via LSP/tree-sitter.
 pub fn highlight(code: &str, _egui_style: &egui::Style) -> egui::text::LayoutJob {
@@ -157,6 +164,8 @@ impl SymbolKind {
         }
     }
 }
+
+pub mod composer;
 
 #[cfg(test)]
 mod tests {

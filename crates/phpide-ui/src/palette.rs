@@ -18,6 +18,8 @@ pub enum PaletteMode {
     Actions,
     /// Recent Files (MRU).
     Recent,
+    /// Go to Symbol: símbolos do workspace via LSP (T-PHP-004-02).
+    Symbols,
 }
 
 impl PaletteMode {
@@ -27,6 +29,7 @@ impl PaletteMode {
             PaletteMode::Files => "Go to File",
             PaletteMode::Actions => "Find Action",
             PaletteMode::Recent => "Recent Files",
+            PaletteMode::Symbols => "Go to Symbol",
         }
     }
 }
@@ -58,6 +61,11 @@ pub enum PaletteCommand {
     OpenScheme,
     OpenSettings,
     GotoDefinition,
+    GotoImplementation,
+    GotoTypeDeclaration,
+    GotoSymbol,
+    FindUsages,
+    RestartLsp,
     RunCurrent,
     DebugCurrent,
     GotoLine,
@@ -139,9 +147,20 @@ const COMMANDS: &[(&str, PaletteCommand)] = &[
     ("Navegar: Back", PaletteCommand::NavigateBack),
     ("Navegar: Forward", PaletteCommand::NavigateForward),
     ("Navegar: Ir para definição", PaletteCommand::GotoDefinition),
+    (
+        "Navegar: Ir para implementação",
+        PaletteCommand::GotoImplementation,
+    ),
+    (
+        "Navegar: Ir para declaração de tipo",
+        PaletteCommand::GotoTypeDeclaration,
+    ),
+    ("Navegar: Ir para símbolo", PaletteCommand::GotoSymbol),
+    ("Navegar: Find Usages", PaletteCommand::FindUsages),
     ("Navegar: Ir para linha", PaletteCommand::GotoLine),
     ("Navegar: Próximo problema", PaletteCommand::NextProblem),
     ("Navegar: Problema anterior", PaletteCommand::PrevProblem),
+    ("LSP: Reiniciar Language Server", PaletteCommand::RestartLsp),
     ("Executar: Rodar arquivo atual", PaletteCommand::RunCurrent),
     (
         "Executar: Debug arquivo atual",
@@ -216,7 +235,12 @@ fn project_files(ws: &Workspace, query: &str, cap: usize) -> Vec<(i32, PathBuf)>
     files
 }
 
-fn collect_entries(ws: &Workspace, state: &PaletteState, extra: &[(String, String)]) -> Vec<Entry> {
+fn collect_entries(
+    ws: &Workspace,
+    state: &PaletteState,
+    extra: &[(String, String)],
+    symbols: &[(String, PathBuf, usize, usize)],
+) -> Vec<Entry> {
     let mut out = Vec::new();
     // Convenção JetBrains: `>` dentro do Search Everywhere força ações.
     let mut query = state.query.trim_start();
@@ -224,6 +248,26 @@ fn collect_entries(ws: &Workspace, state: &PaletteState, extra: &[(String, Strin
     if query.starts_with('>') {
         mode = PaletteMode::Actions;
         query = query[1..].trim_start();
+    }
+
+    // Go to Symbol: resultados do workspace/symbol assíncrono.
+    if mode == PaletteMode::Symbols {
+        for (name, path, line0, _col) in symbols {
+            if query.is_empty() || fuzzy_score(query, name).is_some() {
+                let rel = path
+                    .strip_prefix(&ws.root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned();
+                out.push(Entry {
+                    label: name.clone(),
+                    detail: rel,
+                    hint: format!("Ln {}", line0 + 1),
+                    action: PaletteActionKind::Open(path.clone()),
+                });
+            }
+        }
+        return out;
     }
 
     let want_actions = matches!(mode, PaletteMode::All | PaletteMode::Actions);
@@ -298,6 +342,7 @@ pub fn show(
     ws: &Workspace,
     state: &mut PaletteState,
     extra: &[(String, String)],
+    symbols: &[(String, PathBuf, usize, usize)],
 ) -> Option<PaletteAction> {
     if !state.open {
         return None;
@@ -332,7 +377,7 @@ pub fn show(
                 state.just_opened = false;
             }
 
-            let entries = collect_entries(ws, state, extra);
+            let entries = collect_entries(ws, state, extra, symbols);
             if state.selected >= entries.len() {
                 state.selected = entries.len().saturating_sub(1);
             }

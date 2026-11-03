@@ -11,6 +11,7 @@ mod editor_view;
 mod exec;
 mod geometry;
 mod header;
+mod intelligence;
 mod palette;
 mod plugins;
 mod scheme;
@@ -42,13 +43,21 @@ use phpide_core::{
     Component, Revisioned, Workspace,
 };
 use phpide_dbgp::{run_with_breakpoints, DebugMsg};
-use phpide_lsp::{detect_server, uri_to_path, LspClient, LspDiagnostic, LspStatus};
+use phpide_lsp::{detect_server, LspClient, LspDiagnostic, LspStatus};
 use phpide_php::{Language, PhpLanguage};
 use search::SearchState;
 use serde_json::Value;
 use themes::ThemeId;
 use toolwindows::ToolWindow;
 use welcome::WelcomeState;
+
+/// Cache de semantic tokens: (path, revisão, tokens, spans de byte).
+type SemanticCache = (
+    PathBuf,
+    u64,
+    Vec<intelligence::SemanticToken>,
+    Vec<(usize, usize, String)>,
+);
 
 /// Fechamento pendente que exige confirmação de buffers sujos (NFR-007:
 /// "Dirty buffers precisam de confirmação ao fechar").
@@ -118,11 +127,37 @@ struct PhpIdeApp {
     lsp: Option<LspClient>,
     lsp_init: Option<mpsc::Receiver<Value>>,
     lsp_name: String,
-    /// Caminho -> versão já enviada ao servidor.
+    /// Crash já sinalizado à UI (evita mensagem repetida a cada frame).
+    lsp_crash_notified: bool,
+    /// Caminho -> revisão já enviada ao servidor.
     lsp_opened: HashMap<PathBuf, u64>,
-    pending_def: Option<mpsc::Receiver<Value>>,
+    /// Definição pendente com (path, revisão): resposta de sessão/revisão
+    /// antiga é descartada (T-PHP-001-04).
+    pending_def: Option<(PathBuf, u64, mpsc::Receiver<Value>)>,
     pending_outline: Option<(PathBuf, mpsc::Receiver<Value>)>,
     last_outline_key: Option<(PathBuf, u64)>,
+    /// Go to Symbol: resultados da última consulta workspace/symbol.
+    symbol_results: Vec<(String, PathBuf, usize, usize)>,
+    pending_symbols: Option<mpsc::Receiver<Value>>,
+    last_symbol_query: String,
+    /// Semantic tokens por (path, revisão) — T-PHP-005-01. Os spans de byte
+    /// são derivados uma vez por revisão (barato por frame na pintura).
+    semantic: Option<SemanticCache>,
+    pending_semantic: Option<(PathBuf, u64, mpsc::Receiver<Value>)>,
+    /// Ocorrências por (path, revisão, palavra) — T-PHP-005-02: mudar o
+    /// cursor para outra palavra na mesma revisão recalcula.
+    occurrences: Option<(PathBuf, u64, String, Vec<intelligence::CharRange>)>,
+    pending_occurrences: Option<mpsc::Receiver<Value>>,
+    /// Find Usages pendente (T-PHP-004-03).
+    pending_usages: Option<mpsc::Receiver<Value>>,
+    /// Descoberta do projeto Composer (T-PHP-030-01/02).
+    composer: Option<phpide_php::composer::ComposerInfo>,
+    composer_warned: bool,
+    /// mtime do composer.json na última descoberta (detecção de mudança
+    /// externa pelo watcher, T-PHP-030-03).
+    composer_mtime: Option<std::time::SystemTime>,
+    /// Escopo do painel Problems (T-PHP-002-02): 0 = projeto, 1 = arquivo.
+    problems_scope: u8,
     // Estágio 3.1 — completamento
     completion: CompletionState,
     // Estágio 3.1 — análise estrutural local (tree-sitter); anexada à
@@ -193,10 +228,23 @@ impl PhpIdeApp {
             lsp,
             lsp_init,
             lsp_name,
+            lsp_crash_notified: false,
             lsp_opened: HashMap::new(),
             pending_def: None,
             pending_outline: None,
             last_outline_key: None,
+            symbol_results: Vec::new(),
+            pending_symbols: None,
+            last_symbol_query: String::new(),
+            semantic: None,
+            pending_semantic: None,
+            occurrences: None,
+            pending_occurrences: None,
+            pending_usages: None,
+            composer: None,
+            composer_warned: false,
+            composer_mtime: None,
+            problems_scope: 0,
             completion: CompletionState::new(),
             syntax: None,
             exec: ExecState::new(),
@@ -227,6 +275,9 @@ impl PhpIdeApp {
         };
         // Closing Policy configurável (UI-ED-003): limite vem do settings.
         app.ws.tab_limit = app.settings.tab_limit.max(1) as usize;
+        // Descoberta do projeto Composer (T-PHP-030-01/02): informativa —
+        // nunca sobrescreve configuração manual explícita.
+        app.refresh_composer(false);
         // Arquivos passados na CLI: abertos em abas (o último fica ativo).
         for f in &files {
             let path = if f.is_absolute() {
@@ -297,6 +348,7 @@ impl PhpIdeApp {
         self.syntax = None;
         self.ws = Workspace::open(root.clone());
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
+        self.refresh_composer(false);
         self.collapsed.clear();
         self.selected = None;
         self.git_branch_cache = None;
@@ -323,6 +375,182 @@ impl PhpIdeApp {
 
     pub fn open_palette(&mut self, mode: PaletteMode) {
         self.palette.open_with(mode);
+    }
+
+    /// Re-executa a descoberta Composer (T-PHP-030-03): chamada na abertura,
+    /// na troca de projeto e quando o watcher detecta mudança no
+    /// composer.json. `from_watcher` evita mensagens no startup silencioso.
+    pub fn refresh_composer(&mut self, from_watcher: bool) {
+        match phpide_php::composer::discover(&self.ws.root) {
+            Ok(info) => {
+                let had_vendor = self.composer.as_ref().map(|c| c.vendor_present);
+                self.composer = info.clone();
+                if let Some(info) = info {
+                    if from_watcher {
+                        self.ws.message = format!(
+                            "composer.json atualizado: {} (PHP {})",
+                            info.name.as_deref().unwrap_or("projeto"),
+                            info.php_level.as_deref().unwrap_or("?")
+                        );
+                    }
+                    // Vendor ausente: avisar uma vez por sessão de descoberta.
+                    if !info.vendor_present && (had_vendor != Some(false) || from_watcher) {
+                        self.composer_warned = true;
+                        self.ws.message = format!(
+                            "vendor/ ausente em {} — execute `composer install`",
+                            self.ws.root.display()
+                        );
+                        self.logger.warn(
+                            Component::Php,
+                            &Correlation::session(self.session),
+                            "composer_vendor_missing",
+                            &[("root", &self.ws.root.display().to_string())],
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                self.composer = None;
+                if from_watcher || !self.composer_warned {
+                    self.composer_warned = true;
+                    self.ws.message = format!("{} — ação: {}", e.message, e.action);
+                    self.logger.error(
+                        Component::Php,
+                        &Correlation::session(self.session),
+                        "composer_invalid",
+                        &[("error", &e.message)],
+                    );
+                }
+            }
+        }
+    }
+
+    /// Reinicia o servidor de linguagem (T-PHP-001-02): stop + spawn com as
+    /// mesmas configurações; sessão anterior é descartada (T-PHP-001-04).
+    pub fn restart_lsp(&mut self) {
+        if let Some(old) = self.lsp.take() {
+            old.stop();
+        }
+        self.lsp_init = None;
+        self.lsp_opened.clear();
+        self.pending_def = None;
+        self.pending_outline = None;
+        self.last_outline_key = None;
+        self.pending_symbols = None;
+        self.symbol_results.clear();
+        self.semantic = None;
+        self.pending_semantic = None;
+        self.occurrences = None;
+        self.pending_occurrences = None;
+        self.pending_usages = None;
+        self.lsp_crash_notified = false;
+        let (lsp, lsp_init, lsp_name) = start_lsp(&self.ws.root);
+        self.lsp = lsp;
+        self.lsp_init = lsp_init;
+        self.lsp_name = lsp_name;
+        self.ws.message = if self.lsp.is_some() {
+            format!("reiniciando LSP: {}", self.lsp_name)
+        } else {
+            "nenhum servidor LSP disponível para reiniciar".to_string()
+        };
+    }
+
+    /// Find Usages (T-PHP-004-03): referências alimentam o painel Find.
+    pub fn request_usages(&mut self) {
+        let Some(lsp) = &self.lsp else {
+            self.ws.message = "LSP indisponível".to_string();
+            return;
+        };
+        if !matches!(lsp.status(), LspStatus::Running(_)) {
+            self.ws.message = "LSP ainda não está pronto".to_string();
+            return;
+        }
+        if !lsp.capabilities().references_provider {
+            self.ws.message = "servidor não suporta references".to_string();
+            return;
+        }
+        let Some(buf) = self.ws.active_buffer() else {
+            return;
+        };
+        let Some(path) = buf.path.clone() else { return };
+        let (line, col) = buf.document.line_col_encoded(
+            self.cursor_char.min(buf.document.len_chars()),
+            phpide_core::PositionEncoding::Utf16,
+        );
+        self.pending_usages = Some(lsp.references(&path, line, col));
+        self.ws.message = "buscando usos...".to_string();
+    }
+
+    /// Consome o resultado de Find Usages para o painel Find (com preview).
+    fn poll_usages(&mut self) {
+        let Some(rx) = &self.pending_usages else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else { return };
+        self.pending_usages = None;
+        let locs = intelligence::parse_locations(&result);
+        if locs.is_empty() {
+            self.ws.message = "nenhum uso encontrado".to_string();
+            return;
+        }
+        let mut hits = Vec::new();
+        for loc in &locs {
+            // Preview: linha do arquivo no disco (buffer aberto tem prioridade).
+            let preview = self
+                .ws
+                .buffers
+                .iter()
+                .find(|b| b.path.as_deref() == Some(loc.path.as_path()))
+                .and_then(|b| {
+                    b.document
+                        .line(loc.line0)
+                        .lines()
+                        .next()
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    std::fs::read_to_string(&loc.path)
+                        .ok()
+                        .and_then(|t| t.lines().nth(loc.line0).map(str::to_string))
+                })
+                .unwrap_or_default();
+            hits.push(search::SearchHit {
+                path: loc.path.clone(),
+                line: loc.line0 + 1,
+                preview: preview.trim().chars().take(140).collect(),
+            });
+        }
+        let count = hits.len();
+        self.search.results = hits;
+        self.search.status = format!("{count} usos (Find Usages)");
+        self.search.query.clear();
+        self.tw.set_visible(ToolWindow::Find, true);
+        self.ws.message = format!("{count} usos encontrados");
+    }
+
+    /// Go to Symbol (T-PHP-004-02): dispara workspace/symbol quando a
+    /// consulta da palette muda.
+    fn poll_symbol_query(&mut self) {
+        if !self.palette.open || self.palette.mode != palette::PaletteMode::Symbols {
+            return;
+        }
+        let query = self.palette.query.clone();
+        if query == self.last_symbol_query {
+            return;
+        }
+        self.last_symbol_query = query.clone();
+        self.symbol_results.clear();
+        if query.trim().len() < 2 {
+            return;
+        }
+        let Some(lsp) = &self.lsp else { return };
+        if !matches!(lsp.status(), LspStatus::Running(_)) {
+            return;
+        }
+        if !lsp.capabilities().workspace_symbol_provider {
+            return;
+        }
+        self.pending_symbols = Some(lsp.workspace_symbol(&query));
     }
 
     pub fn git_branch(&mut self) -> String {
@@ -356,7 +584,8 @@ impl PhpIdeApp {
     }
 
     /// F2 / Shift+F2: salta para o próximo/anterior problema vigente
-    /// (revisão atual; diagnóstico obsoleto não entra na ordem).
+    /// (revisão atual; diagnóstico obsoleto não entra na ordem; wrap-around
+    /// nas extremidades — T-PHP-002-03).
     pub fn goto_problem(&mut self, dir: i32) {
         let diags: Vec<phpide_core::Diagnostic> = self.ws.current_diagnostics().cloned().collect();
         if diags.is_empty() {
@@ -372,15 +601,8 @@ impl PhpIdeApp {
                     .0
             })
             .unwrap_or(0);
-        let idx = match dir >= 0 {
-            true => diags
-                .iter()
-                .position(|d| (d.line, d.col) > (cur_line, 0))
-                .unwrap_or(0),
-            false => diags
-                .iter()
-                .rposition(|d| d.line < cur_line)
-                .unwrap_or(diags.len() - 1),
+        let Some(idx) = intelligence::next_problem_index(diags.len(), cur_line, dir) else {
+            return;
         };
         let d = diags[idx].clone();
         self.ws
@@ -476,6 +698,15 @@ impl PhpIdeApp {
                     .open(settings_dialog::SettingsPage::Appearance);
             }
             PaletteCommand::GotoDefinition => self.request_definition(),
+            PaletteCommand::GotoImplementation => self.request_implementation(),
+            PaletteCommand::GotoTypeDeclaration => self.request_type_definition(),
+            PaletteCommand::GotoSymbol => {
+                self.symbol_results.clear();
+                self.last_symbol_query = String::new();
+                self.open_palette(PaletteMode::Symbols);
+            }
+            PaletteCommand::FindUsages => self.request_usages(),
+            PaletteCommand::RestartLsp => self.restart_lsp(),
             PaletteCommand::RunCurrent => self.run_current_php(),
             PaletteCommand::DebugCurrent => self.debug_run(),
             PaletteCommand::GotoLine => self.goto_line_open = true,
@@ -672,6 +903,8 @@ impl eframe::App for PhpIdeApp {
         self.poll_search();
         self.poll_lsp();
         self.poll_syntax();
+        self.poll_usages();
+        self.poll_symbol_query();
         self.exec.poll();
         self.poll_debug();
         self.ctrl_wheel_zoom(ctx);
@@ -681,7 +914,13 @@ impl eframe::App for PhpIdeApp {
         }
         self.was_palette_open = self.palette.open;
 
-        if let Some(action) = palette::show(ctx, &self.ws, &mut self.palette, &self.extras) {
+        if let Some(action) = palette::show(
+            ctx,
+            &self.ws,
+            &mut self.palette,
+            &self.extras,
+            &self.symbol_results,
+        ) {
             match action {
                 PaletteAction::Open(path) => self.ws.open_file(&path),
                 PaletteAction::Run(cmd) => self.dispatch_command(cmd, ctx),
@@ -786,6 +1025,16 @@ impl PhpIdeApp {
             if since.elapsed() > Duration::from_millis(300) {
                 self.change_pending_since = None;
                 self.ws.refresh_files();
+                // Mudança externa no composer.json → re-descoberta
+                // (T-PHP-030-03: alteração externa solicita reload).
+                let composer_file = self.ws.root.join("composer.json");
+                let mtime = std::fs::metadata(&composer_file)
+                    .and_then(|m| m.modified())
+                    .ok();
+                if mtime.is_some() && mtime != self.composer_mtime {
+                    self.composer_mtime = mtime;
+                    self.refresh_composer(true);
+                }
                 let changed: Vec<PathBuf> = self
                     .ws
                     .buffers
@@ -985,6 +1234,18 @@ impl PhpIdeApp {
             }
             if i.consume_key(ctrl, Key::B) {
                 def = true;
+            }
+            if i.consume_key(ctrl | alt, Key::B) {
+                self.request_implementation();
+            }
+            if i.consume_key(ctrl | shift, Key::B) {
+                self.request_type_definition();
+            }
+            if i.consume_key(ctrl | alt | shift, Key::N) {
+                self.open_palette(PaletteMode::Symbols);
+            }
+            if i.consume_key(alt, Key::F7) {
+                self.request_usages();
             }
             if i.consume_key(egui::Modifiers::NONE, Key::F12) {
                 def = true;
@@ -1187,13 +1448,48 @@ impl PhpIdeApp {
     }
 
     fn problems_panel(&mut self, ctx: &egui::Context) {
-        let diags: Vec<phpide_core::Diagnostic> = self.ws.current_diagnostics().cloned().collect();
+        // Escopo (T-PHP-002-02): projeto inteiro ou só o arquivo ativo.
+        let active_path = self.ws.active_buffer().and_then(|b| b.path.clone());
+        let mut diags: Vec<phpide_core::Diagnostic> =
+            self.ws.current_diagnostics().cloned().collect();
+        if self.problems_scope == 1 {
+            if let Some(path) = &active_path {
+                diags.retain(|d| &d.path == path);
+            }
+        }
+        // Resumo por ferramenta de origem (LSP/tree-sitter/...).
+        let sources = {
+            let refs: Vec<&phpide_core::Diagnostic> = diags.iter().collect();
+            intelligence::problems_by_source(&refs)
+        };
         egui::TopBottomPanel::bottom("problems")
             .resizable(true)
             .show(ctx, |ui| {
                 tool_window_header(self, ui, ToolWindow::Problems);
                 ui.separator();
-                ui.label(format!("{} problemas", diags.len()));
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} problemas", diags.len()));
+                    ui.separator();
+                    let scope_label = if self.problems_scope == 0 {
+                        "Escopo: Projeto"
+                    } else {
+                        "Escopo: Arquivo"
+                    };
+                    if ui
+                        .button(scope_label)
+                        .on_hover_text("Alternar projeto/arquivo")
+                        .clicked()
+                    {
+                        self.problems_scope = 1 - self.problems_scope;
+                    }
+                    for (source, critical, total) in &sources {
+                        ui.label(
+                            egui::RichText::new(format!("{source}: {critical}/{total}"))
+                                .small()
+                                .weak(),
+                        );
+                    }
+                });
                 ui.separator();
                 if diags.is_empty() {
                     ui.label("Sem problemas.");
@@ -1461,13 +1757,44 @@ impl PhpIdeApp {
                 Ok(result) => {
                     self.lsp_init = None;
                     if result.get("capabilities").is_some() {
+                        // Capabilities negociadas (T-PHP-001-01): a UI
+                        // habilita recursos conforme o servidor declara.
+                        lsp.register_capabilities(&result);
+                        let caps = lsp.capabilities();
                         *lsp.shared.status.lock().unwrap() =
                             LspStatus::Running(self.lsp_name.clone());
                         lsp.notify("initialized", Value::Null);
                         // Diagnósticos passam a ser do LSP; reanálise local do zero.
                         self.ws.clear_diagnostics();
                         self.syntax = None;
-                        self.ws.message = format!("LSP conectado: {}", self.lsp_name);
+                        let mut enabled = Vec::new();
+                        if caps.definition_provider {
+                            enabled.push("definition");
+                        }
+                        if caps.implementation_provider {
+                            enabled.push("implementation");
+                        }
+                        if caps.type_definition_provider {
+                            enabled.push("typeDefinition");
+                        }
+                        if caps.references_provider {
+                            enabled.push("references");
+                        }
+                        if caps.workspace_symbol_provider {
+                            enabled.push("workspace/symbol");
+                        }
+                        if caps.semantic_tokens_provider {
+                            enabled.push("semanticTokens");
+                        }
+                        self.ws.message = format!(
+                            "LSP conectado: {} ({})",
+                            self.lsp_name,
+                            if enabled.is_empty() {
+                                "sem recursos extras".to_string()
+                            } else {
+                                enabled.join(", ")
+                            }
+                        );
                     } else {
                         *lsp.shared.status.lock().unwrap() =
                             LspStatus::Failed(format!("initialize rejeitado: {result}"));
@@ -1481,52 +1808,71 @@ impl PhpIdeApp {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
+        // Crash após estar Running: servidor caiu — edição segue offline
+        // (T-PHP-001-05) e o usuário pode reiniciar pela palette.
+        if let LspStatus::Failed(reason) = lsp.status() {
+            if !self.lsp_crash_notified {
+                self.lsp_crash_notified = true;
+                self.ws.message = format!(
+                    "LSP caiu ({reason}) — edição e diagnósticos locais seguem disponíveis; reinicie em Find Action (Ctrl+Shift+A > 'Restart Language Server')"
+                );
+                self.logger.error(
+                    Component::Lsp,
+                    &Correlation::session(self.session),
+                    "lsp_crashed",
+                    &[("reason", &reason)],
+                );
+            }
+            return;
+        }
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             return;
         }
 
-        // 2. Sincronização de documentos: didOpen / didChange / didClose.
-        let mut opened: Vec<(PathBuf, String, u64)> = Vec::new();
-        let mut changed: Vec<(PathBuf, String, u64)> = Vec::new();
-        for buf in &self.ws.buffers {
-            let Some(path) = buf.path.clone() else {
-                continue;
-            };
-            if !phpide_php::Php::is_php_file(&path) {
-                continue;
-            }
-            let version = buf.document.version;
-            match self.lsp_opened.get(&path) {
-                None => opened.push((path, buf.document.text(), version)),
-                Some(v) if *v != version => changed.push((path, buf.document.text(), version)),
-                _ => {}
-            }
-        }
-        for (path, text, version) in opened {
-            lsp.did_open(&path, &text, version);
-            self.lsp_opened.insert(path, version);
-        }
-        for (path, text, version) in changed {
-            lsp.did_change(&path, &text, version);
-            self.lsp_opened.insert(path, version);
-        }
-        let open_paths: HashSet<PathBuf> = self
+        // 2. Sincronização de documentos — plano único e ordenado
+        // (T-PHP-001-03): didOpen → didChange → didClose, sem reprogrer versão.
+        let buffers: Vec<(PathBuf, u64)> = self
             .ws
             .buffers
             .iter()
-            .filter_map(|b| b.path.clone())
+            .filter_map(|b| {
+                let path = b.path.clone()?;
+                if !phpide_php::Php::is_php_file(&path) {
+                    return None;
+                }
+                Some((path, b.document.revision()))
+            })
             .collect();
-        let closed: Vec<PathBuf> = self
-            .lsp_opened
-            .keys()
-            .filter(|p| !open_paths.contains(*p))
-            .cloned()
-            .collect();
-        for path in closed {
-            lsp.did_close(&path);
-            self.lsp_opened.remove(&path);
-            // Arquivo fechado: sem revisão viva; conjunto vazio remove as entradas.
-            self.ws.set_diagnostics(&path, 0, Vec::new());
+        for op in intelligence::plan_sync(&buffers, &self.lsp_opened) {
+            match op {
+                intelligence::SyncOp::Open(path, version) => {
+                    let text = self
+                        .ws
+                        .buffers
+                        .iter()
+                        .find(|b| b.path.as_deref() == Some(path.as_path()))
+                        .map(|b| b.document.text())
+                        .unwrap_or_default();
+                    lsp.did_open(&path, &text, version);
+                    self.lsp_opened.insert(path, version);
+                }
+                intelligence::SyncOp::Change(path, version) => {
+                    let text = self
+                        .ws
+                        .buffers
+                        .iter()
+                        .find(|b| b.path.as_deref() == Some(path.as_path()))
+                        .map(|b| b.document.text())
+                        .unwrap_or_default();
+                    lsp.did_change(&path, &text, version);
+                    self.lsp_opened.insert(path, version);
+                }
+                intelligence::SyncOp::Close(path) => {
+                    lsp.did_close(&path);
+                    self.lsp_opened.remove(&path);
+                    self.ws.set_diagnostics(&path, 0, Vec::new());
+                }
+            }
         }
 
         // 3. Diagnósticos publicados -> painel de problemas (anexados à
@@ -1560,41 +1906,57 @@ impl PhpIdeApp {
             self.ws.set_diagnostics(&path, revision, diags);
         }
 
-        // 4. Definição pendente (F12/Ctrl+B).
-        if let Some(rx) = &self.pending_def {
+        // 4. Definição pendente (F12/Ctrl+B): aplica apenas se o buffer ainda
+        // estiver na mesma revisão do disparo (T-PHP-001-04).
+        if let Some((req_path, req_revision, rx)) = &self.pending_def {
             if let Ok(result) = rx.try_recv() {
+                let (req_path, req_revision) = (req_path.clone(), *req_revision);
                 self.pending_def = None;
-                let loc = if let Some(arr) = result.as_array() {
-                    arr.first()
-                } else if result.is_object() {
-                    Some(&result)
-                } else {
-                    None
+                let current = self
+                    .ws
+                    .buffers
+                    .iter()
+                    .find(|b| b.path.as_deref() == Some(req_path.as_path()));
+                let stale = match current {
+                    Some(buf) => buf.document.revision() != req_revision,
+                    None => true,
                 };
-                if let Some(loc) = loc {
-                    let uri = loc["uri"].as_str();
-                    let line = loc["range"]["start"]["line"].as_u64();
-                    if let (Some(uri), Some(line)) = (uri, line) {
-                        let col = loc["range"]["start"]["character"].as_u64().unwrap_or(0);
-                        if let Some(path) = uri_to_path(uri) {
-                            self.ws.open_file_at(&path, line as usize, col as usize);
-                        }
+                if stale {
+                    self.logger.info(
+                        Component::Lsp,
+                        &Correlation::session(self.session).with_document(req_path, req_revision),
+                        "stale_response_discarded",
+                        &[("kind", "definition")],
+                    );
+                } else {
+                    let locs = intelligence::parse_locations(&result);
+                    if let Some(loc) = locs.first() {
+                        self.ws.open_file_at(&loc.path, loc.line0, loc.col0);
                     }
                 }
             }
         }
 
-        // 5. Outline pendente (só aplica se o arquivo ainda for o ativo).
+        // 5. Outline pendente (só aplica se o arquivo ainda for o ativo e na
+        // mesma revisão pedida).
         if let Some((req_path, rx)) = &self.pending_outline {
             let mut done = false;
             if let Ok(result) = rx.try_recv() {
                 done = true;
-                let active_path = self
-                    .ws
-                    .active_buffer()
+                let active = self.ws.active_buffer();
+                let matches = active
                     .and_then(|b| b.path.clone())
-                    .unwrap_or_default();
-                if *req_path == active_path {
+                    .map(|p| p == *req_path)
+                    .unwrap_or(false);
+                let revision_ok = active
+                    .map(|b| {
+                        self.last_outline_key
+                            .as_ref()
+                            .map(|(kp, kv)| kp == req_path && kv == &b.document.revision())
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if matches && revision_ok {
                     let mut entries = Vec::new();
                     collect_symbols(&result, 0, &mut entries);
                     self.ws.outline = entries;
@@ -1610,7 +1972,7 @@ impl PhpIdeApp {
             if let Some(buf) = self.ws.active_buffer() {
                 if let Some(path) = buf.path.clone() {
                     if phpide_php::Php::is_php_file(&path) {
-                        let key = (path.clone(), buf.document.version);
+                        let key = (path.clone(), buf.document.revision());
                         if self.last_outline_key.as_ref() != Some(&key) {
                             self.last_outline_key = Some(key);
                             let rx = lsp.document_symbol(&path);
@@ -1620,23 +1982,231 @@ impl PhpIdeApp {
                 }
             }
         }
+
+        // 7. Go to Symbol (workspace/symbol): respostas da consulta vigente.
+        if let Some(rx) = &self.pending_symbols {
+            if let Ok(result) = rx.try_recv() {
+                self.pending_symbols = None;
+                self.symbol_results = intelligence::parse_workspace_symbols(&result)
+                    .into_iter()
+                    .map(|(name, loc)| (name, loc.path, loc.line0, loc.col0))
+                    .collect();
+            }
+        }
+
+        // 8. Semantic tokens (T-PHP-005-01): aplica só na revisão pedida.
+        if let Some((req_path, req_revision, rx)) = &self.pending_semantic {
+            if let Ok(result) = rx.try_recv() {
+                let (req_path, req_revision) = (req_path.clone(), *req_revision);
+                self.pending_semantic = None;
+                let current = self
+                    .ws
+                    .buffers
+                    .iter()
+                    .find(|b| b.path.as_deref() == Some(req_path.as_path()));
+                if let Some(buf) = current {
+                    if buf.document.revision() == req_revision {
+                        if let Some(data) = result["data"].as_array() {
+                            let flat: Vec<u32> = data
+                                .iter()
+                                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                                .collect();
+                            let tokens = intelligence::decode_semantic_tokens(
+                                &buf.document,
+                                &lsp.capabilities().semantic_token_types,
+                                &flat,
+                            );
+                            // Spans de byte uma vez por revisão: char absoluto
+                            // = início da linha + coluna, convertido pela rope.
+                            let spans: Vec<(usize, usize, String)> = tokens
+                                .iter()
+                                .map(|t| {
+                                    let abs = buf.document.line_start(t.line0) + t.start_char;
+                                    let start = buf.document.char_to_byte(abs);
+                                    let end = buf.document.char_to_byte(
+                                        (abs + t.len_chars).min(buf.document.len_chars()),
+                                    );
+                                    (start, end, t.token_type.clone())
+                                })
+                                .collect();
+                            self.semantic = Some((req_path, req_revision, tokens, spans));
+                        }
+                    }
+                }
+            }
+        }
+        // Dispara semantic tokens quando o arquivo/revisão muda e há suporte.
+        if lsp.capabilities().semantic_tokens_provider {
+            let active = self.ws.active_buffer().and_then(|b| {
+                let path = b.path.clone()?;
+                if !phpide_php::Php::is_php_file(&path) {
+                    return None;
+                }
+                Some((path, b.document.revision()))
+            });
+            let needs = match (&active, &self.semantic, &self.pending_semantic) {
+                (Some((p, r)), cached, pending) => {
+                    let cached_stale = cached
+                        .as_ref()
+                        .map(|(cp, cr, _, _)| cp != p || cr != r)
+                        .unwrap_or(true);
+                    let pending_stale = pending
+                        .as_ref()
+                        .map(|(pp, pr, _)| pp != p || pr != r)
+                        .unwrap_or(false);
+                    cached_stale && !pending_stale
+                }
+                (None, _, _) => false,
+            };
+            if needs {
+                if let Some((path, revision)) = active {
+                    let rx = lsp.semantic_tokens_full(&path);
+                    self.pending_semantic = Some((path, revision, rx));
+                }
+            }
+        } else {
+            self.semantic = None;
+        }
+
+        // 9. Ocorrências (documentHighlight) com fallback local (005-02).
+        if let Some(rx) = &self.pending_occurrences {
+            if let Ok(result) = rx.try_recv() {
+                self.pending_occurrences = None;
+                let active = self.ws.active_buffer().and_then(|b| {
+                    let path = b.path.clone()?;
+                    let chars: Vec<char> = b.document.text().chars().collect();
+                    let cursor = self.cursor_char.min(chars.len());
+                    let (word, _) = completion::word_at(&chars, cursor);
+                    Some((path, b.document.revision(), word, b.document.text()))
+                });
+                if let Some((path, revision, word, text)) = active {
+                    if word.len() >= 2 {
+                        let ranges = intelligence::parse_highlights(
+                            &phpide_core::Document::new(&text),
+                            &result,
+                        );
+                        self.occurrences = Some((path, revision, word, ranges));
+                    }
+                }
+            }
+        }
+        let occurrences_key = self.ws.active_buffer().and_then(|b| {
+            let path = b.path.clone()?;
+            let chars: Vec<char> = b.document.text().chars().collect();
+            let cursor = self.cursor_char.min(chars.len());
+            let (word, _) = completion::word_at(&chars, cursor);
+            Some((path, b.document.revision(), word))
+        });
+        match (&occurrences_key, &self.occurrences) {
+            (Some((p, r, w)), Some((op, or_, ow, _))) if op == p && or_ == r && ow == w => {}
+            (Some((p, r, w)), _) => {
+                let word_ctx = self.ws.active_buffer().map(|b| {
+                    let chars: Vec<char> = b.document.text().chars().collect();
+                    let cursor = self.cursor_char.min(chars.len());
+                    let (word, start) = completion::word_at(&chars, cursor);
+                    (word, start)
+                });
+                if let Some((word, _start)) = word_ctx {
+                    if word.len() >= 2 && &word == w {
+                        // Servidor primeiro; sem suporte, fallback sintático.
+                        let chars: Vec<char> = self
+                            .ws
+                            .active_buffer()
+                            .map(|b| b.document.text().chars().collect())
+                            .unwrap_or_default();
+                        let ranges = if lsp.capabilities().document_highlight_provider {
+                            if self.pending_occurrences.is_none() {
+                                let (line, col) = self
+                                    .ws
+                                    .active_buffer()
+                                    .map(|b| {
+                                        b.document.line_col_encoded(
+                                            self.cursor_char.min(b.document.len_chars()),
+                                            phpide_core::PositionEncoding::Utf16,
+                                        )
+                                    })
+                                    .unwrap_or((0, 0));
+                                let path = p.clone();
+                                let rx = lsp.document_highlight(&path, line, col);
+                                self.pending_occurrences = Some(rx);
+                            }
+                            None
+                        } else {
+                            Some(intelligence::local_occurrences(
+                                &chars,
+                                &word,
+                                self.cursor_char,
+                            ))
+                        };
+                        if let Some(ranges) = ranges {
+                            self.occurrences = Some((p.clone(), *r, w.clone(), ranges));
+                        }
+                    }
+                    if word.len() < 2 {
+                        self.occurrences = None;
+                    }
+                }
+            }
+            (None, _) => self.occurrences = None,
+        }
     }
 
     fn request_definition(&mut self) {
-        let Some(lsp) = &self.lsp else { return };
+        self.request_locations("definition", |lsp, path, line, col| {
+            lsp.definition(path, line, col)
+        });
+    }
+
+    /// Navegação por localizações genérica (T-PHP-004-01): definition,
+    /// implementation e typeDefinition compartilham tratamento de resposta,
+    /// gate por capability e descarte por revisão (T-PHP-001-04).
+    fn request_locations(
+        &mut self,
+        what: &str,
+        call: impl Fn(&LspClient, &std::path::Path, usize, usize) -> mpsc::Receiver<Value>,
+    ) {
+        let Some(lsp) = &self.lsp else {
+            self.ws.message = "LSP indisponível".to_string();
+            return;
+        };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
+            return;
+        }
+        let caps = lsp.capabilities();
+        let supported = match what {
+            "definition" => caps.definition_provider,
+            "implementation" => caps.implementation_provider,
+            "typeDefinition" => caps.type_definition_provider,
+            _ => false,
+        };
+        if !supported {
+            self.ws.message = format!("servidor não suporta {what}");
             return;
         }
         let Some(buf) = self.ws.active_buffer() else {
             return;
         };
         let Some(path) = buf.path.clone() else { return };
-        let (line, col) = buf
-            .document
-            .line_col(self.cursor_char.min(buf.document.len_chars()));
-        let rx = lsp.definition(&path, line.saturating_sub(1), col.saturating_sub(1));
-        self.pending_def = Some(rx);
+        let revision = buf.document.revision();
+        let (line, col) = buf.document.line_col_encoded(
+            self.cursor_char.min(buf.document.len_chars()),
+            phpide_core::PositionEncoding::Utf16,
+        );
+        let rx = call(lsp, &path, line, col);
+        self.pending_def = Some((path, revision, rx));
+    }
+
+    fn request_implementation(&mut self) {
+        self.request_locations("implementation", |lsp, path, line, col| {
+            lsp.implementation(path, line, col)
+        });
+    }
+
+    fn request_type_definition(&mut self) {
+        self.request_locations("typeDefinition", |lsp, path, line, col| {
+            lsp.type_definition(path, line, col)
+        });
     }
 
     fn outline_panel(&mut self, ctx: &egui::Context) {
@@ -1699,6 +2269,7 @@ impl PhpIdeApp {
         let chars: Vec<char> = buf.document.text().chars().collect();
         let (prefix, word_start) = completion::word_at(&chars, cursor);
         let (line, col) = buf.document.line_col(cursor);
+        let revision = buf.document.revision();
         self.completion.begin(
             lsp,
             &path,
@@ -1706,6 +2277,7 @@ impl PhpIdeApp {
             col.saturating_sub(1),
             word_start,
             prefix,
+            revision,
         );
     }
 
@@ -1713,13 +2285,25 @@ impl PhpIdeApp {
         if !self.completion.open {
             return;
         }
-        self.completion.poll();
+        // Descarta respostas de revisões antigas (digitação durante o voo).
+        let revision = self
+            .ws
+            .active_buffer()
+            .map(|b| b.document.revision())
+            .unwrap_or(0);
+        if let Some(lsp) = &self.lsp {
+            self.completion.poll(lsp, revision);
+        }
         if !self.completion.open {
             return;
         }
         let items = self.completion.filtered();
         if items.is_empty() && !self.completion.loading() {
-            self.completion.close();
+            if let Some(lsp) = &self.lsp {
+                self.completion.close(lsp);
+            } else {
+                self.completion.open = false;
+            }
             return;
         }
         let mut accept: Option<String> = None;
@@ -1787,42 +2371,95 @@ impl PhpIdeApp {
                             }
                         }
                     });
+                // Documentação do item selecionado (T-PHP-003-03): texto ou
+                // markdown vindo do servidor, sem bloquear o aceite.
+                let doc_text =
+                    self.completion
+                        .selected_raw(self.completion.selected.min(items.len().saturating_sub(1)))
+                        .and_then(|raw| {
+                            raw["documentation"].as_str().map(String::from).or_else(|| {
+                                raw["documentation"]["value"].as_str().map(String::from)
+                            })
+                        })
+                        .filter(|d| !d.trim().is_empty());
+                if let Some(doc) = doc_text {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(doc.trim().chars().take(300).collect::<String>())
+                            .small()
+                            .weak(),
+                    );
+                }
             });
 
         if close {
-            self.completion.close();
+            if let Some(lsp) = &self.lsp {
+                self.completion.close(lsp);
+            } else {
+                self.completion.open = false;
+            }
         }
         if let Some(label) = accept {
             self.accept_completion(ctx, &label);
         }
     }
 
+    /// Aplica o item aceito: `textEdit` (range UTF-16) > `insertText` >
+    /// rótulo, pelas conversões centralizadas (T-PHP-003-02, NFR-002).
     fn accept_completion(&mut self, ctx: &egui::Context, label: &str) {
-        if let Some(buf) = self.ws.active_buffer_mut() {
-            if buf.readonly {
-                self.completion.close();
-                return;
+        // Captura o item cru (para textEdit) antes de fechar a popup.
+        let raw = {
+            let items = self.completion.filtered();
+            let idx = items.iter().position(|i| i.label == label).unwrap_or(0);
+            self.completion.selected_raw(idx).cloned()
+        };
+        let Some(buf) = self.ws.active_buffer_mut() else {
+            if let Some(lsp) = &self.lsp {
+                self.completion.close(lsp);
             }
-            let cursor = self.cursor_char.min(buf.document.len_chars());
-            let start = self.completion.word_start.min(cursor);
-            if start < cursor {
-                buf.delete(start, cursor);
+            return;
+        };
+        if buf.readonly {
+            if let Some(lsp) = &self.lsp {
+                self.completion.close(lsp);
             }
-            buf.insert(start, label);
-            self.cursor_char = start + label.chars().count();
-            let id = egui::Id::new(("editor", self.ws.active));
-            let mut st = TextEditState::load(ctx, id).unwrap_or_default();
-            let cc = egui::text::CCursor {
-                index: self.cursor_char,
-                prefer_next_row: true,
-            };
-            st.cursor.set_char_range(Some(egui::text::CCursorRange {
-                primary: cc,
-                secondary: cc,
-            }));
-            st.store(ctx, id);
+            return;
         }
-        self.completion.close();
+        let cursor = self.cursor_char.min(buf.document.len_chars());
+        let edit = raw.as_ref().and_then(|item| {
+            completion::accept_edit(&buf.document, item, self.completion.word_start, cursor)
+        });
+        match edit {
+            Some(edit) => {
+                if edit.end_char > edit.start_char {
+                    buf.delete(edit.start_char, edit.end_char);
+                }
+                buf.insert(edit.start_char, &edit.new_text);
+                self.cursor_char = edit.start_char + edit.new_text.chars().count();
+            }
+            None => {
+                let start = self.completion.word_start.min(cursor);
+                if start < cursor {
+                    buf.delete(start, cursor);
+                }
+                buf.insert(start, label);
+                self.cursor_char = start + label.chars().count();
+            }
+        }
+        let id = egui::Id::new(("editor", self.ws.active));
+        let mut st = TextEditState::load(ctx, id).unwrap_or_default();
+        let cc = egui::text::CCursor {
+            index: self.cursor_char,
+            prefer_next_row: true,
+        };
+        st.cursor.set_char_range(Some(egui::text::CCursorRange {
+            primary: cc,
+            secondary: cc,
+        }));
+        st.store(ctx, id);
+        if let Some(lsp) = &self.lsp {
+            self.completion.close(lsp);
+        }
     }
 
     /// Análise estrutural do buffer ativo (tree-sitter). Diagnósticos locais só
@@ -2328,6 +2965,12 @@ impl PhpIdeApp {
             .map(|d| (d.line as u32, d.severity))
             .collect();
         editor_view::paint_scrollbar_stripes(ui, &geom, &diags, total_lines);
+        // Ocorrências do símbolo (T-PHP-005-02): só na revisão calculada.
+        if let Some((op, or_, _word, ranges)) = &self.occurrences {
+            if active_path_matches(&self.ws, op, *or_) && !ranges.is_empty() {
+                editor_view::paint_occurrences(ui, &output.galley, output.galley_pos, ranges);
+            }
+        }
     }
 
     fn editor(&mut self, ctx: &egui::Context) {
@@ -2389,8 +3032,20 @@ impl PhpIdeApp {
                 (buf.document.text(), buf.readonly)
             };
             let mut edited = old.clone();
+            // Semantic tokens (T-PHP-005-01): spans de byte da revisão
+            // vigente do arquivo ativo; aplicados como cor de texto por
+            // cima do highlight sintático (sem flicker: só atualiza por
+            // revisão e por resposta do servidor).
+            let semantic_spans: Option<Vec<(usize, usize, String)>> = self
+                .semantic
+                .as_ref()
+                .filter(|(p, r, _, _)| active_path_matches(&self.ws, p, *r))
+                .map(|(_, _, _, spans)| spans.clone());
             let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
                 let mut job = PhpLanguage.highlight(text, ui.style());
+                if let Some(spans) = &semantic_spans {
+                    apply_semantic_colors(&mut job, spans);
+                }
                 job.wrap.max_width = wrap_width;
                 ui.ctx().fonts(|fonts| fonts.layout_job(job))
             };
@@ -2445,6 +3100,53 @@ impl PhpIdeApp {
         });
         if want_completion && !self.completion.open {
             self.trigger_completion();
+        }
+    }
+}
+
+/// `true` se o buffer ativo é `path` na revisão `revision` (semantic
+/// tokens e ocorrências só valem para o estado em que foram calculados).
+fn active_path_matches(ws: &Workspace, path: &Path, revision: u64) -> bool {
+    ws.active_buffer()
+        .map(|b| b.path.as_deref() == Some(path) && b.document.revision() == revision)
+        .unwrap_or(false)
+}
+
+/// Cor semântica por tipo de token (T-PHP-005-01). `None` = manter a cor
+/// do highlight sintático (strings, comentários e tipos não mapeados).
+fn semantic_color(token_type: &str) -> Option<egui::Color32> {
+    use egui::Color32;
+    Some(match token_type {
+        "class" | "interface" | "trait" | "enum" | "type" | "namespace" => {
+            Color32::from_rgb(0x7A, 0xA2, 0xF7)
+        }
+        "function" | "method" | "macro" => Color32::from_rgb(0xFF, 0xC6, 0x6D),
+        "property" | "enumMember" => Color32::from_rgb(0x9E, 0xCE, 0x6A),
+        "parameter" => Color32::from_rgb(0xD2, 0xA8, 0xFF),
+        "keyword" => Color32::from_rgb(0xBB, 0x9A, 0xF7),
+        "number" => Color32::from_rgb(0xFF, 0xA1, 0x94),
+        "operator" => Color32::from_rgb(0x89, 0xDD, 0xFF),
+        _ => return None,
+    })
+}
+
+/// Sobrepõe cores semânticas no job de layout: a seção cuja posição de
+/// início cai dentro de um span de token recebe a cor do tipo. Spans e
+/// seções estão ordenados — caminhada única O(n+m) por frame.
+fn apply_semantic_colors(job: &mut egui::text::LayoutJob, spans: &[(usize, usize, String)]) {
+    let mut span_idx = 0usize;
+    for section in &mut job.sections {
+        while span_idx < spans.len() && spans[span_idx].1 <= section.byte_range.start {
+            span_idx += 1;
+        }
+        if span_idx >= spans.len() {
+            break;
+        }
+        let (s, e, ty) = &spans[span_idx];
+        if section.byte_range.start >= *s && section.byte_range.start < *e {
+            if let Some(color) = semantic_color(ty) {
+                section.format.color = color;
+            }
         }
     }
 }

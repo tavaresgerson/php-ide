@@ -341,6 +341,74 @@ pub fn paint_scrollbar_stripes(
     }
 }
 
+/// Pinta retângulos de fundo sob as ocorrências do símbolo (T-PHP-005-02),
+/// derivados dos glyphs da galley — o mesmo espaço de coordenadas do texto,
+/// sem drift de rolagem. Ranges em caracteres absolutos do documento.
+/// (Sem wrap de linha, `galley.rows` corresponde 1:1 às linhas do documento.)
+pub fn paint_occurrences(
+    ui: &egui::Ui,
+    galley: &egui::Galley,
+    galley_pos: egui::Pos2,
+    ranges: &[(usize, usize)],
+) {
+    if ranges.is_empty() {
+        return;
+    }
+    let painter = ui.painter();
+    let color = ui.visuals().selection.bg_fill.gamma_multiply(0.22);
+    // Base de char absoluta de cada linha: um glyph por char; o '\n' não é
+    // glyph (flag `ends_with_newline`), mas conta no texto.
+    let mut bases = Vec::with_capacity(galley.rows.len());
+    let mut acc = 0usize;
+    for row in &galley.rows {
+        bases.push(acc);
+        acc += row.glyphs.len() + usize::from(row.ends_with_newline);
+    }
+    for &(start, end) in ranges {
+        if end <= start {
+            continue;
+        }
+        // Linha do range pela base mais próxima (última base ≤ start).
+        let line0 = match bases.binary_search(&start) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let Some(row) = galley.rows.get(line0) else {
+            continue;
+        };
+        let base = bases[line0];
+        if start < base || start >= base + row.glyphs.len() + usize::from(row.ends_with_newline) {
+            continue;
+        }
+        let mut x_min = f32::INFINITY;
+        let mut x_max = f32::NEG_INFINITY;
+        let mut found = false;
+        for (i, glyph) in row.glyphs.iter().enumerate() {
+            let g_start = base + i;
+            let g_end = g_start + 1;
+            if g_end > start && g_start < end {
+                let x = galley_pos.x + glyph.pos.x;
+                x_min = x_min.min(x);
+                x_max = x_max.max(x + glyph.advance_width);
+                found = true;
+            }
+            if g_start >= end {
+                break;
+            }
+        }
+        if found {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(x_min, galley_pos.y + row.rect.top()),
+                    egui::vec2((x_max - x_min).max(2.0), row.rect.height()),
+                ),
+                egui::CornerRadius::ZERO,
+                color,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

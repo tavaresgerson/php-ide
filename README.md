@@ -142,6 +142,28 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
       Others/dirty confirmation/tabs acessíveis em
       `docs/baseline/T-UI-ED-003-01-tabs-audit.md`; `clamp_zoom` central
       (0.5–3.0, NaN → 1.0) com UT e roundtrip de persistência.
+- [x] **Estágio 7.x — Projeto Composer e inteligência PHP (T-PHP-030/001/002/003/004/005)**:
+      descoberta declarativa de `composer.json` (`phpide-php::composer`:
+      constraint PHP → language level, autoload PSR-4/PSR-0 → source/test
+      roots, vendor ausente vira aviso acionável — sem install automático;
+      re-descoberta pelo watcher por mtime); cliente LSP com capabilities
+      negociadas no `initialize` (recursos habilitados por capability, nunca
+      supostos), estados Starting/Running/Failed com crash real vs. parada
+      voluntária, restart pela palette, sincronização planejada por frame
+      (didOpen→didChange→didClose, versões monotônicas) e descarte de
+      respostas de sessão/revisão antigas; completion com cancelamento
+      (`$/cancelRequest`), aceite via `textEdit`/`insertText` em ranges
+      UTF-16 pelas conversões centralizadas (Unicode/CRLF testados) e
+      documentação no popup; navegação definition/implementation/
+      typeDefinition por capability, Go to Symbol (workspace/symbol) e Find
+      Usages (references → painel Find com preview); semantic tokens
+      (delta encoding decodificado, cores por tipo sobre o highlight
+      sintático, cache por revisão) e ocorrências com fallback sintático
+      offline; Problems com escopo projeto/arquivo e resumo por ferramenta.
+      **Gate real**: `crates/phpide-php/tests/composer_flow.rs` sobe um
+      projeto Composer em disco com intelephense real — descobrir, abrir,
+      editar, diagnosticar, completar (`greet`), navegar (definition em
+      `Greeter.php`) e salvar, sem derrubar a sessão.
 
 ## Atalhos
 

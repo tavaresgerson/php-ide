@@ -8,3 +8,7 @@ description = "Suporte à linguagem PHP no phpide: metadados e highlight via syn
 [dependencies]
 eframe = "0.31"
 syntect = "5"
+serde_json = "1"
+
+[dev-dependencies]
+phpide-lsp = { path = "../phpide-lsp" }
