@@ -1,46 +1,20 @@
-//! VCS mínimo (parcial REQUISITOS 1.3/7): branch atual do Git para os widgets
-//! da window header e da status bar. O Git tool window completo (Alt+9) fica
-//! para o próximo estágio; aqui só leitura via `git` CLI.
+//! VCS (Git) — widgets da window header e da status bar, agora via
+//! `phpide-vcs` (Fase 5, GIT-001): branch atual, HEAD desanexada (mostra o
+//! sha curto) e "sem repositório" como três estados de um mesmo detector.
+//! O Git tool window completo fica para o próximo recorte (GIT-003-02 em
+//! diante); aqui só leitura, que a UI polla sem bloquear (NFR-001-02).
 
 use std::path::Path;
-use std::process::Command;
 
-/// Branch atual se `root` for um repositório git; None caso contrário.
+/// Rótulo do VCS para widgets (ex.: `main`, `(detached a1b2c3d)`);
+/// None fora de um repositório.
 pub fn current_branch(root: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args([
-            "-C",
-            &root.display().to_string(),
-            "branch",
-            "--show-current",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch)
-    }
+    phpide_vcs::detect(root).ok().map(|state| state.label())
 }
 
 /// True se o diretório pertence a um repositório git.
 pub fn is_repo(root: &Path) -> bool {
-    Command::new("git")
-        .args([
-            "-C",
-            &root.display().to_string(),
-            "rev-parse",
-            "--is-inside-work-tree",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    phpide_vcs::is_repo(root)
 }
 
 #[cfg(test)]

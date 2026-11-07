@@ -1,0 +1,12 @@
+[package]
+name = "phpide-vcs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Git como provedor do editor: detecção de repo, diff, stage/commit, log, markers e blame (GIT-001/002/003/004)"
+
+[dependencies]
+phpide-core = { path = "../phpide-core" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -25,6 +25,7 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 | `phpide-dbgp` | Protocolo DBGp (Xdebug): breakpoints, run, pilha, variáveis | XDebugger/DBGp driver |
 | `phpide-exec` | Processos externos: descoberta configurável de executáveis, spawn padronizado, timeout, Stop e kill de grupo, stdout/stderr em streaming | Execution infrastructure |
 | `phpide-run` | Run Configurations versionadas, sessões (process list), PHPUnit (escopos + árvore TeamCity) e cobertura Clover | RunManager/PhpUnit runner |
+| `phpide-vcs` | Git como provedor do editor: detecção de repo, diff, stage/commit, log, line markers e blame (wrap do `git` CLI) | GitIntegration/VcsLog/Annotate |
 | `phpide-ui` | Shell gráfica egui/eframe: abas, painéis, editor, execução, plugins | IdeFrame |
 
 ## Roadmap por estágios
@@ -193,10 +194,32 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
         Xdebug/PCOV), percentual por arquivo e faixa no gutter do editor —
         linha fora do relatório nunca aparece como coberta.
       - **Gate real** (`phpide-run/tests/gate_run_debug.rs`): executa um
-        script PHP real, depura com processo PHP real + engine DBGp
-        (peer protocolar — Xdebug ausente neste ambiente, documentado em
-        `docs/baseline/T-RUN-ESTAGIO8-run-debug-test.md`), testa com
-        PHPUnit 11 real e valida Stop/Detach confiáveis.
+        script PHP real, depura com processo PHP real + engine DBGp — gate
+        duplo: peer protocolar e **Xdebug 3.2.0 real** (extensão carregada
+        sem root, `.so` de `.deb` Debian — bugs protocolares achados e
+        corrigidos, ver `docs/baseline/T-RUN-ESTAGIO8-run-debug-test.md`) —,
+        testa com PHPUnit 11 real e valida Stop/Detach confiáveis.
+- [x] **Estágio 10.0 — Git como provedor do editor (GIT-001/002/003/004)**:
+      - **Detecção** (`phpide-vcs::repo`): worktree (root resolvido), branch
+        atual, **HEAD desanexada** (header mostra `(detached <sha>)`) e
+        repositório inválido/bare como erro recuperável com ação (nada
+        bloqueia a UI).
+      - **Diff e commit** (`phpide-vcs::diff`/`ops`): diff de working tree,
+        staged e vs HEAD (parser unified; arquivo untracked vira diff
+        sintético 100% adicionado); stage/unstage por arquivo com status
+        porcelain real pós-operação; commit que **não executa com mensagem
+        vazia**, preserva o **output de hooks** no erro e mantém o **índice
+        intacto** quando um hook recusa.
+      - **Log** (`phpide-vcs::log`): commits com arquivos (`--name-status`),
+        filtros de quantidade, path e revisão.
+      - **Mudanças no editor** (`phpide-vcs::markers`/`blame`): line markers
+        Added/Modified/Removed derivados do diff (pares del+add viram
+        Modified; stage mantém, commit limpa, sem cache a invalidar) e
+        blame por revisão com navegação ao commit (`log(rev=sha)`) —
+        prontos para o gutter (renderização em UI-ED-005-06/006-01/007-01).
+      - **Gate real** (`phpide-vcs/tests/gate_git.rs`): repositório
+        temporário com o `git` do sistema — diff, stage seletivo, commit,
+        falha de hook, markers e blame de ponta a ponta.
 
 ## Atalhos
 

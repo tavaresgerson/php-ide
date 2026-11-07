@@ -15,6 +15,7 @@ phpide-dbgp = { path = "../phpide-dbgp" }
 phpide-exec = { path = "../phpide-exec" }
 phpide-lsp = { path = "../phpide-lsp" }
 phpide-run = { path = "../phpide-run" }
+phpide-vcs = { path = "../phpide-vcs" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
 

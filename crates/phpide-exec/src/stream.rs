@@ -164,7 +164,15 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(lines, vec!["um", "dois", "err:err"]);
+        // Ordem entre pumps (stdout/stderr) é concorrente por desenho — cada
+        // pump tem sua thread. O que o contrato garante: todo o conteúdo das
+        // duas linhas de ambos os streams chega, com Exit ao final (ordenado
+        // pelo join das pumps no waiter). Compara por conjunto ordenado.
+        let mut got = lines;
+        got.sort();
+        let mut want = vec!["dois".to_string(), "err:err".to_string(), "um".to_string()];
+        want.sort();
+        assert_eq!(got, want);
         assert_eq!(exit, Some(Some(0)));
         assert!(!child.is_running());
     }

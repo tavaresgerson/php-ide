@@ -1029,7 +1029,9 @@ Bancos não relacionais exigem modelo próprio de explorer/query/resultados; nã
 
 `GIT-001` — **Repositório e branch — P0**
 
-Detectar worktree, branch, detached HEAD e repositório inválido. Refresh não pode bloquear a UI e deve considerar o root correto em multi-root quando esse recurso existir.
+*Estado (2026-11-07): entregue (GIT-001-01) — `phpide-vcs::repo` detecta worktree (root resolvido), branch, detached HEAD (sha curto) e repositório inválido/bare como erro recuperável com ação (NFR-001/005); UI (header/status bar) consome via `vcs::current_branch`, que agora mostra `(detached <sha>)`. Multi-root (GIT-001-02) segue pendente, junto do refresh incremental de status.*
+
+`GIT-002` — **Diff e Commit — P0/P1**
 
 `GIT-002` — **Diff e Commit — P0/P1**
 
@@ -1048,14 +1050,23 @@ P1:
 - commit inline pelo gutter.
 
 **Aceite P0:** criar repositório temporário, modificar arquivos, stagear apenas um, commitar e conferir que o outro permaneceu fora; falha de hook preserva output e índice; mensagem vazia não executa commit.
+*Estado (2026-11-07): P0 entregue (GIT-002-01/02/03) — `phpide-vcs::diff` (diff working tree/staged/HEAD com parser unified e arquivo untracked sintético), `ops::stage/unstage` com status porcelain real pós-operação e `ops::commit` (mensagem vazia não executa; falha de hook preserva output no detalhe do erro e mantém o índice intacto). Aceite P0 validado em gate com repositório temporário real. P1 (chunk/linha, changelists, amend, staging opcional, commit inline) pendente.*
+
+`GIT-003` — **Log, branches e sincronização — P1**
 
 `GIT-003` — **Log, branches e sincronização — P1**
 
 Log com commits/arquivos, filtros, Branches popup, incoming/outgoing, compare, fetch, pull e push. Operações que reescrevem histórico ou force push devem usar confirmação específica; force deve preferir `--force-with-lease`.
+*Estado (2026-11-07): log entregue (GIT-003-01) — `phpide-vcs::log` com `--name-status` (arquivos por commit), filtros de quantidade, path e revisão inicial (`rev`, usado na navegação a partir do blame). Branches popup, incoming/outgoing, compare e fetch/pull/push (GIT-003-02/03/04) pendente.*
+
+`GIT-004` — **Mudanças locais no editor — P1**
 
 `GIT-004` — **Mudanças locais no editor — P1**
 
 Markers de linhas adicionadas/modificadas/removidas devem derivar do diff e atualizar após save, stage e commit. Gutter de blame segue `UI-ED-007`.
+*Estado (2026-11-07): entregue (GIT-004-01/02) — `phpide-vcs::markers` deriva Added/Modified/Removed do diff vs HEAD (pares del+add viram Modified; remoção ancora na próxima linha existente) e `markers_for_file` reflete save/stage/commit sem cache a invalidar; `phpide-vcs::blame` parseia o porcelain (meta herdada por grupo, boundary, linhas não commitadas) com `line_blame` e navegação ao commit via `log(rev=sha)`. Renderização no editor (gutter/blame gutter) segue com UI-ED-005-06/006-01/007-01.*
+
+`GIT-005` — **Merge, rebase e recuperação — P1/P2**
 
 `GIT-005` — **Merge, rebase e recuperação — P1/P2**
 

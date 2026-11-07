@@ -410,20 +410,20 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-GIT-001-01` | `GIT-001` | Detectar worktree, branch, detached HEAD e repositório inválido sem bloquear UI; UT/IT | `T-NFR-001-02` |
+| [x] | `T-GIT-001-01` | `GIT-001` | Detectar worktree, branch, detached HEAD e repositório inválido sem bloquear UI; UT/IT — entregue: `phpide-vcs::repo` (`detect` → Branch/Detached/erro recuperável, worktree root resolvido, bare e sem-git tratados); UT/IT | `T-NFR-001-02` |
 | [ ] | `T-GIT-001-02` | `GIT-001` | Isolar root/multi-root e refresh de status; IT/FT | `T-GIT-001-01` |
-| [ ] | `T-GIT-002-01` | `GIT-002` | Implementar diff working tree/staged por arquivo; IT/UI | `T-GIT-001-01` |
-| [ ] | `T-GIT-002-02` | `GIT-002` | Implementar stage/unstage por arquivo e status pós-operação; IT/FT | `T-GIT-002-01` |
-| [ ] | `T-GIT-002-03` | `GIT-002` | Implementar commit, mensagem, hooks e preservação do índice em falha; IT/FT | `T-GIT-002-02` |
+| [x] | `T-GIT-002-01` | `GIT-002` | Implementar diff working tree/staged por arquivo; IT/UI — entregue: `phpide-vcs::diff` (parser unified, `diff`/`diff_staged`/`diff_head`, untracked sintético 100% adicionado); UT/IT | `T-GIT-001-01` |
+| [x] | `T-GIT-002-02` | `GIT-002` | Implementar stage/unstage por arquivo e status pós-operação; IT/FT — entregue: `phpide-vcs::ops::stage/unstage` + `status` porcelain v1 (XY, untracked, paths com espaços); IT | `T-GIT-002-01` |
+| [x] | `T-GIT-002-03` | `GIT-002` | Implementar commit, mensagem, hooks e preservação do índice em falha; IT/FT — entregue: `ops::commit` (mensagem vazia não executa; output do hook preservado no detail; índice intacto após falha — gate com pre-commit real); IT | `T-GIT-002-02` |
 | [ ] | `T-GIT-002-04` | `GIT-002` | Implementar stage/unstage por chunk/linha; UT/IT/FT | `T-GIT-002-02` |
 | [ ] | `T-GIT-002-05` | `GIT-002` | Implementar changelists, Amend e staging area opcional; IT/FT | `T-GIT-002-03` |
 | [ ] | `T-GIT-002-06` | `GIT-002` | Implementar before/after commit e commit inline pelo gutter; IT/FT | `T-PHP-040-01`, `T-GIT-002-03`, `T-UI-ED-001-02` |
-| [ ] | `T-GIT-003-01` | `GIT-003` | Implementar Log com commits/arquivos e filtros; IT/UI | `T-GIT-001-01` |
+| [x] | `T-GIT-003-01` | `GIT-003` | Implementar Log com commits/arquivos e filtros; IT/UI — entregue: `phpide-vcs::log` (`--name-status`, filtros max_count/path/rev — rev usado na navegação a partir do blame); UT/IT | `T-GIT-001-01` |
 | [ ] | `T-GIT-003-02` | `GIT-003` | Implementar Branches popup, compare e incoming/outgoing; IT/FT | `T-GIT-003-01` |
 | [ ] | `T-GIT-003-03` | `GIT-003` | Implementar fetch/pull/push com credenciais e output; IT/FT | `T-NFR-004-04`, `T-GIT-003-02` |
 | [ ] | `T-GIT-003-04` | `GIT-003` | Implementar confirmação para reescrita e force-with-lease; IT/FT | `T-NFR-008-02`, `T-GIT-003-03` |
-| [ ] | `T-GIT-004-01` | `GIT-004` | Gerar line markers do diff e atualizar após save/stage/commit; UT/IT/UI | `T-GIT-002-01`, `T-NFR-002-04` |
-| [ ] | `T-GIT-004-02` | `GIT-004` | Implementar provedor de blame por revisão e navegação ao commit; IT | `T-GIT-003-01` |
+| [x] | `T-GIT-004-01` | `GIT-004` | Gerar line markers do diff e atualizar após save/stage/commit; UT/IT/UI — entregue: `phpide-vcs::markers` (Added/Modified/Removed vs HEAD — stage mantém, commit limpa; pares del+add viram Modified, remoção ancora na linha seguinte); UT/IT | `T-GIT-002-01`, `T-NFR-002-04` |
+| [x] | `T-GIT-004-02` | `GIT-004` | Implementar provedor de blame por revisão e navegação ao commit; IT — entregue: `phpide-vcs::blame` (porcelain, meta herdada por grupo, `line_blame`, `blame_rev`, linhas não commitadas identificadas); navegação = `log(rev=sha)`; UT/IT | `T-GIT-003-01` |
 | [ ] | `T-GIT-005-01` | `GIT-005` | Implementar merge 3-way e resolução de conflitos; IT/FT | `T-GIT-002-01` |
 | [ ] | `T-GIT-005-02` | `GIT-005` | Implementar rebase interativo/reword com precondições de dirty tree; IT/FT | `T-GIT-003-04`, `T-GIT-005-01` |
 | [ ] | `T-GIT-005-03` | `GIT-005` | Implementar stash, worktrees e submodules com caminho de recuperação; IT/FT/DOC | `T-GIT-003-02` |
