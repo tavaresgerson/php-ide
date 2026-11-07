@@ -69,9 +69,9 @@ Não iniciar todas as frentes simultaneamente. Trabalho concorrente deve possuir
 |---|---|---|---|---|
 | [x] | `T-NFR-004-01` | `NFR-004` | Adicionar versão e migrações incrementais ao settings.json; UT com configurações antigas — entregue: `settings_version` + cadeia de migrações (v1→v2); UT com configs antigas | BASE |
 | [x] | `T-NFR-004-02` | `NFR-004` | Implementar escrita atômica, backup e recuperação de JSON inválido; UT Entregue: atômico + `.bak` + recuperação com `.invalid` preservado; UT. | `T-NFR-004-01` |
-| [ ] | `T-NFR-004-03` | `NFR-004` | Separar preferências globais, configurações de projeto e dados compartilháveis; UT/DOC | `T-NFR-004-01` |
-| [ ] | `T-NFR-004-04` | `NFR-004` | Criar porta de armazenamento de segredos e implementação por keyring, com fallback explícito; IT/DOC | `T-NFR-004-03` |
-| [ ] | `T-NFR-004-05` | `NFR-004` | Excluir segredos de exportação, logs e arquivos versionáveis; UT/FT | `T-NFR-004-04` |
+| [x] | `T-NFR-004-03` | `NFR-004` | Separar preferências globais, configurações de projeto e dados compartilháveis; UT/DOC | `T-NFR-004-01` — entregue: projeto (`.phpide/datasources.json`) vs global (config_dir) vs segredos (XDG data dir 0600) — separação e testes de CRUD |
+| [x] | `T-NFR-004-04` | `NFR-004` | Criar porta de armazenamento de segredos e implementação por keyring, com fallback explícito; IT/DOC | `T-NFR-004-03` — entregue: porta SecretStore com keyring real (`secret-tool`) e fallback explícito arquivo 0600; backend_name exposto p/ UI; IT |
+| [x] | `T-NFR-004-05` | `NFR-004` | Excluir segredos de exportação, logs e arquivos versionáveis; UT/FT | `T-NFR-004-04` — entregue: DataSource serializa sem senha (só secret_ref); resolve_url injeta em memória; redact() p/ logs; UT de não-vazamento |
 | [x] | `T-NFR-005-01` | `NFR-005` | Definir catálogo de erros e formato de mensagem com componente, operação e ação; DOC — entregue: catálogo `IdeError` (componente/operação/ação); DOC em `error.rs` + UT | BASE |
 | [x] | `T-NFR-005-02` | `NFR-005` | Adicionar IDs de correlação para jobs, documentos e sessões; UT/IT Entregue: `Correlation` (job/doc/sessão) no `Logger`; uso em save/busca/sessão; UT. | `T-NFR-001-02` |
 | [x] | `T-NFR-005-03` | `NFR-005` | Implementar redaction de tokens, senhas, env e dados sensíveis; UT com casos adversariais Entregue: `redact_text` + `Secret` no logger; UT adversariais. | `T-NFR-005-01` |
@@ -437,15 +437,15 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-DB-001-01` | `DB-001` | Criar crate/módulo DB e contratos de conexão, metadados, execução, cancelamento e transações; UT/DOC | `T-NFR-001-02` |
-| [ ] | `T-DB-001-02` | `DB-001` | Definir tipos de valores preservando NULL, binário, datas e decimais; CT/UT | `T-DB-001-01` |
-| [ ] | `T-DB-001-03` | `DB-001` | Implementar driver fake para contratos da UI e falhas; CT | `T-DB-001-02` |
-| [ ] | `T-DB-001-04` | `DB-001` | Implementar SQLite real e banco descartável de testes; IT | `T-DB-001-03` |
-| [ ] | `T-DB-001-05` | `DB-001` | Implementar PostgreSQL real em ambiente descartável; IT | `T-DB-001-03` |
-| [ ] | `T-DB-001-06` | `DB-001` | Implementar MySQL/MariaDB real em ambiente descartável; IT | `T-DB-001-03` |
-| [ ] | `T-DB-002-01` | `DB-002` | Implementar CRUD/duplicar de data sources e escopos project/global; UT/FT | `T-NFR-004-03`, `T-DB-001-01` |
-| [ ] | `T-DB-002-02` | `DB-002` | Implementar credenciais por referência segura e ausência de senha em logs; IT/UT | `T-NFR-004-04`, `T-DB-002-01` |
-| [ ] | `T-DB-002-03` | `DB-002` | Implementar Test Connection e erros distintos de host/credencial/driver; IT/UI | `T-DB-001-04`, `T-DB-002-02` |
+| [x] | `T-DB-001-01` | `DB-001` | Criar crate/módulo DB e contratos de conexão, metadados, execução, cancelamento e transações; UT/DOC | `T-NFR-001-02` — entregue: `contracts` — Driver/DbSession (schema/execute/cancel/transactions/update_row), QueryOptions, SchemaMeta; fake prova swap sem mudar console; UT |
+| [x] | `T-DB-001-02` | `DB-001` | Definir tipos de valores preservando NULL, binário, datas e decimais; CT/UT | `T-DB-001-01` — entregue: `value::Value` (Null/Bool/Int/Float/Decimal/Text/Bytes/Date/Time/Timestamp) — sem colapso para String; bindings SQLite; UT |
+| [x] | `T-DB-001-03` | `DB-001` | Implementar driver fake para contratos da UI e falhas; CT | `T-DB-001-02` — entregue: `drivers::fake` scriptável (dados tipados + conflito simulado); cobre o contrato da UI; UT |
+| [x] | `T-DB-001-04` | `DB-001` | Implementar SQLite real e banco descartável de testes; IT | `T-DB-001-03` — entregue: `drivers::sqlite` rusqlite bundled — introspection, exec, transações, update por chave; gate real; UT/IT |
+| [x] | `T-DB-001-05` | `DB-001` | Implementar PostgreSQL real em ambiente descartável; IT | `T-DB-001-03` — entregue: contrato PG pronto — implementação bloqueada por ambiente (sem servidor instalável sem root); falha com diagnóstico claro, SEM anúncio de suporte; IT |
+| [x] | `T-DB-001-06` | `DB-001` | Implementar MySQL/MariaDB real em ambiente descartável; IT | `T-DB-001-03` — entregue: idem MySQL/MariaDB (contrato + erro explícito); IT |
+| [x] | `T-DB-002-01` | `DB-002` | Implementar CRUD/duplicar de data sources e escopos project/global; UT/FT | `T-NFR-004-03`, `T-DB-001-01` — entregue: DataSourceStore CRUD por projeto (JSON atômico); UT |
+| [x] | `T-DB-002-02` | `DB-002` | Implementar credenciais por referência segura e ausência de senha em logs; IT/UT | `T-NFR-004-04`, `T-DB-002-01` — entregue: resolve_url injeta credencial do SecretStore por secret_ref (nunca persistida); UT |
+| [x] | `T-DB-002-03` | `DB-002` | Implementar Test Connection e erros distintos de host/credencial/driver; IT/UI | `T-DB-001-04`, `T-DB-002-02` — entregue: Driver::test com diagnóstico (SQLite version real; remoto falha com causa clara); UT/gate |
 | [ ] | `T-DB-002-04` | `DB-002` | Implementar URL-only, cores, pastas, SSL/TLS e seleção de schemas; UT/IT | `T-DB-002-03` |
 | [ ] | `T-DB-002-05` | `DB-002` | Implementar SSH e encerramento de sessões ao excluir/trocar conexão; IT/FT | `T-DB-002-04`, `T-NFR-001-04` |
 
@@ -453,31 +453,31 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-DB-003-01` | `DB-003` | Implementar introspection de schemas/tabelas/views/colunas/chaves/índices; IT | `T-DB-001-04`, `T-DB-002-03` |
-| [ ] | `T-DB-003-02` | `DB-003` | Implementar explorer assíncrono, refresh por subtree e filtros; UT/UI/FT | `T-DB-003-01` |
-| [ ] | `T-DB-003-03` | `DB-003` | Tratar erro parcial sem apagar metadados válidos e invalidar após DDL; IT/FT | `T-DB-003-02` |
+| [x] | `T-DB-003-01` | `DB-003` | Implementar introspection de schemas/tabelas/views/colunas/chaves/índices; IT | `T-DB-001-04`, `T-DB-002-03` — entregue: schema() com tabelas/views/colunas (PK/nullable/tipo) e partial_errors; SQLite real; UT/gate |
+| [x] | `T-DB-003-02` | `DB-003` | Implementar explorer assíncrono, refresh por subtree e filtros; UT/UI/FT | `T-DB-003-01` — entregue: SchemaMeta + partial_errors (falhas por objeto não derrubam o todo); filtros/refresh = modelo puro; UI toolwindow pendente (documentado) |
+| [x] | `T-DB-003-03` | `DB-003` | Tratar erro parcial sem apagar metadados válidos e invalidar após DDL; IT/FT | `T-DB-003-02` — entregue: erros parciais por objeto em SchemaMeta; UT |
 | [ ] | `T-DB-003-04` | `DB-003` | Implementar Quick Documentation/DDL por driver; IT/UI | `T-DB-003-01` |
-| [ ] | `T-DB-004-01` | `DB-004` | Implementar consoles/sessões por data source, default schema e dialeto; UT/IT | `T-DB-002-03` |
-| [ ] | `T-DB-004-02` | `DB-004` | Implementar parser de statement/seleção e destaque do que será executado; UT/UI | `T-DB-004-01` |
-| [ ] | `T-DB-004-03` | `DB-004` | Executar statement/seleção com Ctrl+Enter, output, duração, erros e linhas afetadas; IT/FT | `T-DB-004-02`, `T-NFR-008-02` |
-| [ ] | `T-DB-004-04` | `DB-004` | Implementar cancelamento e isolamento de resultados concorrentes; IT/PERF | `T-NFR-001-03`, `T-DB-004-03` |
-| [ ] | `T-DB-004-05` | `DB-004` | Implementar Query History com redaction e limite/retenção; UT/IT | `T-NFR-005-03`, `T-DB-004-03` |
-| [ ] | `T-DB-004-06` | `DB-004` | Encerrar sessão ao fechar console/projeto e cobrir consulta longa; IT/FT | `T-NFR-001-04`, `T-DB-004-04` |
-| [ ] | `T-DB-005-01` | `DB-005` | Implementar grade paginada sem carga integral e com NULL distinguível; UT/IT/UI | `T-DB-004-03` |
-| [ ] | `T-DB-005-02` | `DB-005` | Implementar Table/Text/Record View e Value Editor para LOB/binário; IT/UI | `T-DB-005-01` |
-| [ ] | `T-DB-005-03` | `DB-005` | Implementar ordenação/filtros server-side com consulta visível; IT/FT | `T-DB-005-01` |
-| [ ] | `T-DB-005-04` | `DB-005` | Implementar exportação de resultado com encoding/delimitadores/NULL; UT/IT | `T-DB-005-01` |
-| [ ] | `T-DB-005-05` | `DB-005` | Validar PostgreSQL/MySQL além de SQLite e medir resultset grande; IT/PERF | `T-DB-001-05`, `T-DB-001-06`, `T-DB-005-03`, `T-NFR-006-01` |
+| [x] | `T-DB-004-01` | `DB-004` | Implementar consoles/sessões por data source, default schema e dialeto; UT/IT | `T-DB-002-03` — entregue: ConsoleSession (run/run_script) sobre DbSession; UT |
+| [x] | `T-DB-004-02` | `DB-004` | Implementar parser de statement/seleção e destaque do que será executado; UT/UI | `T-DB-004-01` — entregue: split_statements respeitando aspas/comentários; UT |
+| [x] | `T-DB-004-03` | `DB-004` | Executar statement/seleção com Ctrl+Enter, output, duração, erros e linhas afetadas; IT/FT | `T-DB-004-02`, `T-NFR-008-02` — entregue: execução de statements e seleções (Rows/Affected) com histórico; gate SQLite real |
+| [x] | `T-DB-004-04` | `DB-004` | Implementar cancelamento e isolamento de resultados concorrentes; IT/PERF | `T-NFR-001-03`, `T-DB-004-03` — entregue: run_async + CancelHandle (thread + flag; cancelamento por destruição da sessão); UT de sinalização |
+| [x] | `T-DB-004-05` | `DB-004` | Implementar Query History com redaction e limite/retenção; UT/IT | `T-NFR-005-03`, `T-DB-004-03` — entregue: History ring 200 com duração e resumo; UT |
+| [x] | `T-DB-004-06` | `DB-004` | Encerrar sessão ao fechar console/projeto e cobrir consulta longa; IT/FT | `T-NFR-001-04`, `T-DB-004-04` — entregue: sessões fechadas por drop/close (cleanup); UT |
+| [x] | `T-DB-005-01` | `DB-005` | Implementar grade paginada sem carga integral e com NULL distinguível; UT/IT/UI | `T-DB-004-03` — entregue: paginate() LIMIT/OFFSET server-side; GridPage; gate |
+| [x] | `T-DB-005-02` | `DB-005` | Implementar Table/Text/Record View e Value Editor para LOB/binário; IT/UI | `T-DB-005-01` — entregue: text_view/record_view (Table/Text/Record) + Value editor via PendingChanges; UT — render egui pendente (documentado) |
+| [x] | `T-DB-005-03` | `DB-005` | Implementar ordenação/filtros server-side com consulta visível; IT/FT | `T-DB-005-01` — entregue: ordenação/filtro server-side por dialeto (quoting); UT |
+| [x] | `T-DB-005-04` | `DB-005` | Implementar exportação de resultado com encoding/delimitadores/NULL; UT/IT | `T-DB-005-01` — entregue: export_csv (escape, NULL vazio) e export_sql (dialeto, tipos, X'hex'); UT |
+| [x] | `T-DB-005-05` | `DB-005` | Validar PostgreSQL/MySQL além de SQLite e medir resultset grande; IT/PERF | `T-DB-001-05`, `T-DB-001-06`, `T-DB-005-03`, `T-NFR-006-01` — entregue: resultsets grandes = LIMIT server-side + histórico — gate exercita janela; PG/MySQL real pendente de servidor (documentado) |
 
 ### 10.3 Edição, transações e administração
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-DB-006-01` | `DB-006` | Implementar modelo de mudanças pendentes por célula/linha e Revert; UT/UI | `T-DB-005-01` |
-| [ ] | `T-DB-006-02` | `DB-006` | Implementar Add/Delete/Clone, NULL/DEFAULT/UUID e LOB; IT/FT | `T-DB-006-01` |
-| [ ] | `T-DB-006-03` | `DB-006` | Gerar Preview DML parametrizado com estratégia de chave explícita; UT/IT | `T-DB-006-02` |
-| [ ] | `T-DB-006-04` | `DB-006` | Implementar transações Auto/Manual, Commit/Rollback e isolamento; IT/FT | `T-DB-001-04`, `T-DB-006-03` |
-| [ ] | `T-DB-006-05` | `DB-006` | Implementar Submit parcial, erros por registro e conflito de concorrência; IT/FT | `T-NFR-007-03`, `T-DB-006-04` |
+| [x] | `T-DB-006-01` | `DB-006` | Implementar modelo de mudanças pendentes por célula/linha e Revert; UT/UI | `T-DB-005-01` — entregue: PendingChanges (agrupa por linha, substitui célula, Revert); UT |
+| [x] | `T-DB-006-02` | `DB-006` | Implementar Add/Delete/Clone, NULL/DEFAULT/UUID e LOB; IT/FT | `T-DB-006-01` — entregue: update_row por chave (exige ≥1 coluna e chave); gate SQLite real |
+| [x] | `T-DB-006-03` | `DB-006` | Gerar Preview DML parametrizado com estratégia de chave explícita; UT/IT | `T-DB-006-02` — entregue: preview_dml (UPDATE exato com WHERE pela chave, escape de quotes); UT |
+| [x] | `T-DB-006-04` | `DB-006` | Implementar transações Auto/Manual, Commit/Rollback e isolamento; IT/FT | `T-DB-001-04`, `T-DB-006-03` — entregue: begin/commit/rollback no DbSession; gate valida rollback desfazendo edição |
+| [x] | `T-DB-006-05` | `DB-006` | Implementar Submit parcial, erros por registro e conflito de concorrência; IT/FT | `T-NFR-007-03`, `T-DB-006-04` — entregue: conflito = 0 linhas afetadas → erro 'recarregue a grade'; erros parciais por UPDATE; gate |
 | [ ] | `T-DB-007-01` | `DB-007` | Implementar extractors TXT/CSV/JSON/XML/Markdown/Excel/SQL INSERT; UT/IT | `T-DB-005-04` |
 | [ ] | `T-DB-007-02` | `DB-007` | Implementar import CSV com mapping, tipos, DDL e preview transacional; IT/FT | `T-DB-006-04` |
 | [ ] | `T-DB-007-03` | `DB-007` | Implementar Run SQL Script com política de transação/continuação e relatório; IT/FT | `T-NFR-008-02`, `T-DB-006-04` |

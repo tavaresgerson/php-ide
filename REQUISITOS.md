@@ -956,6 +956,8 @@ A shell Database não representa o RF-DB concluído. A implementação deve ocor
 
 SQLite deve validar o fluxo local; PostgreSQL e MySQL/MariaDB devem validar rede, sessões e dialetos. Outros bancos entram por adaptadores com testes próprios.
 
+*Estado (2026-11-07): Fase 8 onda 1+2 (modelo) entregue em `phpide-db` — contratos de drivers, Value com tipos preservados, segredos (keyring real + fallback 0600 explícito, sem segredos em export/logs/versionamento), data sources por projeto, introspection com erros parciais, console com split/histórico/cancelamento, grade paginada server-side com exportação e edição transacional (pendentes/Revert/Preview DML/commit/rollback/conflitos) — tudo validado em SQLite real (rusqlite bundled) e driver fake (gate no lib.rs). PostgreSQL/MySQL: contratos prontos mas **sem suporte anunciado** — nenhum servidor instalável sem root neste ambiente (drivers falham com diagnóstico claro; ITs se autopulam, como Xdebug ausente no início do Estágio 8). UI toolwindow (render egui do explorer/grade) pendente — o modelo e os testes cobrem o comportamento.*
+
 `DB-001` — **Arquitetura de drivers — P0**
 
 Interfaces separadas para conexão, metadados, execução, cancelamento, transações e edição. Tipos comuns devem preservar valores nulos, binários, datas, decimais e erros do driver sem convertê-los indiscriminadamente para String.
