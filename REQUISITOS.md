@@ -484,6 +484,8 @@ Regras de renderização e interação:
 
 Cada linha pode ser um commit independente. Não é necessário aguardar o estágio inteiro para integrar uma linha concluída.
 
+*Estado (2026-11-07): Fase 5 entregue — iconografia própria com manifesto (UI-ICON-001-01..05); folding estrutural real com projeção e estado por revisão (UI-ED-002); gutter com estados de breakpoint reais e numeração visual sob folding (UI-ED-001); switcher MRU + groups/split com documento compartilhado (UI-ED-003-02/03/04 — render do segundo painel empilhado, eixo lado a lado na próxima iteração); sticky configuráveis (UI-ED-004); inlay hints LSP + Code Vision com dados reais (UI-ED-005); lens/markers/inspections (UI-ED-006); blame gutter + coverage com estado desconhecido honesto (UI-ED-007). P1s fora do recorte: UI-ICON-001-06/07 (migração por lotes), UI-ED-003-05/06/07 (drag/drop, detach), UI-ED-008/009.*
+
 `UI-ED-000` — **Baseline e geometria — P0**
 
 Antes de adicionar recursos, devem existir testes ou caracterização para:

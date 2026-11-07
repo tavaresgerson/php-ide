@@ -82,6 +82,20 @@ pub struct Settings {
     pub composer_path: String,
     /// Closing Policy: máximo de abas (default 10, como o PhpStorm).
     pub tab_limit: u32,
+    /// Folding estrutural (UI-ED-002): master switch.
+    pub folding: bool,
+    /// Ícones de fold sempre visíveis (false = só no hover).
+    pub fold_icons_always: bool,
+    /// Sticky lines: limite de linhas fixas (0 = desliga; default 5).
+    pub sticky_lines_max: u32,
+    /// Inlay hints: All arguments / Pass by reference / exclude list.
+    pub hint_all_arguments: bool,
+    pub hint_pass_by_reference: bool,
+    pub hint_exclude: Vec<String>,
+    /// Gutter de blame (UI-ED-007).
+    pub blame_gutter: bool,
+    /// Lens mode: preview ao pairar na scrollbar (UI-ED-006).
+    pub lens_mode: bool,
 }
 
 /// Limites de zoom da IDE (UI-ED-010): NaN volta a 1.0; fora da faixa
@@ -112,6 +126,14 @@ impl Default for Settings {
             php_path: String::new(),
             composer_path: String::new(),
             tab_limit: 10,
+            folding: true,
+            fold_icons_always: false,
+            sticky_lines_max: 5,
+            hint_all_arguments: true,
+            hint_pass_by_reference: false,
+            hint_exclude: Vec::new(),
+            blame_gutter: false,
+            lens_mode: true,
         }
     }
 }
@@ -179,6 +201,33 @@ impl Settings {
         if let Some(value) = v["composer_path"].as_str() {
             s.composer_path = value.to_string();
         }
+        if let Some(value) = v["folding"].as_bool() {
+            s.folding = value;
+        }
+        if let Some(value) = v["fold_icons_always"].as_bool() {
+            s.fold_icons_always = value;
+        }
+        if let Some(value) = v["sticky_lines_max"].as_u64() {
+            s.sticky_lines_max = value as u32;
+        }
+        if let Some(value) = v["hint_all_arguments"].as_bool() {
+            s.hint_all_arguments = value;
+        }
+        if let Some(value) = v["hint_pass_by_reference"].as_bool() {
+            s.hint_pass_by_reference = value;
+        }
+        if let Some(arr) = v["hint_exclude"].as_array() {
+            s.hint_exclude = arr
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect();
+        }
+        if let Some(value) = v["blame_gutter"].as_bool() {
+            s.blame_gutter = value;
+        }
+        if let Some(value) = v["lens_mode"].as_bool() {
+            s.lens_mode = value;
+        }
         if let Some(value) = v["tab_limit"].as_u64() {
             // Limites seguros: pelo menos 1 aba, no máximo 99.
             s.tab_limit = value.clamp(1, 99) as u32;
@@ -215,6 +264,14 @@ impl Settings {
             "php_path": self.php_path,
             "composer_path": self.composer_path,
             "tab_limit": self.tab_limit,
+            "folding": self.folding,
+            "fold_icons_always": self.fold_icons_always,
+            "sticky_lines_max": self.sticky_lines_max,
+            "hint_all_arguments": self.hint_all_arguments,
+            "hint_pass_by_reference": self.hint_pass_by_reference,
+            "hint_exclude": self.hint_exclude,
+            "blame_gutter": self.blame_gutter,
+            "lens_mode": self.lens_mode,
         });
         if let Err(e) = store::save(&dir.join("settings.json"), &v) {
             eprintln!("{}", e.log_line());

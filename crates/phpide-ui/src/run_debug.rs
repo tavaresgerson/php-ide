@@ -135,6 +135,28 @@ impl RunDebugState {
             .collect()
     }
 
+    /// Status real do breakpoint exatamente nesta linha (gutter pinta
+    /// enabled/disabled/verified/invalid — UI-ED-001-04, sem inventar
+    /// confirmação do backend).
+    pub fn bp_status_for(
+        &self,
+        path: &Path,
+        line1: usize,
+    ) -> Option<phpide_dbgp::breakpoint::BreakpointStatus> {
+        self.bp_store
+            .lock()
+            .unwrap()
+            .breakpoints
+            .iter()
+            .find(|b| b.file.as_deref() == Some(path) && b.line as usize == line1)
+            .map(|b| b.status.clone())
+    }
+
+    /// Mute global dos breakpoints (acinzenta o gutter).
+    pub fn bp_muted(&self) -> bool {
+        self.bp_store.lock().map(|s| s.muted).unwrap_or(false)
+    }
+
     /// Alterna breakpoint de linha (clique no gutter / Ctrl+F8).
     pub fn toggle_breakpoint(&mut self, path: PathBuf, line: usize) -> bool {
         self.breakpoints_dirty = true;

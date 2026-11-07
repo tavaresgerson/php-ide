@@ -260,16 +260,42 @@ pub fn paint_gutter(
     action
 }
 
-/// Pinta as sticky lines (declarações estruturais fixadas no topo do editor
-/// ao rolar) e devolve linha para salto, se alguma entrada foi clicada.
+/// Pinta as sticky lines e devolve linha para salto, se clicada.
+/// Atalho de compatibilidade: máximo fixo e sem folding (uso interno via
+/// `paint_sticky_lines_max`).
+#[allow(dead_code)]
 pub fn paint_sticky_lines(
     ui: &egui::Ui,
     geom: &EditorGeometry,
     doc_lines: &[String],
     blocks: &[phpide_syntax::Block],
 ) -> Option<usize> {
-    let first_visible = geom.first_visible_line();
-    let trail = sticky_trail(blocks, first_visible, STICKY_MAX);
+    paint_sticky_lines_max(
+        ui,
+        geom,
+        doc_lines,
+        blocks,
+        geom.first_visible_line(),
+        STICKY_MAX,
+        None,
+    )
+}
+
+/// Sticky lines com limite configurável (0 = desligado, UI-ED-004-03) e
+/// mapeamento doc→visual para composição com folding (UI-ED-004-04).
+pub fn paint_sticky_lines_max(
+    ui: &egui::Ui,
+    geom: &EditorGeometry,
+    doc_lines: &[String],
+    blocks: &[phpide_syntax::Block],
+    first_visible_doc: usize,
+    max: usize,
+    doc_to_visual: Option<&[usize]>,
+) -> Option<usize> {
+    if max == 0 {
+        return None;
+    }
+    let trail = sticky_trail(blocks, first_visible_doc, max);
     if trail.is_empty() {
         return None;
     }
@@ -279,6 +305,10 @@ pub fn paint_sticky_lines(
     let mut jump: Option<usize> = None;
 
     let font = egui::FontId::monospace(13.0);
+    // Sticky pinam no topo da viewport; o mapeamento doc→visual só decide
+    // QUAL bloco entra na trilha (feito antes via first_visible_doc) — a
+    // posição de pin é sempre depth × row_height (UI-ED-004-04 com folding).
+    let _ = doc_to_visual;
     for (depth, block_idx) in trail.iter().enumerate() {
         let block = &blocks[*block_idx];
         let y = vp.top() + depth as f32 * geom.row_height;
@@ -326,8 +356,9 @@ pub fn paint_sticky_lines(
     jump
 }
 
-/// Faixas de inspeção na scrollbar (REQUISITOS 1.4): marcas coloridas na borda
-/// direita do viewport na altura de cada diagnóstico do arquivo ativo.
+/// Faixas de diagnósticos na scrollbar (legado — a superfície nova agrega
+/// diagnósticos + Git via `lens::aggregate_scrollbar_markers`).
+#[allow(dead_code)]
 pub fn paint_scrollbar_stripes(
     ui: &egui::Ui,
     geom: &EditorGeometry,

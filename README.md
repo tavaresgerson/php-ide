@@ -14,6 +14,16 @@ cargo run --release -- /caminho/do/projeto-php [arquivos...]
 (sem argumento, abre a **Welcome Screen**; arquivos extras são abertos em abas).
 Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 
+## Capturas de tela
+
+Editor com highlight sintático, gutter, tool windows e status bar (tema islands-dark):
+
+![Editor](docs/screenshots/editor.png)
+
+Sticky lines: `namespace` e `class` fixadas no topo ao rolar dentro de um método (Fase 5, UI-ED-004):
+
+![Sticky lines](docs/screenshots/editor-sticky.png)
+
 ## Estrutura (workspace)
 
 | Crate | Responsabilidade | Equivalente clássico |
@@ -27,8 +37,22 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 | `phpide-run` | Run Configurations versionadas, sessões (process list), PHPUnit (escopos + árvore TeamCity) e cobertura Clover | RunManager/PhpUnit runner |
 | `phpide-vcs` | Git como provedor do editor: detecção de repo, diff, stage/commit, log, line markers e blame (wrap do `git` CLI) | GitIntegration/VcsLog/Annotate |
 | `phpide-ui` | Shell gráfica egui/eframe: abas, painéis, editor, execução, plugins | IdeFrame |
+| `phpide-icons` | Iconografia semântica: SVGs próprios, manifesto de licenças, registry com cache/fallback/tint | IconLoader |
 
 ## Roadmap por estágios
+
+- [x] **Fase 5 — Superfície avançada do editor (UI-ICON-001, UI-ED-001..007)**:
+  iconografia própria com manifesto (registry semântico, tint, HiDPI,
+  acessibilidade); folding real (projeção texto↔doc, bandas read-only,
+  caret revela, ancoragem por conteúdo); gutter com estados reais de
+  breakpoint; Switcher Ctrl+Tab MRU; editor groups com documento
+  compartilhado e split; sticky configuráveis; inlay hints assíncronos
+  (LSP) com Code Vision de dados reais (usages LSP, code author do blame);
+  markers agregados de diagnósticos+Git na scrollbar, lens preview e
+  widget de inspeções; blame gutter real e coverage com ausência ≠ sucesso.
+  Gate: 10k linhas navegáveis com pipeline medido (UI-ED-GATE-01).
+  Fora do recorte (P1s): drag/drop de tabs, detach, chunk staging do
+  próprio GIT-002-04, migração de menus/tool windows por lotes (UI-ICON-001-06/07).
 
 - [x] **Estágio 0 — Fundação**: workspace Cargo, 3 crates, build verde no Linux.
 - [x] **Estágio 1 — Editor MVP**: rope com edições mínimas (diff prefixo/sufixo), abas com

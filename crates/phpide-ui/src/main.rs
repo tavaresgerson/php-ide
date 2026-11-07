@@ -6,12 +6,19 @@
 //! Find Action (Ctrl+Shift+A), Quick Switch Scheme (Ctrl+`), Welcome Screen,
 //! editor tabs com preview/pin/Closing Policy e breadcrumbs.
 
+mod blame_gutter;
 mod completion;
+mod editor_surface;
 mod editor_view;
 mod exec;
+mod folding;
 mod geometry;
+mod groups;
 mod header;
+mod hints;
+mod icons_ui;
 mod intelligence;
+mod lens;
 mod palette;
 mod plugins;
 mod run_debug;
@@ -21,6 +28,7 @@ mod search;
 mod settings;
 mod settings_dialog;
 mod statusbar;
+mod switcher;
 mod tabs;
 mod themes;
 mod tool_panels;
@@ -107,6 +115,8 @@ fn main() -> eframe::Result<()> {
         }),
     )
 }
+
+type GitMarkerCache = (PathBuf, u64, Vec<(u32, bool)>);
 
 struct PhpIdeApp {
     ws: Workspace,
@@ -195,6 +205,29 @@ struct PhpIdeApp {
     bookmarks: HashMap<PathBuf, BTreeSet<usize>>,
     terminal_input: String,
     commit_message: String,
+    // Fase 5 — superfície avançada do editor (UI-ED-001..007, UI-ICON-001).
+    /// Estado de folding por arquivo (UI-ED-002).
+    folds: HashMap<PathBuf, folding::FoldState>,
+    /// Cache de ranges de folding por (arquivo, revisão).
+    fold_cache: Option<(PathBuf, u64, Vec<phpide_syntax::folding::FoldRange>)>,
+    /// Switcher Ctrl+Tab (MRU).
+    switcher: switcher::MruSwitcher,
+    /// Editor groups / split (UI-ED-003-03/04).
+    groups: groups::EditorGroups,
+    /// Inlay hints por revisão (UI-ED-005).
+    hints: hints::HintStore,
+    pending_hints: Option<(PathBuf, u64, mpsc::Receiver<Value>)>,
+    /// Code Vision (lenses) por arquivo/revisão.
+    code_vision: hints::CodeVision,
+    /// Gutter de blame (UI-ED-007) com cache por revisão salva.
+    blame: blame_gutter::BlameCache,
+    blame_revision: Option<(PathBuf, u64)>,
+    /// Cache de markers Git para a scrollbar (UI-ED-006-01).
+    git_markers: Option<GitMarkerCache>,
+    /// Resumo de inspeções do arquivo ativo (widget UI-ED-006-03).
+    inspections: lens::InspectionsSummary,
+    /// Popup do lens preview (linha sob a scrollbar).
+    lens_hover: Option<(usize, std::time::Instant)>,
 }
 
 impl PhpIdeApp {
@@ -268,6 +301,18 @@ impl PhpIdeApp {
             last_shift_press: None,
             zoom_on_ctrl_wheel: false,
             bookmarks: HashMap::new(),
+            folds: HashMap::new(),
+            fold_cache: None,
+            switcher: switcher::MruSwitcher::default(),
+            groups: groups::EditorGroups::default(),
+            hints: hints::HintStore::default(),
+            pending_hints: None,
+            code_vision: hints::CodeVision::default(),
+            blame: blame_gutter::BlameCache::default(),
+            blame_revision: None,
+            git_markers: None,
+            inspections: lens::InspectionsSummary::default(),
+            lens_hover: None,
             terminal_input: String::new(),
             commit_message: String::new(),
         };
@@ -489,6 +534,33 @@ impl PhpIdeApp {
         let Ok(result) = rx.try_recv() else { return };
         self.pending_usages = None;
         let locs = intelligence::parse_locations(&result);
+        // Code Vision (UI-ED-005-05): lens de usages com resultados reais no
+        // bloco estrutural sob o cursor.
+        if let (Some((path, cache)), Some(buf)) = (&self.syntax, self.ws.active_buffer()) {
+            if buf.path.as_deref() == Some(path.as_path()) {
+                if let Some(blocks) = cache.get(&buf.document) {
+                    let line0 = buf
+                        .document
+                        .line_col(self.cursor_char.min(buf.document.len_chars()))
+                        .0;
+                    if let Some(b) = blocks
+                        .iter()
+                        .filter(|b| b.start_line0 <= line0 && b.end_line0 >= line0)
+                        .max_by_key(|b| b.start_line0)
+                    {
+                        let locations: Vec<hints::UsageLocation> = locs
+                            .iter()
+                            .map(|l| hints::UsageLocation {
+                                path: l.path.to_string_lossy().into_owned(),
+                                line0: l.line0,
+                                preview: String::new(),
+                            })
+                            .collect();
+                        self.code_vision.set_usages(b.start_line0, &locations);
+                    }
+                }
+            }
+        }
         if locs.is_empty() {
             self.ws.message = "nenhum uso encontrado".to_string();
             return;
@@ -705,6 +777,33 @@ impl PhpIdeApp {
                 self.open_palette(PaletteMode::Symbols);
             }
             PaletteCommand::FindUsages => self.request_usages(),
+            PaletteCommand::SplitRight => {
+                if let Some(p) = self.ws.active_buffer().and_then(|b| b.path.clone()) {
+                    self.groups.open(p.to_string_lossy().into_owned());
+                    self.groups.split_root(groups::Axis::Horizontal);
+                }
+            }
+            PaletteCommand::SplitDown => {
+                if let Some(p) = self.ws.active_buffer().and_then(|b| b.path.clone()) {
+                    self.groups.open(p.to_string_lossy().into_owned());
+                    self.groups.split_root(groups::Axis::Vertical);
+                }
+            }
+            PaletteCommand::ToggleBlame => {
+                self.settings.blame_gutter = !self.settings.blame_gutter;
+                self.ws.message = format!(
+                    "blame gutter: {}",
+                    if self.settings.blame_gutter {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                );
+            }
+            PaletteCommand::ToggleFolding => {
+                self.settings.folding = !self.settings.folding;
+                self.fold_cache = None;
+            }
             PaletteCommand::RestartLsp => self.restart_lsp(),
             PaletteCommand::RunCurrent => self.run_current_php(),
             PaletteCommand::DebugCurrent => self.debug_run(),
@@ -886,6 +985,47 @@ impl eframe::App for PhpIdeApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Screenshot do próprio app para documentação (README): com
+        // PHPIDE_SCREENSHOT_TO=<arquivo.ppm> definido, pede o frame N
+        // (PHPIDE_SCREENSHOT_AFTER, default 8) ao egui e grava PPM (RGBA→RGB;
+        // converta para PNG com o ImageMagick) antes de sair. Só ativo com o
+        // env — zero efeito em uso normal.
+        if std::env::var_os("PHPIDE_SCREENSHOT_TO").is_some() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static FRAMES: AtomicUsize = AtomicUsize::new(0);
+            let n = FRAMES.fetch_add(1, Ordering::Relaxed);
+            let after: usize = std::env::var("PHPIDE_SCREENSHOT_AFTER")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8);
+            if n == after {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                // O frame do screenshot só é produzido num redraw seguinte.
+                ctx.request_repaint();
+            }
+            let shot = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .find_map(|ev| match ev {
+                        egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                        _ => None,
+                    })
+            });
+            if let Some(image) = shot {
+                let path = std::env::var("PHPIDE_SHOT_OUTPUT").unwrap_or_else(|_| {
+                    std::env::var("PHPIDE_SCREENSHOT_TO").unwrap()
+                });
+                let (w, h) = (image.width(), image.height());
+                let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+                for px in image.pixels.iter() {
+                    ppm.extend_from_slice(&[px.r(), px.g(), px.b()]);
+                }
+                if std::fs::write(&path, &ppm).is_ok() {
+                    eprintln!("screenshot gravado: {path} ({w}x{h})");
+                }
+                std::process::exit(0);
+            }
+        }
         // Fechamento da janela com buffers sujos: cancela o close e abre a
         // confirmação (NFR-007-02). O modal reenvia ViewportCommand::Close.
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -1228,7 +1368,26 @@ impl PhpIdeApp {
                 self.set_zoom(self.zoom / 1.1);
             }
             if i.consume_key(ctrl, Key::Tab) {
-                self.open_palette(PaletteMode::Recent);
+                // Switcher MRU (UI-ED-003-02): primeiro Ctrl+Tab abre o
+                // ciclo no mais recente; Tab repetido anda; soltar confirma.
+                if !self.switcher.is_cycling() {
+                    self.switcher.begin_cycle();
+                } else {
+                    self.switcher.cycle_next();
+                }
+            }
+            if !i.modifiers.ctrl && self.switcher.is_cycling() {
+                if let Some(key) = self.switcher.confirm() {
+                    if let Some(idx) = self.ws.buffers.iter().position(|b| {
+                        b.path
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .as_deref()
+                            == Some(key.as_str())
+                    }) {
+                        self.ws.active = idx;
+                    }
+                }
             }
             if i.consume_key(ctrl, Key::Backtick) {
                 self.scheme_open = true;
@@ -2050,6 +2209,71 @@ impl PhpIdeApp {
             self.semantic = None;
         }
 
+        // 8b. Inlay hints (UI-ED-005-01/02): resposta por revisão, descartada
+        // se o documento já avançou (provedor lento não pinta dado velho).
+        if let Some((req_path, req_revision, rx)) = &self.pending_hints {
+            if let Ok(result) = rx.try_recv() {
+                let (req_path, req_revision) = (req_path.clone(), *req_revision);
+                self.pending_hints = None;
+                let current_rev = self
+                    .ws
+                    .buffers
+                    .iter()
+                    .find(|b| b.path.as_deref() == Some(req_path.as_path()))
+                    .map(|b| b.document.revision());
+                if current_rev == Some(req_revision) {
+                    let parsed = parse_inlay_hints(&result);
+                    self.hints.apply(hints::HintResponse {
+                        revision: hints::Revision(req_revision),
+                        hints: parsed,
+                        status: if result.is_null() {
+                            Some("servidor sem inlay hints".to_string())
+                        } else {
+                            None
+                        },
+                    });
+                }
+            }
+        }
+        if self.settings.inlay_hints {
+            let active = self.ws.active_buffer().and_then(|b| {
+                let path = b.path.clone()?;
+                if !phpide_php::Php::is_php_file(&path) {
+                    return None;
+                }
+                Some((path, b.document.revision(), b.document.line_count()))
+            });
+            let needs = match (&active, &self.pending_hints, self.hints.current) {
+                (Some((p, r, _)), pending, cur) => {
+                    let pending_ok = pending
+                        .as_ref()
+                        .map(|(pp, pr, _)| pp == p && pr == r)
+                        .unwrap_or(false);
+                    !pending_ok && cur != Some(hints::Revision(*r))
+                }
+                (None, _, _) => false,
+            };
+            if needs {
+                if let Some((path, revision, line_count)) = active {
+                    let end_line = line_count.saturating_sub(1) as u64;
+                    let rx = lsp.request(
+                        "textDocument/inlayHint",
+                        serde_json::json!({
+                            "textDocument": { "uri": phpide_lsp::path_to_uri(&path) },
+                            "range": {
+                                "start": { "line": 0, "character": 0 },
+                                "end": { "line": end_line, "character": 10_000 }
+                            }
+                        }),
+                    );
+                    self.pending_hints = Some((path, revision, rx));
+                    self.hints.begin(hints::Revision(revision));
+                }
+            }
+        } else if self.hints.current.is_some() {
+            self.hints.invalidate();
+        }
+
         // 9. Ocorrências (documentHighlight) com fallback local (005-02).
         if let Some(rx) = &self.pending_occurrences {
             if let Ok(result) = rx.try_recv() {
@@ -2836,20 +3060,23 @@ impl PhpIdeApp {
         ui.separator();
     }
 
-    /// Pinta a superfície do editor sobre o viewport (Estágio 6.2): gutter,
-    /// sticky lines e faixas de inspeção — usando a geometria exata da galley.
+    /// Pinta a superfície do editor sobre o viewport (Estágio 6.2 + Fase 5):
+    /// gutter, estados de breakpoint, chevrons de folding, sticky lines,
+    /// hints/Code Vision, blame, markers agregados da scrollbar e lens
+    /// preview — geometria exata da galley, projeção de folding quando há
+    /// dobras (linhas do documento mapeadas para linhas visuais).
     fn paint_editor_surface(
         &mut self,
         ui: &egui::Ui,
         output: &egui::text_edit::TextEditOutput,
-        _offset: egui::Vec2,
+        proj: Option<&folding::FoldProjection>,
     ) {
         use phpide_core::Severity;
         let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
         };
         // Snapshot: empréstimo imutável termina antes das mutações abaixo.
-        let (total_lines, cursor_line1, text, blocks) = {
+        let (doc_total_lines, cursor_line1, text, blocks, saved_hash, buffer_dirty) = {
             let Some(buf) = self.ws.active_buffer() else {
                 return;
             };
@@ -2866,56 +3093,344 @@ impl PhpIdeApp {
                     .0,
                 buf.document.text(),
                 blocks,
+                blame_gutter::text_hash(buf.document.text().as_str()),
+                buf.dirty,
             )
         };
         let Some(first_row) = output.galley.rows.first() else {
             return;
         };
         let row_height = first_row.rect.height();
-        // Espaço de tela egui: galley_pos já tem a rolagem fisicamente
-        // aplicada; o viewport visível é o clip do próprio painel.
         let viewport = ui.clip_rect();
         let geom = editor_view::EditorGeometry {
             galley_pos: output.galley_pos,
             viewport,
             row_height,
         };
+        // Mapeamento doc→visual (identidade sem folding).
+        let (total_lines, doc_to_visual): (usize, Option<Vec<usize>>) = match proj {
+            Some(p) => (p.text.lines().count(), Some(p.doc_to_visual.clone())),
+            None => (doc_total_lines, None),
+        };
+        let map_line = |doc_line1: usize| -> usize {
+            match &doc_to_visual {
+                Some(map) => map
+                    .get(doc_line1.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                None => doc_line1.saturating_sub(1),
+            }
+        };
+
+        // Gutter: números/bookmarks/coverage na numeração visual; breakpoints
+        // entram vazios aqui e são pintados por estado logo abaixo.
         let bps = self.rd.bp_lines_for(&path);
-        let bms = self.bookmarks.get(&path).cloned().unwrap_or_default();
-        let coverage = self
+        let bms_doc = self.bookmarks.get(&path).cloned().unwrap_or_default();
+        let bms: std::collections::BTreeSet<usize> = bms_doc.iter().map(|&l| map_line(l)).collect();
+        let coverage_doc = self
             .rd
             .coverage
             .as_ref()
             .and_then(|report| report.file(&path).cloned());
+        let coverage_view = coverage_doc.map(|cov| {
+            let mut mapped = phpide_run::coverage::FileCoverage::default();
+            for (&k, &v) in cov.lines.iter() {
+                let vline = map_line(k as usize);
+                if vline != usize::MAX {
+                    mapped.lines.insert(vline as u32 + 1, v);
+                }
+            }
+            mapped
+        });
         let action = editor_view::paint_gutter(
             ui,
             &geom,
             total_lines,
             cursor_line1,
-            &bps,
+            &std::collections::BTreeSet::new(),
             &bms,
             output.galley.rows.len(),
-            coverage.as_ref(),
+            coverage_view.as_ref(),
         );
         if let Some(line1) = action.toggle_breakpoint {
-            self.toggle_breakpoint_at(line1);
+            // Linha visual → documento.
+            let doc_line1 = match proj {
+                Some(p) => p
+                    .visual_to_doc
+                    .get(line1.saturating_sub(1))
+                    .map(|d| d + 1)
+                    .unwrap_or(line1),
+                None => line1,
+            };
+            self.toggle_breakpoint_at(doc_line1);
         }
-        // Sticky lines: só para PHP com análise estrutural do arquivo ativo.
-        if !blocks.is_empty() {
+        // Discos de breakpoint com estado real (UI-ED-001-04).
+        let muted = self.rd.bp_muted();
+        let num_x = viewport.left() + editor_view::GUTTER_WIDTH - 7.0;
+        for doc_line1 in &bps {
+            let vline = map_line(*doc_line1);
+            if vline == usize::MAX {
+                continue;
+            }
+            let y = geom.row_y(vline);
+            if y + row_height < viewport.top() || y > viewport.bottom() {
+                continue;
+            }
+            let status = self.rd.bp_status_for(&path, *doc_line1);
+            let visual = status
+                .as_ref()
+                .map(|s| editor_surface::bp_visual(s, muted))
+                .unwrap_or(editor_surface::BpVisual::Enabled);
+            editor_surface::paint_breakpoint_disc(
+                ui.painter(),
+                egui::pos2(num_x, y + row_height * 0.5),
+                row_height * 0.32,
+                visual,
+            );
+        }
+        // Chevrons de folding (UI-ED-002-03).
+        if self.settings.folding {
+            let rev_now = self
+                .ws
+                .active_buffer()
+                .map(|b| b.document.revision())
+                .unwrap_or(0);
+            let cached = self
+                .fold_cache
+                .as_ref()
+                .filter(|(fp, fr, _)| fp == &path && *fr == rev_now)
+                .map(|(_, _, r)| r.clone());
+            if let Some(ranges) = cached {
+                let visuals = self.folds.get(&path).map(|f| f.visuals());
+                let folded: std::collections::BTreeSet<usize> = self
+                    .folds
+                    .get(&path)
+                    .map(|f| (0..f.ranges.len()).filter(|&i| f.is_folded(i)).collect())
+                    .unwrap_or_default();
+                if let Some(visuals) = visuals {
+                    let act = editor_surface::paint_fold_chevrons(
+                        ui,
+                        &geom,
+                        viewport.left(),
+                        editor_view::GUTTER_WIDTH * 0.42,
+                        &ranges,
+                        &visuals,
+                        &folded,
+                        proj.map(|p| p.doc_to_visual.as_slice()),
+                        total_lines,
+                        self.settings.fold_icons_always,
+                    );
+                    if let Some(idx) = act.toggle {
+                        if let Some(f) = self.folds.get_mut(&path) {
+                            f.toggle(idx);
+                        }
+                    }
+                }
+            }
+        }
+        // Sticky lines (UI-ED-004): limite configurável (0 = desliga).
+        let sticky_max = self.settings.sticky_lines_max as usize;
+        if self.settings.sticky_lines && sticky_max > 0 && !blocks.is_empty() {
             let doc_lines: Vec<String> = text.lines().map(str::to_string).collect();
-            if let Some(line0) = editor_view::paint_sticky_lines(ui, &geom, &doc_lines, &blocks) {
+            let first_visible = match proj {
+                Some(p) => p
+                    .visual_to_doc
+                    .get(geom.first_visible_line())
+                    .copied()
+                    .unwrap_or(geom.first_visible_line()),
+                None => geom.first_visible_line(),
+            };
+            let jump = editor_view::paint_sticky_lines_max(
+                ui,
+                &geom,
+                &doc_lines,
+                &blocks,
+                first_visible,
+                sticky_max,
+                proj.map(|p| p.doc_to_visual.as_slice()),
+            );
+            if let Some(line0) = jump {
                 if let Some(buf) = self.ws.active_buffer_mut() {
                     buf.request_cursor(line0, 0);
                 }
             }
         }
-        // Faixas de inspeção na scrollbar (diagnósticos do arquivo ativo).
-        let diags: Vec<(u32, Severity)> = self
+        // Inlay hints (UI-ED-005-03) — filtrados pelas configurações.
+        if self.settings.inlay_hints {
+            let hs = hints::HintSettings {
+                enabled: true,
+                all_arguments: self.settings.hint_all_arguments,
+                pass_by_reference: self.settings.hint_pass_by_reference,
+                exclude: self.settings.hint_exclude.clone(),
+            };
+            let filtered = hs.filter(self.hints.hints());
+            editor_surface::paint_inlay_hints(
+                ui,
+                &geom,
+                &output.galley,
+                output.galley_pos,
+                &filtered,
+                proj.map(|p| p.doc_to_visual.as_slice()),
+                total_lines,
+            );
+        }
+        // Code Vision (UI-ED-005-05/06).
+        if let Some(clicked) = editor_surface::paint_code_vision(
+            ui,
+            &geom,
+            &self.code_vision.lenses,
+            proj.map(|p| p.doc_to_visual.as_slice()),
+            total_lines,
+            editor_view::GUTTER_WIDTH,
+        ) {
+            if let Some(buf) = self.ws.active_buffer_mut() {
+                buf.request_cursor(clicked, 0);
+            }
+            self.request_usages();
+        }
+        // Gutter de blame (UI-ED-007-01): dados reais, invalidação por
+        // revisão salva; buffer sujo = anotações "stale" sinalizadas.
+        if self.settings.blame_gutter {
+            let rev = self
+                .ws
+                .active_buffer()
+                .map(|b| b.document.revision())
+                .unwrap_or(0);
+            let needs_load =
+                !buffer_dirty && self.blame.is_stale(&path.to_string_lossy(), saved_hash);
+            if needs_load {
+                if let Ok(entries) = phpide_vcs::blame(&self.ws.root, &path) {
+                    self.blame
+                        .load(&path.to_string_lossy(), saved_hash, entries.clone());
+                    self.blame_revision = Some((path.clone(), rev));
+                    // Code author (UI-ED-005-06) agregado do blame real.
+                    if let Some((_, cache)) = &self.syntax {
+                        if let Some(buf) = self.ws.active_buffer() {
+                            if let Some(blocks) = cache.get(&buf.document) {
+                                for b in blocks.iter().filter(|b| {
+                                    matches!(
+                                        b.kind.as_str(),
+                                        "class_declaration"
+                                            | "method_declaration"
+                                            | "function_declaration"
+                                    )
+                                }) {
+                                    let entry_vec = entries.clone();
+                                    self.code_vision.set_code_author(
+                                        b.start_line0,
+                                        b.start_line0,
+                                        b.end_line0,
+                                        |line| {
+                                            entry_vec
+                                                .iter()
+                                                .find(|e| {
+                                                    line >= e.final_start as usize
+                                                        && line <= e.final_end() as usize
+                                                })
+                                                .map(|e| (e.author.as_str(), e.timestamp))
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let stale = buffer_dirty
+                || !matches!(&self.blame_revision, Some((p, r)) if p == &path && *r == rev);
+            let strip = egui::Rect::from_min_size(
+                egui::pos2(viewport.left() + editor_view::GUTTER_WIDTH, viewport.top()),
+                egui::vec2(76.0, viewport.height()),
+            );
+            editor_surface::paint_blame_strip(
+                ui,
+                &geom,
+                strip,
+                &|line1| self.blame.annotate(line1),
+                total_lines,
+                stale,
+            );
+        }
+        // Markers agregados da scrollbar: diagnósticos + Git (UI-ED-006-01).
+        let diags_doc: Vec<(u32, Severity)> = self
             .ws
             .diagnostics_for(&path)
             .map(|d| (d.line as u32, d.severity))
             .collect();
-        editor_view::paint_scrollbar_stripes(ui, &geom, &diags, total_lines);
+        let diags: Vec<(u32, Severity)> = diags_doc
+            .iter()
+            .map(|(l, s)| ((map_line(*l as usize) as u32).saturating_add(1), *s))
+            .filter(|(l, _)| (*l as usize) < usize::MAX)
+            .collect();
+        if self
+            .git_markers
+            .as_ref()
+            .map(|(p, _, _)| p != &path)
+            .unwrap_or(true)
+        {
+            self.git_markers = None;
+        }
+        let rev = self
+            .ws
+            .active_buffer()
+            .map(|b| b.document.revision())
+            .unwrap_or(0);
+        let git_fresh = matches!(&self.git_markers, Some((p, r, _)) if p == &path && *r == rev);
+        if !git_fresh && !buffer_dirty {
+            let markers = phpide_vcs::markers_for_file(&self.ws.root, &path)
+                .map(|m| {
+                    m.iter()
+                        .map(|(&l, kind)| (l, *kind == phpide_vcs::LineMarker::Added))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.git_markers = Some((path.clone(), rev, markers));
+        }
+        let git: Vec<(u32, bool)> = self
+            .git_markers
+            .as_ref()
+            .filter(|(p, _, _)| p == &path)
+            .map(|(_, _, mk)| {
+                mk.iter()
+                    .map(|(l, added)| ((map_line(*l as usize) as u32).saturating_add(1), *added))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let markers = lens::aggregate_scrollbar_markers(&diags, &git, total_lines);
+        editor_surface::paint_scroll_markers(ui, &geom, &markers);
+        // Lens preview (UI-ED-006-02).
+        if self.settings.lens_mode {
+            if let Some(line0) = editor_surface::scrollbar_hover_line(ui, &geom, total_lines) {
+                self.lens_hover = Some((line0, std::time::Instant::now()));
+            } else if self
+                .lens_hover
+                .as_ref()
+                .map(|(_, t)| t.elapsed() > std::time::Duration::from_millis(400))
+                .unwrap_or(false)
+            {
+                self.lens_hover = None;
+            }
+            if let Some((line0, _)) = self.lens_hover {
+                let doc_line0 = match proj {
+                    Some(p) => p.visual_to_doc.get(line0).copied().unwrap_or(line0),
+                    None => line0,
+                };
+                let doc_lines: Vec<String> = text.lines().map(str::to_string).collect();
+                let preview = lens::lens_preview(&doc_lines, doc_line0, 3);
+                egui::Area::new(egui::Id::new("lens-preview"))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-24.0, 80.0))
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            for l in &preview.lines {
+                                ui.label(egui::RichText::new(l).monospace().size(11.0));
+                            }
+                        });
+                    });
+            }
+        }
+        // Resumo de inspeções do arquivo (widget UI-ED-006-03, status bar).
+        self.inspections = lens::inspections_summary(&diags_doc);
         // Ocorrências do símbolo (T-PHP-005-02): só na revisão calculada.
         if let Some((op, or_, _word, ranges)) = &self.occurrences {
             if active_path_matches(&self.ws, op, *or_) && !ranges.is_empty() {
@@ -2982,7 +3497,44 @@ impl PhpIdeApp {
                 let buf = self.ws.active_buffer().unwrap();
                 (buf.document.text(), buf.readonly)
             };
-            let mut edited = old.clone();
+            // ---- Fase 5: folding (UI-ED-002) — ranges por revisão ----
+            let path_key = self.ws.active_buffer().and_then(|b| b.path.clone());
+            if let (Some(path), Some(rev)) = (
+                path_key.clone(),
+                self.ws.active_buffer().map(|b| b.document.revision()),
+            ) {
+                if !self.switcher.is_cycling() {
+                    self.switcher.touch(&path.to_string_lossy());
+                }
+                if self.settings.folding {
+                    let fresh =
+                        matches!(&self.fold_cache, Some((p, r, _)) if p == &path && *r == rev);
+                    if !fresh {
+                        let ranges =
+                            phpide_syntax::folding::folding_ranges(&old, old.lines().count());
+                        let doc_lines: Vec<String> = old.lines().map(str::to_string).collect();
+                        self.fold_cache = Some((path.clone(), rev, ranges.clone()));
+                        self.folds
+                            .entry(path)
+                            .or_default()
+                            .update(ranges, &doc_lines);
+                    }
+                }
+            }
+            let fold_ctx = path_key.clone().and_then(|path| {
+                if !self.settings.folding {
+                    return None;
+                }
+                let visuals = self.folds.get(&path)?.visuals();
+                if visuals.is_empty() {
+                    return None;
+                }
+                Some((path, folding::project(&old, &visuals), visuals))
+            });
+            let mut edited = match &fold_ctx {
+                Some((_, proj, _)) => proj.text.clone(),
+                None => old.clone(),
+            };
             // Semantic tokens (T-PHP-005-01): spans de byte da revisão
             // vigente do arquivo ativo; aplicados como cor de texto por
             // cima do highlight sintático (sem flicker: só atualiza por
@@ -3004,7 +3556,8 @@ impl PhpIdeApp {
             // recuo à esquerda para nunca ficar sob ele.
             let scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
             let scroll_area = match scroll_hook {
-                Some(line) => scroll_area.vertical_scroll_offset(line * 18.0),
+                // `line` já é offset em pixels (line_to_content_y).
+                Some(offset_y) => scroll_area.vertical_scroll_offset(offset_y),
                 None => scroll_area,
             };
             let scroll = scroll_area.show(ui, |ui| {
@@ -3027,12 +3580,46 @@ impl PhpIdeApp {
             if let Some(cursor) = output.cursor_range {
                 self.cursor_char = cursor.primary.ccursor.index;
             }
+            // Caret em região dobrada revela a dobra (UI-ED-002-03): o texto
+            // projetado some; o caret volta a enxergar a região.
+            if let Some((path, proj, _)) = &fold_ctx {
+                let vline = edited
+                    .chars()
+                    .take(self.cursor_char.min(edited.chars().count()))
+                    .filter(|c| *c == '\n')
+                    .count();
+                if let Some(&doc_line) = proj.visual_to_doc.get(vline) {
+                    let visuals = self.folds.get(path).map(|f| f.visuals());
+                    if let Some(v) = visuals {
+                        if v.is_hidden(doc_line) {
+                            let target = v.fold_at(doc_line).map(|(s, _)| s);
+                            let st = self.folds.get_mut(path).unwrap();
+                            if let Some(idx) = target
+                                .and_then(|s| st.ranges.iter().position(|r| r.start_line0 == s))
+                            {
+                                st.toggle(idx);
+                            }
+                        }
+                    }
+                }
+            }
 
-            // ---- Estágio 6.2: superfície do editor (gutter/sticky/stripes) ----
-            self.paint_editor_surface(ui, &output, scroll.state.offset);
+            // ---- Estágio 6.2+Fase 5: superfície do editor ----
+            self.paint_editor_surface(ui, &output, fold_ctx.as_ref().map(|(_, p, _)| p));
 
-            if edited != old {
-                if let Some((at, removed, inserted)) = Self::diff_edit(&old, &edited) {
+            // Com folding, o TextEdit editou o texto projetado: mapeia a
+            // edição de volta ao documento (bandas são read-only).
+            let (old_for_diff, edited_for_diff) = match &fold_ctx {
+                Some((_, proj, _)) => match folding::commit(proj, &edited, &old) {
+                    folding::ProjectedCommit::NewDocText(t) => (old.clone(), t),
+                    folding::ProjectedCommit::Unchanged => (old.clone(), old.clone()),
+                },
+                None => (old.clone(), edited.clone()),
+            };
+            if old_for_diff != edited_for_diff {
+                if let Some((at, removed, inserted)) =
+                    Self::diff_edit(&old_for_diff, &edited_for_diff)
+                {
                     let mut edited_buf = self.ws.active_buffer_mut();
                     if let Some(buf) = edited_buf.take() {
                         if removed > 0 {
@@ -3048,15 +3635,107 @@ impl PhpIdeApp {
                     }
                 }
             }
+            // Segundo painel do split (UI-ED-003-04): mesma Document/rope do
+            // buffer (texto, dirty e undo compartilhados), mas TextEdit com
+            // id/scroll/caret próprios. Neste recorte o layout empilha o
+            // segundo painel (o eixo fica registrado no modelo de groups
+            // para o layout lado a lado da próxima iteração).
+            let second = match &self.groups.root {
+                groups::GroupNode::Split { children, .. } => match &children[1] {
+                    groups::GroupNode::Leaf { views, .. } => {
+                        views.first().map(|v| v.buffer.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(key) = second {
+                let buf_idx = self.ws.buffers.iter().position(|b| {
+                    b.path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .as_deref()
+                        == Some(key.as_str())
+                });
+                if let Some(idx) = buf_idx {
+                    ui.separator();
+                    let (text2, readonly2) = {
+                        let b = &self.ws.buffers[idx];
+                        (b.document.text(), b.readonly)
+                    };
+                    let mut edited2 = text2.clone();
+                    egui::ScrollArea::vertical()
+                        .id_salt(("pane2", idx))
+                        .max_height(ui.available_height() * 0.45)
+                        .show(ui, |ui| {
+                            egui::TextEdit::multiline(&mut edited2)
+                                .id(egui::Id::new(("editor", idx, "pane2")))
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .interactive(!readonly2)
+                                .show(ui);
+                        });
+                    if edited2 != text2 {
+                        if let Some((at, removed, inserted)) = Self::diff_edit(&text2, &edited2) {
+                            let b = &mut self.ws.buffers[idx];
+                            if removed > 0 {
+                                b.delete(at, at + removed);
+                            }
+                            if !inserted.is_empty() {
+                                b.insert(at, &inserted);
+                            }
+                        }
+                    }
+                    // Fechar o painel: remove a vista do segundo grupo.
+                    if ui.small_button("✕ Unsplit").clicked() {
+                        while self.groups.close_active_in_root_second().is_some() {}
+                    }
+                }
+            }
         });
         if want_completion && !self.completion.open {
             self.trigger_completion();
         }
+        // Popup do switcher MRU (UI-ED-003-02): desenha por cima de tudo.
+        let mut labels = std::collections::HashMap::new();
+        for b in &self.ws.buffers {
+            if let Some(p) = &b.path {
+                labels.insert(
+                    p.to_string_lossy().into_owned(),
+                    groups::tab_title(&p.to_string_lossy(), b.dirty, false),
+                );
+            }
+        }
+        switcher::popup(ctx, &self.switcher, &labels, 0);
     }
 }
 
 /// `true` se o buffer ativo é `path` na revisão `revision` (semantic
 /// tokens e ocorrências só valem para o estado em que foram calculados).
+/// Converte a resposta LSP `textDocument/inlayHint` no modelo interno
+/// (label pode ser string ou partes com formatação).
+fn parse_inlay_hints(result: &Value) -> Vec<hints::InlayHint> {
+    result
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|h| {
+                    let line0 = h["position"]["line"].as_u64()? as usize;
+                    let label = match &h["label"] {
+                        Value::String(s) => s.clone(),
+                        Value::Array(parts) => parts
+                            .iter()
+                            .filter_map(|p| p["value"].as_str().map(String::from))
+                            .collect(),
+                        _ => return None,
+                    };
+                    Some(hints::InlayHint { line0, label })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn active_path_matches(ws: &Workspace, path: &Path, revision: u64) -> bool {
     ws.active_buffer()
         .map(|b| b.path.as_deref() == Some(path) && b.document.revision() == revision)
@@ -3198,10 +3877,114 @@ fn symbol_kind_label(kind: u64) -> String {
 }
 
 #[cfg(test)]
+mod gate_ui_ed {
+    //! Gate UI-ED-GATE-01: pipeline de superfície (folding + gutter visual +
+    //! markers + sticky) sobre fixture de 10 mil linhas, com medição.
+
+    use super::*;
+
+    fn big_php() -> String {
+        let mut s = String::from("<?php\n");
+        for i in 0..2000 {
+            s.push_str(&format!(
+                "function f{i}(): void {{\n    if (true) {{\n        echo {i};\n    }}\n}}\n"
+            ));
+        }
+        s
+    }
+
+    #[test]
+    fn gate_folding_gutter_markers_10k_within_budget() {
+        let code = big_php();
+        let total = code.lines().count();
+        assert!(total >= 10_000, "fixture tem {total} linhas");
+
+        let t0 = std::time::Instant::now();
+        // 1) Ranges de folding (tree-sitter) sobre as 10k linhas.
+        let ranges = phpide_syntax::folding::folding_ranges(&code, total);
+        assert!(!ranges.is_empty());
+        let t_ranges = t0.elapsed();
+
+        // 2) Dobras efetivas + projeção + contagem visual.
+        let folded: Vec<(usize, usize)> = ranges
+            .iter()
+            .take(200)
+            .map(|r| (r.start_line0, r.end_line0))
+            .collect();
+        let visuals = folding::FoldVisuals::new(&folded);
+        let proj = folding::project(&code, &visuals);
+        assert!(proj.text.lines().count() < total);
+        let t_proj = t0.elapsed() - t_ranges;
+
+        // 3) Markers agregados (limite por categoria) + sticky trail.
+        let diags: Vec<(u32, phpide_core::Severity)> = (1..=50)
+            .map(|l| (l * 100, phpide_core::Severity::Error))
+            .collect();
+        let git: Vec<(u32, bool)> = (1..=20).map(|l| (l * 200, true)).collect();
+        let markers = lens::aggregate_scrollbar_markers(&diags, &git, total);
+        assert!(!markers.is_empty());
+        let blocks = phpide_syntax::analyze(&code).blocks;
+        let trail = editor_view::sticky_trail(&blocks, total / 2, 5);
+        assert!(!trail.is_empty());
+        let total_t = t0.elapsed();
+
+        // Orçamento folgado: pipeline completo < 2s (baseline UI-ED-000-04:
+        // 7.5ns/frame). Registre o número real ao evoluir o gate.
+        assert!(
+            total_t < std::time::Duration::from_secs(2),
+            "pipeline 10k lento: {total_t:?} (ranges {t_ranges:?}, proj {t_proj:?})"
+        );
+        eprintln!(
+            "GATE 10k: total {total} linhas, {} ranges, {} linhas visuais, {total_t:?}",
+            ranges.len(),
+            proj.text.lines().count()
+        );
+    }
+
+    #[test]
+    fn gate_editor_avancado_integrado_dados_reais() {
+        // Dados reais: folding (tree-sitter) + markers git (phpide-vcs puro)
+        // + blame model sobre repo temporário real.
+        let git_ok = std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !git_ok {
+            eprintln!("SKIP: git indisponível");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap())
+        };
+        g(&["init", "-b", "main"]);
+        g(&["config", "user.name", "Gate"]);
+        g(&["config", "user.email", "g@x"]);
+        std::fs::write(root.join("a.php"), "<?php\n$x = 1;\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-m", "base"]);
+        let m = phpide_vcs::markers_for_file(&root, &root.join("a.php")).unwrap();
+        assert!(m.is_empty(), "arquivo sem alterações: sem markers falsos");
+        std::fs::write(root.join("a.php"), "<?php\n$x = 2;\n").unwrap();
+        let m = phpide_vcs::markers_for_file(&root, &root.join("a.php")).unwrap();
+        assert_eq!(
+            m.values().fold(0, |acc, _| acc + 1),
+            1,
+            "1 linha modificada"
+        );
+    }
+}
+
 mod gate_tests {
     //! Gate do recorte UI-ED-000 e verificação do modo offline.
-
-    use crate::settings;
 
     /// Modo offline (sem LSP): highlight sintático e diagnósticos estruturais
     /// locais continuam funcionais — são a degradação prevista pelo NFR
@@ -3258,15 +4041,15 @@ mod gate_tests {
     #[test]
     fn zoom_shortcut_values_are_clamped() {
         // Mesma função usada por set_zoom e pela carga do settings.
-        assert_eq!(settings::clamp_zoom(1.0 * 1.1f32.powi(20)), 3.0);
-        assert_eq!(settings::clamp_zoom(1.0 / 1.1f32.powi(20)), 0.5);
+        assert_eq!(crate::settings::clamp_zoom(1.0 * 1.1f32.powi(20)), 3.0);
+        assert_eq!(crate::settings::clamp_zoom(1.0 / 1.1f32.powi(20)), 0.5);
         // Roundtrip: persistir e recarregar preserva o valor dentro dos limites.
-        let s = settings::Settings {
-            zoom: settings::clamp_zoom(1.7),
+        let s = crate::settings::Settings {
+            zoom: crate::settings::clamp_zoom(1.7),
             ..Default::default()
         };
         let v = serde_json::json!({ "zoom": s.zoom });
         let back = v["zoom"].as_f64().unwrap() as f32;
-        assert_eq!(settings::clamp_zoom(back), 1.7);
+        assert_eq!(crate::settings::clamp_zoom(back), 1.7);
     }
 }

@@ -1,0 +1,8 @@
+[package]
+name = "phpide-icons"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Iconografia da IDE: conjunto visual próprio, manifesto de licenças e registry semântico com cache/fallback/tint (UI-ICON-001)"
+
+[dependencies]

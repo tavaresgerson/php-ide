@@ -1,0 +1,206 @@
+{
+  "set": "phpide-default",
+  "note": "SVGs produzidos para o projeto (UI-ICON-001-02). Uso e redistribuição permitidos pelas licenças do workspace. A aplicação não depende de Icones/Iconify em tempo de execução.",
+  "icons": [
+    {
+      "name": "blame",
+      "file": "assets/blame.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "bookmark",
+      "file": "assets/bookmark.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "breakpoint",
+      "file": "assets/breakpoint.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "chevron-down",
+      "file": "assets/chevron-down.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "chevron-right",
+      "file": "assets/chevron-right.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "close",
+      "file": "assets/close.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "coverage",
+      "file": "assets/coverage.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "debug",
+      "file": "assets/debug.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "error",
+      "file": "assets/error.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "eye",
+      "file": "assets/eye.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "file",
+      "file": "assets/file.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "folder",
+      "file": "assets/folder.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "git-branch",
+      "file": "assets/git-branch.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "hint",
+      "file": "assets/hint.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "info",
+      "file": "assets/info.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "pause",
+      "file": "assets/pause.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "project",
+      "file": "assets/project.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "run",
+      "file": "assets/run.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "search",
+      "file": "assets/search.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "settings",
+      "file": "assets/settings.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "split-down",
+      "file": "assets/split-down.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "split-right",
+      "file": "assets/split-right.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "stop",
+      "file": "assets/stop.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "switcher",
+      "file": "assets/switcher.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "warning",
+      "file": "assets/warning.svg",
+      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
+      "author": "phpide contributors",
+      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
+      "license": "MIT OR Apache-2.0"
+    }
+  ]
+}

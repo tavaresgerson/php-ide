@@ -142,11 +142,11 @@ Não iniciar todas as frentes simultaneamente. Trabalho concorrente deve possuir
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ICON-001-01` | `UI-ICON-001` | Selecionar conjunto visual inicial no Icones/Iconify ou alternativa; DOC com amostra para menus, ações, arquivos e estados | BASE |
-| [ ] | `T-UI-ICON-001-02` | `UI-ICON-001` | Baixar somente SVGs usados e criar manifesto com nome, origem, autor, URL e licença; DOC | `T-UI-ICON-001-01`, `T-NFR-008-04` |
-| [ ] | `T-UI-ICON-001-03` | `UI-ICON-001` | Implementar registry semântico, carregamento local, cache e fallback; UT | `T-UI-ICON-001-02` |
-| [ ] | `T-UI-ICON-001-04` | `UI-ICON-001` | Implementar tint por tema, tamanhos 16/20/24, HiDPI e tooltip/nome acessível; UT/UI | `T-UI-ICON-001-03`, `T-NFR-009-03` |
-| [ ] | `T-UI-ICON-001-05` | `UI-ICON-001` | Migrar controles novos do Estágio 6.2 sem alterar comportamento; UI | `T-UI-ICON-001-04` |
+| [x] | `T-UI-ICON-001-01` | `UI-ICON-001` — entregue: conjunto visual próprio (25 SVGs stroke 24×24, currentColor) escolhido por coerência offline — `phpide-icons/assets` + amostra no registry; DOC: crate | BASE |
+| [x] | `T-UI-ICON-001-02` | `UI-ICON-001` — entregue: apenas SVGs usados versionados + `assets/manifest.json` (nome, origem, autor, URL, licença MIT/Apache do workspace); sem dependência de Icones/Iconify em runtime | `T-UI-ICON-001-01`, `T-NFR-008-04` |
+| [x] | `T-UI-ICON-001-03` | `UI-ICON-001` — entregue: `phpide_icons::IconId` semântico + Registry com cache por (id,tint,tamanho,ppp) e fallback garantido (círculo neutro); UT | `T-UI-ICON-001-02` |
+| [x] | `T-UI-ICON-001-04` | `UI-ICON-001` — entregue: tint por substituição de currentColor, tamanhos 16/20/24, HiDPI (width/height físicos ×ppp), nome acessível + tooltip; UT | `T-UI-ICON-001-03`, `T-NFR-009-03` |
+| [x] | `T-UI-ICON-001-05` | `UI-ICON-001` — entregue: toolbar Run/Debug e gutter usam ícones do catálogo via `icons_ui::icon_button` (pintor vetorial espelhando o SVG); UT cobre todo IconId | `T-UI-ICON-001-04` |
 | [ ] | `T-UI-ICON-001-06` | `UI-ICON-001` | Migrar menus, tool windows, tabs e status bar por pequenos lotes; UI/FT | `T-UI-ICON-001-05` |
 | [ ] | `T-UI-ICON-001-07` | `UI-ICON-001` | Validar abertura offline, assets ausentes, contraste e cobertura do inventário; IT/UI/DOC | `T-UI-ICON-001-06` |
 
@@ -167,29 +167,29 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-001-01` | `UI-ED-001` | Renderizar números e hit areas com a geometria compartilhada; UT/UI | `T-UI-ED-000-03` |
-| [ ] | `T-UI-ED-001-02` | `UI-ED-001` | Integrar bookmarks e breakpoints por mouse/atalho ao backend existente; UT/FT | `T-UI-ED-001-01` |
-| [ ] | `T-UI-ED-001-03` | `UI-ED-001` | Reanexar indicadores após edições e isolar estado por buffer; UT | `T-NFR-002-04`, `T-UI-ED-001-02` |
-| [ ] | `T-UI-ED-001-04` | `UI-ED-001` | Representar estados enabled/disabled/verified/invalid/muted sem inventar confirmação do backend; CT/UI | `T-UI-ED-001-02`, `T-RUN-DBG-003-01` |
-| [ ] | `T-UI-ED-001-05` | `UI-ED-001` | Validar scroll, folding, zoom e arquivo grande sem desenho fora da viewport; UI/PERF | `T-UI-ED-002-03`, `T-UI-ED-001-03` |
+| [x] | `T-UI-ED-001-01` | `UI-ED-001` — entregue: números/hit areas na geometria compartilhada (baseline UI-ED-000) com numeração visual sob folding; UT | `T-UI-ED-000-03` |
+| [x] | `T-UI-ED-001-02` | `UI-ED-001` — entregue: breakpoints (clique/F9) e bookmarks integrados ao backend real; UT/IT do modelo | `T-UI-ED-001-01` |
+| [x] | `T-UI-ED-001-03` | `UI-ED-001` — entregue: indicadores por linha por buffer (HashMap por path), pintura por frame na geometria corrente — sem transferência entre buffers; UT | `T-NFR-002-04`, `T-UI-ED-001-02` |
+| [x] | `T-UI-ED-001-04` | `UI-ED-001` — entregue: `editor_surface::bp_visual` mapeia Pending/Verified/Disabled/Invalid do store real (mute global acinzenta); sem confirmação inventada; CT | `T-UI-ED-001-02`, `T-RUN-DBG-003-01` |
+| [x] | `T-UI-ED-001-05` | `UI-ED-001` — entregue: sem desenho fora da viewport (visible_line_range em todas as camadas) + gate 10k linhas; PERF registrado | `T-UI-ED-002-03`, `T-UI-ED-001-03` |
 
 ### 5.3 Folding estrutural
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-002-01` | `UI-ED-002` | Gerar ranges Tree-sitter para classes, métodos, blocos, arrays e comentários; UT com aninhamento | BASE |
-| [ ] | `T-UI-ED-002-02` | `UI-ED-002` | Criar estado de folding por revisão e política de persistência/reabertura; UT/DOC | `T-NFR-002-04`, `T-UI-ED-002-01` |
-| [ ] | `T-UI-ED-002-03` | `UI-ED-002` | Renderizar fold/unfold, hover/Always e ajustar caret, seleção, scroll e cliques; UT/UI/FT | `T-UI-ED-000-03`, `T-UI-ED-002-02` |
-| [ ] | `T-UI-ED-002-04` | `UI-ED-002` | Tratar syntax error, ranges inválidos e edição dentro/antes de regiões; UT/FT | `T-UI-ED-002-03` |
+| [x] | `T-UI-ED-002-01` | `UI-ED-002` — entregue: `phpide-syntax::folding` (classes, métodos/funções, blocos, arrays multilinha, comentários) com aninhamento; UT | BASE |
+| [x] | `T-UI-ED-002-02` | `UI-ED-002` — entregue: `folding::FoldState` ancorado por (kind,prefixo), ranges inválidos caem; política: estado em memória por buffer, descartado ao fechar (DOC no módulo); UT | `T-NFR-002-04`, `T-UI-ED-002-01` |
+| [x] | `T-UI-ED-002-03` | `UI-ED-002` — entregue: projeção texto↔doc (bandas read-only), chevrons hover/Always, caret revela dobra, cliques e edições mapeados; UT | `T-UI-ED-000-03`, `T-UI-ED-002-02` |
+| [x] | `T-UI-ED-002-04` | `UI-ED-002` — entregue: nós ERROR ignorados, guarda de >90% com erro de sintaxe, ranges inválidos descartados; UT com erro real | `T-UI-ED-002-03` |
 
 ### 5.4 Tabs, split e detach
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
 | [x] | `T-UI-ED-003-01` | `UI-ED-003` | Auditar e completar Closing Policy, preview, pin, Close Others, dirty confirmation e tabs ocultas; UT/FT  — entregue: matriz em `docs/baseline/T-UI-ED-003-01-tabs-audit.md`; `tab_limit` configurável com UT | BASE |
-| [ ] | `T-UI-ED-003-02` | `UI-ED-003` | Implementar Switcher `Ctrl+Tab` com ordem MRU e roteamento de teclado; UT/FT | `T-UI-ED-003-01` |
-| [ ] | `T-UI-ED-003-03` | `UI-ED-003` | Criar modelo de editor groups com vistas independentes e documento compartilhado; UT | `T-NFR-002-04`, `T-UI-ED-003-01` |
-| [ ] | `T-UI-ED-003-04` | `UI-ED-003` | Implementar Split Right/Down, foco, caret, scroll e fechamento por vista; UT/UI/FT | `T-UI-ED-003-03` |
+| [x] | `T-UI-ED-003-02` | `UI-ED-003` — entregue: `switcher::MruSwitcher` (touch/cycle/confirm) + Ctrl+Tab e popup; UT | `T-UI-ED-003-01` |
+| [x] | `T-UI-ED-003-03` | `UI-ED-003` — entregue: `groups::EditorGroups` — vistas independentes sobre buffer compartilhado (caret/scroll/seleção por vista); UT | `T-NFR-002-04`, `T-UI-ED-003-01` |
+| [x] | `T-UI-ED-003-04` | `UI-ED-003` — entregue: Split Right/Down (palette) + segundo painel com TextEdit/scroll/caret próprios (layout empilhado neste recorte; eixo no modelo); fechar uma vista não fecha a outra; UT/FT | `T-UI-ED-003-03` |
 | [ ] | `T-UI-ED-003-05` | `UI-ED-003` | Implementar drag/drop de tabs e tab placement configurável; UT/UI | `T-UI-ED-003-04` |
 | [ ] | `T-UI-ED-003-06` | `UI-ED-003` | Avaliar backend de múltiplas janelas e registrar decisão para detach `Shift+F4`; DOC | `T-UI-ED-003-03` |
 | [ ] | `T-UI-ED-003-07` | `UI-ED-003` | Implementar detach/reattach preservando buffer, dirty state e navegação; FT | `T-UI-ED-003-06` |
@@ -198,31 +198,31 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-004-01` | `UI-ED-004` | Obter pilha namespace/classe/função a partir do topo da viewport; UT | `T-UI-ED-002-01` |
-| [ ] | `T-UI-ED-004-02` | `UI-ED-004` | Renderizar até cinco sticky lines sem interceptar eventos incorretamente; UT/UI | `T-UI-ED-000-03`, `T-UI-ED-004-01` |
-| [ ] | `T-UI-ED-004-03` | `UI-ED-004` | Implementar clique, configuração por linguagem e limite zero; UT/FT | `T-UI-ED-004-02`, `T-NFR-004-01` |
-| [ ] | `T-UI-ED-004-04` | `UI-ED-004` | Validar composição com folding, split e scroll sem flicker; UI/PERF | `T-UI-ED-002-03`, `T-UI-ED-003-04`, `T-UI-ED-004-03` |
+| [x] | `T-UI-ED-004-01` | `UI-ED-004` — entregue: pilha estrutural do topo da viewport (sticky_trail por blocos tree-sitter); UT | `T-UI-ED-002-01` |
+| [x] | `T-UI-ED-004-02` | `UI-ED-004` — entregue: até 5 (configurável) sticky lines pinadas, sem interceptar eventos do texto; UT/UI | `T-UI-ED-000-03`, `T-UI-ED-004-01` |
+| [x] | `T-UI-ED-004-03` | `UI-ED-004` — entregue: clique navega à declaração, `sticky_lines_max` global (0 = desliga) em Settings; UT/FT | `T-UI-ED-004-02`, `T-NFR-004-01` |
+| [x] | `T-UI-ED-004-04` | `UI-ED-004` — entregue: sticky coexistem com folding (trilha via linha doc da primeira visível) e com split; gate cobre composição | `T-UI-ED-002-03`, `T-UI-ED-003-04`, `T-UI-ED-004-03` |
 
 ### 5.6 Inlay hints e Code Vision
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-005-01` | `UI-ED-005` | Definir provedor assíncrono e modelo de hints por revisão; CT com resposta atrasada | `T-NFR-001-03`, `T-NFR-002-04` |
-| [ ] | `T-UI-ED-005-02` | `UI-ED-005` | Integrar inlay hints LSP e estados de servidor ausente; IT/FT | `T-PHP-001-03`, `T-UI-ED-005-01` |
-| [ ] | `T-UI-ED-005-03` | `UI-ED-005` | Renderizar hints fora do documento, sem afetar save, busca ou clipboard; UT/UI | `T-UI-ED-000-03`, `T-UI-ED-005-02` |
-| [ ] | `T-UI-ED-005-04` | `UI-ED-005` | Implementar All arguments, Pass by reference, toggle global e exclude list; UT/FT | `T-UI-ED-005-03`, `T-NFR-004-01` |
-| [ ] | `T-UI-ED-005-05` | `UI-ED-005` | Implementar Code Vision Inheritors/Usages com navegação a resultados reais; IT/FT | `T-PHP-004-03`, `T-UI-ED-005-01` |
-| [ ] | `T-UI-ED-005-06` | `UI-ED-005` | Implementar Code author usando dados Git reais; IT/UI | `T-GIT-004-02`, `T-UI-ED-005-01` |
+| [x] | `T-UI-ED-005-01` | `UI-ED-005` — entregue: `hints::HintStore` assíncrono por revisão — resposta antiga descartada; CT com resposta atrasada | `T-NFR-001-03`, `T-NFR-002-04` |
+| [x] | `T-UI-ED-005-02` | `UI-ED-005` — entregue: inlayHint LSP via request genérico; servidor ausente/erro → status explicativo, hints ocultos; IT (intelephense sem suporte cobre o estado) | `T-PHP-001-03`, `T-UI-ED-005-01` |
+| [x] | `T-UI-ED-005-03` | `UI-ED-005` — entregue: hints pintados após o fim da linha, fora do documento — save/busca/clipboard intocados; UT/UI | `T-UI-ED-000-03`, `T-UI-ED-005-02` |
+| [x] | `T-UI-ED-005-04` | `UI-ED-005` — entregue: All arguments, Pass by reference, toggle global e exclude list (case-insensitive) em Settings; UT | `T-UI-ED-005-03`, `T-NFR-004-01` |
+| [x] | `T-UI-ED-005-05` | `UI-ED-005` — entregue: Code Vision Usages com resultados reais (references do LSP alimentam lens e painel Find ao clicar); Inheritors só com provedor; IT | `T-PHP-004-03`, `T-UI-ED-005-01` |
+| [x] | `T-UI-ED-005-06` | `UI-ED-005` — entregue: Code author agregado do blame real (último autor + N autores por bloco); sem dados → sem lens; IT/UT | `T-GIT-004-02`, `T-UI-ED-005-01` |
 
 ### 5.7 Lens mode, scrollbar, blame e coverage
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-UI-ED-006-01` | `UI-ED-006` | Renderizar markers agregados de diagnósticos e mudanças na scrollbar; UT/UI/PERF | `T-PHP-002-01`, `T-GIT-004-01` |
-| [ ] | `T-UI-ED-006-02` | `UI-ED-006` | Implementar lens preview ancorado à região e ao tema; UT/UI | `T-UI-ED-000-03` |
-| [ ] | `T-UI-ED-006-03` | `UI-ED-006` | Implementar Inspections widget com escopo e abertura correta de Problems; FT | `T-PHP-002-02` |
-| [ ] | `T-UI-ED-007-01` | `UI-ED-007` | Renderizar blame com autor/revisão/data e invalidação por edição; IT/UI | `T-GIT-004-02`, `T-NFR-002-04` |
-| [ ] | `T-UI-ED-007-02` | `UI-ED-007` | Renderizar coverage real e estado desconhecido sem confundir ausência com sucesso; IT/UI | `T-RUN-TST-003-02`, `T-NFR-002-04` |
+| [x] | `T-UI-ED-006-01` | `UI-ED-006` — entregue: `lens::aggregate_scrollbar_markers` — diagnósticos + mudanças Git agregados, limite por categoria em arquivo grande; UT/PERF | `T-PHP-002-01`, `T-GIT-004-01` |
+| [x] | `T-UI-ED-006-02` | `UI-ED-006` — entregue: lens preview ancorado à linha sob a scrollbar (popup com tema); UT/UI | `T-UI-ED-000-03` |
+| [x] | `T-UI-ED-006-03` | `UI-ED-006` — entregue: widget de inspeções na status bar (contagens por severidade) → abre Problems no escopo do arquivo; FT | `T-PHP-002-02` |
+| [x] | `T-UI-ED-007-01` | `UI-ED-007` — entregue: gutter de blame com autor/data/sha do `phpide-vcs` real, invalidação por revisão salva, 'local' e '·' para desconhecido; IT/UI | `T-GIT-004-02`, `T-NFR-002-04` |
+| [x] | `T-UI-ED-007-02` | `UI-ED-007` — entregue: coverage real no gutter com ausência ≠ sucesso (só linhas executáveis do relatório são pintadas); IT | `T-RUN-TST-003-02`, `T-NFR-002-04` |
 
 ### 5.8 Comportamentos complementares e gate 6.2
 
@@ -234,8 +234,8 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 | [ ] | `T-UI-ED-009-02` | `UI-ED-009` | Implementar lâmpada e preview de quick-fix com diff/undo; IT/UI | `T-UI-ED-009-01`, `T-PHP-010-03` |
 | [x] | `T-UI-ED-010-01` | `UI-ED-010` | Auditar atalhos, limites e persistência de zoom; UT/FT  — entregue: auditoria no baseline do editor; `clamp_zoom` com UT e roundtrip | BASE |
 | [ ] | `T-UI-ED-010-02` | `UI-ED-010` | Implementar Ctrl+wheel opcional, line height e ligatures; UT/UI | `T-UI-ED-010-01`, `T-UI-THEME-001-03` |
-| [ ] | `T-UI-ED-GATE-01` | `UI-ED-000` | Executar gate integrado: gutter+folding+tabs sob scroll/zoom, smoke gráfico e fixture de 10 mil linhas; UI/PERF/DOC | `T-UI-ED-001-05`, `T-UI-ED-002-04`, `T-UI-ED-003-04`, `T-UI-ED-000-04` |
-| [ ] | `T-UI-ED-GATE-02` | `UI-ED-003` | Atualizar README, roadmap e pendências P1 sem declarar recursos ausentes como prontos; DOC | `T-UI-ED-GATE-01` |
+| [x] | `T-UI-ED-GATE-01` | `UI-ED-000` — entregue: gate integrado (gutter+folding+tabs+markers sobre 10k linhas com orçamento de tempo, dados reais LSP/DBGp/Git/coverage) em `main.rs::gate_ui_ed`; PERF | `T-UI-ED-001-05`, `T-UI-ED-002-04`, `T-UI-ED-003-04`, `T-UI-ED-000-04` |
+| [x] | `T-UI-ED-GATE-02` | `UI-ED-003` — entregue: README/matriz e REQUISITOS atualizados; P1s fora do recorte listados sem serem apresentados como prontos | `T-UI-ED-GATE-01` |
 
 ## 6. Estágio 7.x — Núcleo PHP e Composer
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/phpide-core", "crates/phpide-dbgp", "crates/phpide-exec", "crates/phpide-php", "crates/phpide-lsp", "crates/phpide-run", "crates/phpide-syntax", "crates/phpide-ui", "crates/phpide-vcs"]
+members = ["crates/phpide-core", "crates/phpide-dbgp", "crates/phpide-exec", "crates/phpide-php", "crates/phpide-lsp", "crates/phpide-run", "crates/phpide-syntax", "crates/phpide-icons", "crates/phpide-ui", "crates/phpide-vcs"]
 
 [workspace.package]
 edition = "2021"

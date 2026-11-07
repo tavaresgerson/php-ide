@@ -7,6 +7,8 @@
 
 use tree_sitter::{Node, Parser};
 
+pub mod folding;
+
 /// Uma região de bloco (função, classe, if, foreach...) que pode ser dobrada
 /// ou usada para navegação estrutural. Linhas 0-based.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,7 +35,7 @@ pub struct SyntaxReport {
     pub errors: Vec<SyntaxError>,
 }
 
-fn language() -> tree_sitter::Language {
+pub(crate) fn language() -> tree_sitter::Language {
     tree_sitter_php::LANGUAGE_PHP_ONLY.into()
 }
 

@@ -345,6 +345,56 @@ fn debug_toolbar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                     .small(),
             );
         }
+        // Ícones do catálogo semântico (UI-ICON-001-05) quando a sessão está
+        // parada; os botões textuais abaixo permanecem (acessibilidade).
+        if paused {
+            let tint = ui.visuals().text_color();
+            if crate::icons_ui::icon_button(
+                ui,
+                phpide_icons::IconId::Run,
+                15.0,
+                tint,
+                "Resume (F9)",
+            )
+            .clicked()
+            {
+                app.rd.continue_debug(ContinueCommand::Resume);
+            }
+            if crate::icons_ui::icon_button(
+                ui,
+                phpide_icons::IconId::ChevronRight,
+                15.0,
+                tint,
+                "Step Over (F8)",
+            )
+            .clicked()
+            {
+                app.rd.continue_debug(ContinueCommand::StepOver);
+            }
+            if crate::icons_ui::icon_button(
+                ui,
+                phpide_icons::IconId::ChevronDown,
+                15.0,
+                tint,
+                "Step Into (F7)",
+            )
+            .clicked()
+            {
+                app.rd.continue_debug(ContinueCommand::StepInto);
+            }
+            if crate::icons_ui::icon_button(
+                ui,
+                phpide_icons::IconId::Stop,
+                15.0,
+                tint,
+                "Stop (Ctrl+F2)",
+            )
+            .clicked()
+            {
+                app.rd.stop();
+            }
+            ui.separator();
+        }
         if ui
             .add_enabled(paused, egui::Button::new("Resume (F9)"))
             .clicked()

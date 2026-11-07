@@ -30,6 +30,18 @@ pub fn status_bar(app: &mut PhpIdeApp, ctx: &egui::Context) {
             if ui.button(message).on_hover_text("Notifications").clicked() {
                 app.tw.toggle(ToolWindow::Notifications);
             }
+            // Widget de inspeções do arquivo ativo (UI-ED-006-03): abre o
+            // Problems no escopo do arquivo.
+            let insp = app.inspections.label();
+            if !insp.is_empty()
+                && ui
+                    .button(insp)
+                    .on_hover_text("Inspections — abrir Problems neste arquivo")
+                    .clicked()
+            {
+                app.problems_scope = 1;
+                app.tw.toggle(ToolWindow::Problems);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 memory_widget(app, ui);
                 deployment_widget(app, ui);

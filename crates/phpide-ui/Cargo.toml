@@ -16,6 +16,7 @@ phpide-exec = { path = "../phpide-exec" }
 phpide-lsp = { path = "../phpide-lsp" }
 phpide-run = { path = "../phpide-run" }
 phpide-vcs = { path = "../phpide-vcs" }
+phpide-icons = { path = "../phpide-icons" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
 
