@@ -8,7 +8,12 @@ use std::process::Command;
 /// Branch atual se `root` for um repositório git; None caso contrário.
 pub fn current_branch(root: &Path) -> Option<String> {
     let out = Command::new("git")
-        .args(["-C", &root.display().to_string(), "branch", "--show-current"])
+        .args([
+            "-C",
+            &root.display().to_string(),
+            "branch",
+            "--show-current",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {

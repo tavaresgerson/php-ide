@@ -170,7 +170,7 @@ fn commit(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 
 fn terminal(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.monospace(&format!("{} $", app.ws.root.display()));
+        ui.monospace(format!("{} $", app.ws.root.display()));
         let response = egui::TextEdit::singleline(&mut app.terminal_input)
             .hint_text("comando do shell")
             .desired_width(420.0)

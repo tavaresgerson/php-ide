@@ -121,37 +121,56 @@ fn composer_project_full_flow_with_real_lsp() {
     lsp.did_save(&main, &edited);
     std::thread::sleep(Duration::from_millis(300));
 
-    // 6. Completar após `->` (método greet).
-    //    "echo $g->greet" está na linha 7 (0-based); completar após "->".
+    // 6. Completar após `->` (método greet). A indexação do intelephense é
+    //    assíncrona: pedido único logo após didOpen/didSave volta vazio em
+    //    ambientes lentos (falha intermitente real confirmada). Poll até o
+    //    item aparecer — é o que acontece na prática: o usuário completa
+    //    depois que a indexação assenta.
     let line = 6;
     let character = 11; // após "$g->"
-    let rx = lsp.completion(&main, line, character);
-    let result =
-        wait_for(Duration::from_secs(60), || rx.try_recv().ok()).expect("resposta de completion");
-    let items = phpide_lsp::parse_completions(&result);
-    assert!(
-        items.iter().any(|i| i.label == "greet"),
-        "completion oferece 'greet': {:?}",
-        items.iter().map(|i| &i.label).take(5).collect::<Vec<_>>()
-    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut seen: Vec<String> = Vec::new();
+    loop {
+        let rx = lsp.completion(&main, line, character);
+        if let Some(result) = wait_for(Duration::from_secs(10), || rx.try_recv().ok()) {
+            let items = phpide_lsp::parse_completions(&result);
+            seen = items.iter().map(|i| i.label.clone()).take(5).collect();
+            if items.iter().any(|i| i.label == "greet") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "completion oferece 'greet': {seen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
 
-    // 7. Navegar: definition de `greet` leva a Greeter.php.
-    let rx = lsp.definition(&main, line, 13); // dentro de "greet"
-    let result =
-        wait_for(Duration::from_secs(60), || rx.try_recv().ok()).expect("resposta de definition");
-    let locations: Vec<PathBuf> = {
-        let arr = result
-            .as_array()
-            .cloned()
-            .unwrap_or_else(|| vec![result.clone()]);
-        arr.iter()
-            .filter_map(|loc| phpide_lsp::uri_to_path(loc["uri"].as_str()?))
-            .collect()
-    };
-    assert!(
-        locations.iter().any(|p| p.ends_with("Greeter.php")),
-        "definition aponta para Greeter.php: {locations:?}"
-    );
+    // 7. Navegar: definition de `greet` leva a Greeter.php (mesmo regime de
+    //    poll: a indexação pode ainda estar esquentando).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut locations: Vec<PathBuf> = Vec::new();
+    loop {
+        let rx = lsp.definition(&main, line, 13); // dentro de "greet"
+        if let Some(result) = wait_for(Duration::from_secs(10), || rx.try_recv().ok()) {
+            let arr = result
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![result.clone()]);
+            locations = arr
+                .iter()
+                .filter_map(|loc| phpide_lsp::uri_to_path(loc["uri"].as_str()?))
+                .collect();
+            if locations.iter().any(|p| p.ends_with("Greeter.php")) {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "definition aponta para Greeter.php: {locations:?}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
 
     // 8. Encerrar ordenado (shutdown/exit) — IDE segue viva.
     lsp.stop();

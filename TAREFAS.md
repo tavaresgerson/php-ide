@@ -326,14 +326,14 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-RUN-001-01` | `RUN-001` | Criar modelo versionado de configuração, validação e escopo projeto/global; UT | `T-NFR-010-01` |
-| [ ] | `T-RUN-001-02` | `RUN-001` | Implementar sessões com allow multiple, working dir, env, output e status; UT/IT | `T-NFR-003-03`, `T-RUN-001-01` |
-| [ ] | `T-RUN-001-03` | `RUN-001` | Implementar temporary/save, Rerun, Stop, Pause Output, Pin Tab e process list; FT/UI | `T-RUN-001-02` |
+| [x] | `T-RUN-001-01` | `RUN-001` | Criar modelo versionado de configuração, validação e escopo projeto/global; UT — entregue: `phpide-run::config` (formato versionado, parse com migração, validação por tipo); UT | `T-NFR-010-01` |
+| [x] | `T-RUN-001-02` | `RUN-001` | Implementar sessões com allow multiple, working dir, env, output e status; UT/IT — entregue: `phpide-run::session` + `spawn_stream` no `phpide-exec` (linhas via canal); UT + IT com PHP real | `T-NFR-003-03`, `T-RUN-001-01` |
+| [x] | `T-RUN-001-03` | `RUN-001` | Implementar temporary/save, Rerun, Stop, Pause Output, Pin Tab e process list; FT/UI — entregue: `RunManager` (process list, rerun, stop, pause, pin, reclaim) + painel Run; UT + IT real | `T-RUN-001-02` |
 | [ ] | `T-RUN-001-04` | `RUN-001` | Implementar before-launch tasks com ordem, falha e cancelamento; UT/FT | `T-RUN-001-02` |
-| [ ] | `T-RUN-001-05` | `RUN-001` | Aplicar redaction de env e segredos nos logs; UT/IT | `T-NFR-005-03`, `T-RUN-001-02` |
-| [ ] | `T-RUN-002-01` | `RUN-002` | Implementar PHP Script completo e validação de campos; IT/FT | `T-RUN-001-02` |
+| [x] | `T-RUN-001-05` | `RUN-001` | Aplicar redaction de env e segredos nos logs; UT/IT — entregue: log do manager via `Logger`+`redact_text`; UT adversarial + IT real (env nunca no output/log) | `T-NFR-005-03`, `T-RUN-001-02` |
+| [x] | `T-RUN-002-01` | `RUN-002` | Implementar PHP Script completo e validação de campos; IT/FT — entregue: `phpide-run::php_script` (build validado, interpreter options, args, cwd, env); IT com PHP real | `T-RUN-001-02` |
 | [ ] | `T-RUN-002-02` | `RUN-002` | Implementar Composer Script; IT/FT | `T-PHP-031-02`, `T-RUN-001-02` |
-| [ ] | `T-RUN-002-03` | `RUN-002` | Implementar PHPUnit básico por escopo; IT/FT | `T-RUN-001-02` |
+| [x] | `T-RUN-002-03` | `RUN-002` | Implementar PHPUnit básico por escopo; IT/FT — entregue: `phpide-run::phpunit` (runner, escopos, TeamCity → árvore); IT com PHPUnit 11 real (phar) | `T-RUN-001-02` |
 | [ ] | `T-RUN-002-04` | `RUN-002` | Implementar PHP Web Page, Remote Debug, HTTP Request e Pest; IT/FT | `T-RUN-DBG-004-01`, `T-RUN-HTTP-001-03`, `T-RUN-TST-002-02` |
 | [ ] | `T-RUN-002-05` | `RUN-002` | Implementar Behat, PHPSpec, Codeception, ParaTest, Mutation e configurações compostas; IT/FT | `T-RUN-TST-002-03`, `T-RUN-TST-002-04` |
 
@@ -341,14 +341,14 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-RUN-DBG-001-01` | `RUN-DBG-001` | Consolidar listener 9003, IDE key e XDEBUG_CONFIG sem apagar env necessária; UT/IT | BASE |
-| [ ] | `T-RUN-DBG-001-02` | `RUN-DBG-001` | Implementar path mapping local e associação da conexão ao projeto; UT/IT | `T-RUN-DBG-001-01` |
-| [ ] | `T-RUN-DBG-001-03` | `RUN-DBG-001` | Cobrir breakpoint, frames, variáveis, Resume e Detach em fake Xdebug e PHP real; CT/IT/FT | `T-RUN-DBG-001-02` |
-| [ ] | `T-RUN-DBG-001-04` | `RUN-DBG-001` | Garantir Stop/Detach com fechamento de socket/processos e UI responsiva; IT | `T-NFR-003-03`, `T-RUN-DBG-001-03` |
-| [ ] | `T-RUN-DBG-002-01` | `RUN-DBG-002` | Implementar stepping F7/F8/Shift+F8/F9/Alt+F10 e migração de atalhos; IT/FT/DOC | `T-RUN-DBG-001-03` |
-| [ ] | `T-RUN-DBG-002-02` | `RUN-DBG-002` | Implementar Watches e Evaluate por frame com invalidação após Resume; CT/IT/FT | `T-RUN-DBG-002-01` |
+| [x] | `T-RUN-DBG-001-01` | `RUN-DBG-001` | Consolidar listener 9003, IDE key e XDEBUG_CONFIG sem apagar env necessária; UT/IT — entregue: `phpide-dbgp::listener` (filtro de IDE key com detach, `xdebug_env` mesclando env do usuário); UT/IT | BASE |
+| [x] | `T-RUN-DBG-001-02` | `RUN-DBG-001` | Implementar path mapping local e associação da conexão ao projeto; UT/IT — entregue: `PathMappings` (prefixo mais longo, Owned/Foreign/Unknown no `<init>`); UT/IT | `T-RUN-DBG-001-01` |
+| [x] | `T-RUN-DBG-001-03` | `RUN-DBG-001` | Cobrir breakpoint, frames, variáveis, Resume e Detach em fake Xdebug e PHP real; CT/IT/FT — entregue: engine DBGp (sync→run→parada com frames+variáveis→resume→detach) + gate com processo PHP real; CT/IT. Validado também contra o Xdebug 3.2.0 real (gate `_xdebug_real` — sem root, `.so` de `.deb` Debian) | `T-RUN-DBG-001-02` |
+| [x] | `T-RUN-DBG-001-04` | `RUN-DBG-001` | Garantir Stop/Detach com fechamento de socket/processos e UI responsiva; IT — entregue: shutdown cirúrgico de Detach/Stop (máquina de fases Accepting/Stopped/Continuing — o shutdown só corta o socket durante `run`/`step`; na sessão parada o comando protocolar chega ao Xdebug, senão fechar o socket ≈ detach e o script segue vivo), kill de grupo do PHP, porta liberada; IT + gate com Xdebug real | `T-NFR-003-03`, `T-RUN-DBG-001-03` |
+| [x] | `T-RUN-DBG-002-01` | `RUN-DBG-002` | Implementar stepping F7/F8/Shift+F8/F9/Alt+F10 e migração de atalhos; IT/FT/DOC — entregue: `ContinueCommand` + toolbar/atalhos contextuais (roteamento documentado no README/baseline); IT. Migração global de keymap segue como requisito próprio | `T-RUN-DBG-001-03` |
+| [x] | `T-RUN-DBG-002-02` | `RUN-DBG-002` | Implementar Watches e Evaluate por frame com invalidação após Resume; CT/IT/FT — entregue: `evaluate`/`evaluate_watches` por frame (property_get -d), invalidação no Continued; CT/IT | `T-RUN-DBG-002-01` |
 | [ ] | `T-RUN-DBG-002-03` | `RUN-DBG-002` | Implementar Set Value, inline values, visualização JSON/XML e REPL; CT/IT/UI | `T-RUN-DBG-002-02` |
-| [ ] | `T-RUN-DBG-003-01` | `RUN-DBG-003` | Implementar modelo de estados/propriedades de breakpoints e sincronização com backend; CT/UT | `T-RUN-DBG-001-03` |
+| [x] | `T-RUN-DBG-003-01` | `RUN-DBG-003` | Implementar modelo de estados/propriedades de breakpoints e sincronização com backend; CT/UT — entregue: `BreakpointStore` (Pending/Verified/Invalid/Disabled, hit count, sync com diff); CT/UT | `T-RUN-DBG-001-03` |
 | [ ] | `T-RUN-DBG-003-02` | `RUN-DBG-003` | Implementar conditional, exception, method, logpoint e hit behavior; IT/FT | `T-RUN-DBG-003-01` |
 | [ ] | `T-RUN-DBG-003-03` | `RUN-DBG-003` | Implementar grupos, mute, triggers e skipped paths; UT/IT | `T-RUN-DBG-003-01` |
 | [ ] | `T-RUN-DBG-004-01` | `RUN-DBG-004` | Implementar PHP Servers, web path mappings e validação de configuração; IT/FT | `T-RUN-DBG-001-02` |
@@ -360,16 +360,16 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-RUN-TST-001-01` | `RUN-TST-001` | Implementar descoberta/execução por diretório, classe, método e data set; IT/FT | `T-RUN-002-03` |
-| [ ] | `T-RUN-TST-001-02` | `RUN-TST-001` | Implementar árvore, duração, output e navegação à falha; IT/UI | `T-RUN-TST-001-01` |
+| [x] | `T-RUN-TST-001-01` | `RUN-TST-001` | Implementar descoberta/execução por diretório, classe, método e data set; IT/FT — entregue: `TestScope` + filtros (âncoras verificadas com PHPUnit real); IT | `T-RUN-002-03` |
+| [x] | `T-RUN-TST-001-02` | `RUN-TST-001` | Implementar árvore, duração, output e navegação à falha; IT/UI — entregue: `TeamCityParser` → `TestTree` (duração, falha com arquivo:linha) + painel com navegação; IT/UI | `T-RUN-TST-001-01` |
 | [ ] | `T-RUN-TST-001-03` | `RUN-TST-001` | Implementar Rerun Automatically com debounce/cancelamento; UT/IT | `T-NFR-001-03`, `T-RUN-TST-001-01` |
 | [ ] | `T-RUN-TST-001-04` | `RUN-TST-001` | Implementar test↔subject e geração por template; UT/FT | `T-PHP-004-01`, `T-RUN-TST-001-01` |
-| [ ] | `T-RUN-TST-002-01` | `RUN-TST-002` | Consolidar PHPUnit via Composer/phar, config e bootstrap; IT | `T-RUN-002-03` |
+| [x] | `T-RUN-TST-002-01` | `RUN-TST-002` | Consolidar PHPUnit via Composer/phar, config e bootstrap; IT — entregue: resolução (vendor/bin → phar → PATH), consolidação phpunit.xml/bootstrap respeitando explícito; IT | `T-RUN-002-03` |
 | [ ] | `T-RUN-TST-002-02` | `RUN-TST-002` | Integrar Pest, Parallel e Mutation com verificação de versões; IT | `T-RUN-TST-002-01` |
 | [ ] | `T-RUN-TST-002-03` | `RUN-TST-002` | Integrar Behat e PHPSpec com fixtures próprios; IT | `T-RUN-TST-001-01` |
 | [ ] | `T-RUN-TST-002-04` | `RUN-TST-002` | Integrar Codeception e ParaTest; IT | `T-RUN-TST-002-01` |
-| [ ] | `T-RUN-TST-003-01` | `RUN-TST-003` | Definir modelo de cobertura por arquivo/linha executável e importador Xdebug/PCOV; CT/UT | `T-RUN-TST-002-01` |
-| [ ] | `T-RUN-TST-003-02` | `RUN-TST-003` | Apresentar cobertura por arquivo e alimentar o editor sem inferir resultado de testes; IT/FT | `T-RUN-TST-003-01` |
+| [x] | `T-RUN-TST-003-01` | `RUN-TST-003` | Definir modelo de cobertura por arquivo/linha executável e importador Xdebug/PCOV; CT/UT — entregue: `CoverageReport`/`FileCoverage` + importador Clover (saída `--coverage-clover` do PHPUnit com Xdebug/PCOV); CT/UT | `T-RUN-TST-002-01` |
+| [x] | `T-RUN-TST-003-02` | `RUN-TST-003` | Apresentar cobertura por arquivo e alimentar o editor sem inferir resultado de testes; IT/FT — entregue: percentual por arquivo no painel + faixa no gutter (linha executável coberta/não coberta; ausência ≠ sucesso); IT/UT | `T-RUN-TST-003-01` |
 | [ ] | `T-RUN-WEB-001-01` | `RUN-WEB-001` | Implementar lifecycle do servidor 63342, estático e php -S; IT | `T-NFR-003-03` |
 | [ ] | `T-RUN-WEB-001-02` | `RUN-WEB-001` | Implementar browser/preview e políticas seguras para conexões/requests; IT/FT/DOC | `T-NFR-008-02`, `T-RUN-WEB-001-01` |
 

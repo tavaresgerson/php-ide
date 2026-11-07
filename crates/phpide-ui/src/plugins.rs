@@ -36,7 +36,9 @@ pub fn discover_plugins(project: &Path, config_dir: &Path) -> Vec<PluginCommand>
         PathBuf::from(config_dir).join("plugins"),
     ];
     for base in bases {
-        let Ok(entries) = std::fs::read_dir(&base) else { continue };
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            continue;
+        };
         let mut dirs: Vec<_> = entries.flatten().map(|e| e.path()).collect();
         dirs.sort();
         for dir in dirs {
@@ -47,7 +49,9 @@ pub fn discover_plugins(project: &Path, config_dir: &Path) -> Vec<PluginCommand>
                 continue;
             };
             let name = json["name"].as_str().unwrap_or("plugin").to_string();
-            let Some(cmds) = json["commands"].as_array() else { continue };
+            let Some(cmds) = json["commands"].as_array() else {
+                continue;
+            };
             for c in cmds {
                 let (Some(cid), Some(command)) = (c["id"].as_str(), c["command"].as_str()) else {
                     continue;

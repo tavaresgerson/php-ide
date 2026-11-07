@@ -158,8 +158,9 @@ impl ServerCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LspStatus {
+    #[default]
     Starting,
     Running(String),
     Failed(String),
@@ -173,12 +174,6 @@ pub struct Shared {
     pub capabilities: Mutex<ServerCapabilities>,
     /// Log do servidor (window/logMessage, stderr) — cap de 200 linhas.
     pub log: Mutex<Vec<String>>,
-}
-
-impl Default for LspStatus {
-    fn default() -> Self {
-        LspStatus::Starting
-    }
 }
 
 impl Shared {

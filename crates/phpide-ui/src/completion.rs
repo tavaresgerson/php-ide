@@ -6,7 +6,6 @@
 //! Esc fecha (enviando `$/cancelRequest`); o aceite aplica `textEdit`
 //! (range UTF-16) ou `insertText`, com fallback para o rótulo.
 
-use std::path::PathBuf;
 use std::sync::mpsc;
 
 use phpide_lsp::{CompletionItem, LspClient};
@@ -55,7 +54,7 @@ impl CompletionState {
     pub fn begin(
         &mut self,
         lsp: &LspClient,
-        path: &PathBuf,
+        path: &std::path::Path,
         line0: usize,
         col0: usize,
         word_start: usize,

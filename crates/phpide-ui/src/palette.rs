@@ -230,7 +230,7 @@ fn project_files(ws: &Workspace, query: &str, cap: usize) -> Vec<(i32, PathBuf)>
             fuzzy_score(query, &rel).map(|s| (s, e.path.clone()))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.truncate(cap);
     files
 }

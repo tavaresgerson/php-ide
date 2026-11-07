@@ -14,6 +14,8 @@ mod header;
 mod intelligence;
 mod palette;
 mod plugins;
+mod run_debug;
+mod run_panels;
 mod scheme;
 mod search;
 mod settings;
@@ -42,7 +44,7 @@ use phpide_core::{
     log::{Correlation, Logger},
     Component, Revisioned, Workspace,
 };
-use phpide_dbgp::{run_with_breakpoints, DebugMsg};
+use phpide_dbgp::session::ContinueCommand;
 use phpide_lsp::{detect_server, LspClient, LspDiagnostic, LspStatus};
 use phpide_php::{Language, PhpLanguage};
 use search::SearchState;
@@ -168,11 +170,9 @@ struct PhpIdeApp {
     /// Comandos dinâmicos da palette (composer/phpunit), recalculados ao abrir.
     extras: Vec<(String, String)>,
     was_palette_open: bool,
-    // Estágio 4c — depuração DBGp
-    breakpoints: HashMap<PathBuf, BTreeSet<usize>>,
-    debug_rx: Option<mpsc::Receiver<DebugMsg>>,
-    /// Saída do processo PHP disparado em modo debug (painel Debug).
-    debug_php_rx: Option<mpsc::Receiver<String>>,
+    // Estágio 8 — Run/Debug/Test (RUN-001/002, RUN-DBG-001/002/003,
+    // RUN-TST-001/002/003): sessões, engine DBGp e cobertura.
+    rd: run_debug::RunDebugState,
     // Estágio 5 — plugins
     plugins: Vec<plugins::PluginCommand>,
     // Estágio 6 — shell de IDE (REQUISITOS Parte 1)
@@ -250,9 +250,7 @@ impl PhpIdeApp {
             exec: ExecState::new(),
             extras: Vec::new(),
             was_palette_open: false,
-            breakpoints: HashMap::new(),
-            debug_rx: None,
-            debug_php_rx: None,
+            rd: run_debug::RunDebugState::default(),
             plugins,
             settings,
             settings_dialog: settings_dialog::SettingsDialogState::default(),
@@ -324,6 +322,8 @@ impl PhpIdeApp {
         let report = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
         self.exec.stop_if_running();
+        // NFR-001-04: encerra sessões de execução e a engine DBGp.
+        self.rd.shutdown();
         self.logger.info(
             Component::Ui,
             &Correlation::session(self.session),
@@ -609,14 +609,13 @@ impl PhpIdeApp {
             .open_file_at(&d.path, d.line.saturating_sub(1), d.col.saturating_sub(1));
     }
 
+    /// Stop global (Ctrl+F2): encerra execução e debug ativos (RUN-001,
+    /// RUN-DBG-001-04 — Stop confiável em processos e socket).
     pub fn stop_execution(&mut self) {
         if self.exec.running {
             self.exec.stop();
         }
-        if let Some(rx) = self.debug_rx.take() {
-            drop(rx);
-            self.ws.message = "sessão de debug encerrada".to_string();
-        }
+        self.rd.stop();
     }
 
     fn has_collapsed_ancestor(&self, path: &Path) -> bool {
@@ -870,6 +869,8 @@ impl eframe::App for PhpIdeApp {
         let report = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
         self.exec.stop_if_running();
+        // NFR-001-04: encerra sessões de execução e a engine DBGp.
+        self.rd.shutdown();
         if let Some(lsp) = self.lsp.take() {
             lsp.stop();
         }
@@ -906,7 +907,11 @@ impl eframe::App for PhpIdeApp {
         self.poll_usages();
         self.poll_symbol_query();
         self.exec.poll();
-        self.poll_debug();
+        // Estágio 8: sessões de execução + engine DBGp (eventos, testes,
+        // cobertura) e sync do widget de listener na status bar.
+        self.rd.poll();
+        self.debug_listen = self.rd.is_listening();
+        self.debug_keys(ctx);
         self.ctrl_wheel_zoom(ctx);
 
         if self.palette.open && !self.was_palette_open {
@@ -1191,15 +1196,11 @@ impl PhpIdeApp {
             if i.consume_key(ctrl, Key::F4) {
                 self.request_close_active();
             }
-            if i.consume_key(alt, Key::ArrowLeft) {
-                if !self.ws.navigate_back() {
-                    self.ws.message = "sem histórico de navegação".to_string();
-                }
+            if i.consume_key(alt, Key::ArrowLeft) && !self.ws.navigate_back() {
+                self.ws.message = "sem histórico de navegação".to_string();
             }
-            if i.consume_key(alt, Key::ArrowRight) {
-                if !self.ws.navigate_forward() {
-                    self.ws.message = "sem histórico de navegação".to_string();
-                }
+            if i.consume_key(alt, Key::ArrowRight) && !self.ws.navigate_forward() {
+                self.ws.message = "sem histórico de navegação".to_string();
             }
             if i.consume_key(alt, Key::Enter) {
                 // Placeholder de intention actions: abre o quick-fix do problema na linha.
@@ -1263,7 +1264,16 @@ impl PhpIdeApp {
                 self.stop_execution();
             }
             if i.consume_key(egui::Modifiers::NONE, Key::F9) {
-                bp_toggle = true;
+                // Roteamento contextual: com debug ativo, F9 é Resume
+                // (T-RUN-DBG-002-01); fora de sessão, mantém o toggle de
+                // breakpoint do baseline até o requisito de keymap dedicado.
+                if self.rd.status.is_active() {
+                    if self.rd.status == run_debug::DebugStatus::Paused {
+                        self.rd.continue_debug(ContinueCommand::Resume);
+                    }
+                } else {
+                    bp_toggle = true;
+                }
             }
             if i.consume_key(egui::Modifiers::NONE, Key::F11) {
                 self.toggle_bookmark();
@@ -1535,44 +1545,16 @@ impl PhpIdeApp {
             });
     }
 
+    /// Painéis Run e Debug (Estágio 8): a janela Run mostra as sessões
+    /// (process list) e a Debug mostra a toolbar/inspeção DBGp. As duas são
+    /// independentes — podem estar abertas ao mesmo tempo.
     fn exec_panel(&mut self, ctx: &egui::Context) {
-        let debug_active = self.debug_rx.is_some();
-        let title = if debug_active { "Debug" } else { "Run" };
-        egui::TopBottomPanel::bottom("exec")
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(title).strong());
-                    if self.exec.running {
-                        ui.spinner();
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("X").on_hover_text("Hide (Shift+Esc)").clicked() {
-                            if debug_active {
-                                self.tw.set_visible(ToolWindow::Debug, false);
-                            } else {
-                                self.tw.set_visible(ToolWindow::Run, false);
-                            }
-                        }
-                        if ui.button("Clear").on_hover_text("Limpar saída").clicked() {
-                            self.exec.output.clear();
-                        }
-                        if ui.button("Stop").on_hover_text("Stop (Ctrl+F2)").clicked() {
-                            self.stop_execution();
-                        }
-                    });
-                });
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&self.exec.output).monospace())
-                                .selectable(true),
-                        );
-                    });
-            });
+        if self.tw.is_visible(ToolWindow::Run) {
+            run_panels::run_panel(self, ctx);
+        }
+        if self.tw.is_visible(ToolWindow::Debug) {
+            run_panels::debug_panel(self, ctx);
+        }
     }
 
     /// Modal de confirmação para buffers sujos (NFR-007-02): aba, Close
@@ -2614,16 +2596,12 @@ impl PhpIdeApp {
         }
     }
 
+    /// Roda o arquivo atual como PHP Script (Ctrl+R) — Run Configuration
+    /// temporária sobre o RunManager (T-RUN-002-01): validação de campos,
+    /// cwd, env e sessão com output/estado no painel Run.
     fn run_current_php(&mut self) {
-        if self.exec.running {
-            self.ws.message = "já há uma execução em andamento".to_string();
-            return;
-        }
         self.save_active();
-        let Some(buf) = self.ws.active_buffer() else {
-            return;
-        };
-        let Some(path) = buf.path.clone() else {
+        let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             self.ws.message = "salve o arquivo antes de executar".to_string();
             return;
         };
@@ -2636,13 +2614,32 @@ impl PhpIdeApp {
                 return;
             }
         };
-        let cwd = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.ws.root.clone());
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        self.tw.set_visible(ToolWindow::Run, true);
-        self.exec.run(format!("php {file}"), php, vec![file], cwd);
+        let rel = path
+            .strip_prefix(&self.ws.root)
+            .unwrap_or(&path)
+            .to_path_buf();
+        let config = phpide_run::RunConfig::new(
+            format!("temp-run-{}", path.display()),
+            format!("php {}", path.file_name().unwrap().to_string_lossy()),
+            phpide_run::RunKind::PhpScript {
+                file: rel,
+                args: Vec::new(),
+                interpreter_options: Vec::new(),
+                break_at_first_line: false,
+            },
+        );
+        match phpide_run::build_command(
+            &config,
+            &self.ws.root,
+            &exec::build_context(&self.settings, &php),
+        ) {
+            Ok(built) => {
+                self.tw.set_visible(ToolWindow::Run, true);
+                let id = self.rd.manager.start(config, built.spec, built.plan);
+                self.rd.selected = Some(id);
+            }
+            Err(e) => self.ws.message = format!("{} — {}", e.message, e.action),
+        }
     }
 
     /// Liga/desliga breakpoint na linha do cursor (F9).
@@ -2662,22 +2659,15 @@ impl PhpIdeApp {
     }
 
     /// Alterna breakpoint na linha informada (1-based) — usado por F9 e pelo
-    /// clique no gutter (Estágio 6.2).
+    /// clique no gutter. O ponto entra no store compartilhado com a engine
+    /// DBGp e é sincronizado com o backend (T-RUN-DBG-003-01).
     fn toggle_breakpoint_at(&mut self, line: usize) {
         let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
         };
-        let set = self.breakpoints.entry(path.clone()).or_default();
-        let action = if set.remove(&line) {
-            "removido"
-        } else {
-            set.insert(line);
-            "adicionado"
-        };
-        if set.is_empty() {
-            self.breakpoints.remove(&path);
-        }
-        let total: usize = self.breakpoints.values().map(|s| s.len()).sum();
+        let added = self.rd.toggle_breakpoint(path, line);
+        let action = if added { "adicionado" } else { "removido" };
+        let total = self.rd.bp_store.lock().unwrap().breakpoints.len();
         self.ws.message = format!("breakpoint {action} (Ln {line}) — total {total}");
     }
 
@@ -2704,108 +2694,63 @@ impl PhpIdeApp {
         self.ws.message = format!("bookmark {action} (Ln {line})");
     }
 
-    /// Debug do arquivo atual: sobe o listener DBGp e dispara o PHP com
-    /// XDEBUG_CONFIG apontando para a IDE (zero-config quando ☎ está ligado).
+    /// Debug do arquivo atual (Ctrl+D): engine DBGp + PHP com XDEBUG_CONFIG
+    /// zero-config (mescla o env do usuário, T-RUN-DBG-001-01) e Stop/
+    /// Detach confiáveis (T-RUN-DBG-001-04 — processo via RunManager,
+    /// socket via engine).
     fn debug_run(&mut self) {
-        if self.debug_rx.is_some() {
-            self.ws.message = "já há uma sessão de debug aguardando".to_string();
+        if self.rd.status.is_active() {
+            self.ws.message = "já há uma sessão de debug ativa".to_string();
             return;
         }
         self.save_active();
-        let Some(buf) = self.ws.active_buffer() else {
-            return;
-        };
-        let Some(path) = buf.path.clone() else {
+        let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             self.ws.message = "salve o arquivo antes de debugar".to_string();
             return;
         };
-        let port: u16 = std::env::var("PHPIDE_DBGP_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(phpide_dbgp::DEFAULT_PORT);
-        let bps: Vec<(PathBuf, u32)> = self
-            .breakpoints
-            .iter()
-            .flat_map(|(p, lines)| lines.iter().map(move |&l| (p.clone(), l as u32)))
-            .collect();
-        let (tx, rx) = mpsc::channel();
-        self.debug_rx = Some(rx);
-        let (php_tx, php_rx) = mpsc::channel();
-        self.debug_php_rx = Some(php_rx);
-        self.tw.set_visible(ToolWindow::Debug, true);
-        self.exec.title = "Debug".to_string();
-        self.exec.output =
-            format!("escutando xdebug em 127.0.0.1:{port} e executando com XDEBUG_CONFIG...\n\n");
-        self.exec.running = true;
-        std::thread::spawn(move || {
-            let _ = run_with_breakpoints(port, Duration::from_secs(300), &bps, tx);
-        });
-        // Dispara o PHP com o XDEBUG_CONFIG conectando na IDE; stdout/stderr
-        // vão para o painel Debug via canal dedicado.
         let php = match exec::resolve_php(&self.settings) {
             Ok(program) => program,
             Err(e) => {
                 self.ws.message = e.to_string();
-                self.exec.running = false;
-                self.debug_rx = None;
-                self.debug_php_rx = None;
                 return;
             }
         };
-        let cwd = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.ws.root.clone());
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        let xdebug_config = format!("client_host=127.0.0.1 client_port={port}");
-        std::thread::spawn(move || {
-            let result = std::process::Command::new(&php)
-                .arg(&file)
-                .current_dir(&cwd)
-                .env("XDEBUG_CONFIG", &xdebug_config)
-                .env("XDEBUG_SESSION", "PHPIDE")
-                .output();
-            match result {
-                Ok(out) => {
-                    for line in String::from_utf8_lossy(&out.stdout).lines() {
-                        let _ = php_tx.send(line.to_string());
-                    }
-                    for line in String::from_utf8_lossy(&out.stderr).lines() {
-                        let _ = php_tx.send(format!("[stderr] {line}"));
-                    }
-                    let _ = php_tx.send(format!("[php exit {}]", out.status.code().unwrap_or(-1)));
-                }
-                Err(e) => {
-                    let _ = php_tx.send(format!("[debug] falha ao rodar php: {e}"));
-                }
+        match self.rd.start_debug(&self.ws.root, &php, path, Vec::new()) {
+            Ok(()) => {
+                self.tw.set_visible(ToolWindow::Debug, true);
+                self.ws.message = format!(
+                    "debug: aguardando Xdebug em 127.0.0.1:{} (IDE key phpide)",
+                    run_debug::RunDebugState::debug_port()
+                );
             }
-        });
+            Err(e) => self.ws.message = e,
+        }
     }
 
-    fn poll_debug(&mut self) {
-        if let Some(rx) = &self.debug_php_rx {
-            let mut lines = Vec::new();
-            while let Ok(l) = rx.try_recv() {
-                lines.push(l);
-            }
-            for l in lines {
-                self.exec.push_line(&l);
-            }
+    /// Atalhos de debug com sessão ativa (roteamento contextual — ver README):
+    /// F9 Resume, F7/F8/Shift+F8 stepping, Alt+F10 Show Execution Point.
+    fn debug_keys(&mut self, ctx: &egui::Context) {
+        if !self.rd.status.is_active() {
+            return;
         }
-        if let Some(rx) = &self.debug_rx {
-            let mut done = false;
-            while let Ok(msg) = rx.try_recv() {
-                match msg {
-                    DebugMsg::Line(l) => self.exec.push_line(&l),
-                    DebugMsg::Done => done = true,
-                }
+        let paused = self.rd.status == run_debug::DebugStatus::Paused;
+        ctx.input_mut(|i| {
+            if paused && i.consume_key(egui::Modifiers::NONE, egui::Key::F9) {
+                self.rd.continue_debug(ContinueCommand::Resume);
             }
-            if done {
-                self.debug_rx = None;
-                self.exec.running = false;
-                self.debug_php_rx = None;
+            if paused && i.consume_key(egui::Modifiers::NONE, egui::Key::F7) {
+                self.rd.continue_debug(ContinueCommand::StepInto);
             }
-        }
+            if paused && i.consume_key(egui::Modifiers::NONE, egui::Key::F8) {
+                self.rd.continue_debug(ContinueCommand::StepOver);
+            }
+            if paused && i.consume_key(egui::Modifiers::SHIFT, egui::Key::F8) {
+                self.rd.continue_debug(ContinueCommand::StepOut);
+            }
+            if paused && i.consume_key(egui::Modifiers::ALT, egui::Key::F10) {
+                run_panels::show_execution_point(self);
+            }
+        });
     }
 
     fn run_manifest_plugin(&mut self, id: &str) {
@@ -2935,8 +2880,13 @@ impl PhpIdeApp {
             viewport,
             row_height,
         };
-        let bps = self.breakpoints.get(&path).cloned().unwrap_or_default();
+        let bps = self.rd.bp_lines_for(&path);
         let bms = self.bookmarks.get(&path).cloned().unwrap_or_default();
+        let coverage = self
+            .rd
+            .coverage
+            .as_ref()
+            .and_then(|report| report.file(&path).cloned());
         let action = editor_view::paint_gutter(
             ui,
             &geom,
@@ -2945,6 +2895,7 @@ impl PhpIdeApp {
             &bps,
             &bms,
             output.galley.rows.len(),
+            coverage.as_ref(),
         );
         if let Some(line1) = action.toggle_breakpoint {
             self.toggle_breakpoint_at(line1);

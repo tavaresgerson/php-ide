@@ -23,7 +23,8 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 | `phpide-lsp` | Cliente LSP: framing JSON-RPC, threads, sync de documentos, completion | LanguageServerManager |
 | `phpide-syntax` | Análise estrutural tree-sitter: blocos, erros de sintaxe offline | LocalFileSystem/Folding (offline) |
 | `phpide-dbgp` | Protocolo DBGp (Xdebug): breakpoints, run, pilha, variáveis | XDebugger/DBGp driver |
-| `phpide-exec` | Processos externos: descoberta configurável de executáveis, spawn padronizado, timeout, Stop e kill de grupo | Execution infrastructure |
+| `phpide-exec` | Processos externos: descoberta configurável de executáveis, spawn padronizado, timeout, Stop e kill de grupo, stdout/stderr em streaming | Execution infrastructure |
+| `phpide-run` | Run Configurations versionadas, sessões (process list), PHPUnit (escopos + árvore TeamCity) e cobertura Clover | RunManager/PhpUnit runner |
 | `phpide-ui` | Shell gráfica egui/eframe: abas, painéis, editor, execução, plugins | IdeFrame |
 
 ## Roadmap por estágios
@@ -164,6 +165,38 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
       projeto Composer em disco com intelephense real — descobrir, abrir,
       editar, diagnosticar, completar (`greet`), navegar (definition em
       `Greeter.php`) e salvar, sem derrubar a sessão.
+- [x] **Estágio 8.x — Execução, depuração, testes e cobertura (T-RUN-001/002,
+      RUN-DBG-001/002/003, RUN-TST-001/002/003)**:
+      - **Run Configurations** (`phpide-run`): modelo versionado com
+        validação de campos (erros bloqueiam com ação, avisos não), tipos
+        PHP Script / Composer Script / PHPUnit; sessões no painel Run com
+        **process list**, **Rerun**, **Stop** (kill de grupo),
+        **Pause Output** e **Pin Tab**; env com **redaction obrigatória**
+        nos logs; allow multiple instances.
+      - **Xdebug/DBGp** (`phpide-dbgp`): listener 9003 com **IDE key**
+        (conexão errada é recusada com detach), `XDEBUG_CONFIG` montado
+        **mesclando o env do usuário** (nada de apagar `mode=` etc.),
+        **path mappings** local↔remoto com associação da conexão ao projeto
+        (Foreign exige confirmação), breakpoints com estados
+        (Pending/Verified/Invalid/Disabled) sincronizados com o backend,
+        **Resume F9, Step Into F7, Over F8, Out Shift+F8, Show Execution
+        Point Alt+F10**, **Watches e Evaluate por frame** (invalidados após
+        Resume), e **Stop/Detach confiáveis** durante o run (socket clonado
+        é fechado na hora; processo PHP morto em grupo; porta liberada).
+      - **PHPUnit** (`phpide-run::phpunit`): runner resolvido
+        (vendor/bin → phar → PATH), consolidação de `phpunit.xml`/bootstrap
+        (explícito vence sempre), execução por **diretório, classe, método
+        e data set**, árvore de resultados com **duração, output e falhas
+        navegáveis** (arquivo:linha) via parser TeamCity.
+      - **Cobertura** (`phpide-run::coverage`): modelo por arquivo/linha
+        executável, importador Clover (`--coverage-clover` do PHPUnit com
+        Xdebug/PCOV), percentual por arquivo e faixa no gutter do editor —
+        linha fora do relatório nunca aparece como coberta.
+      - **Gate real** (`phpide-run/tests/gate_run_debug.rs`): executa um
+        script PHP real, depura com processo PHP real + engine DBGp
+        (peer protocolar — Xdebug ausente neste ambiente, documentado em
+        `docs/baseline/T-RUN-ESTAGIO8-run-debug-test.md`), testa com
+        PHPUnit 11 real e valida Stop/Detach confiáveis.
 
 ## Atalhos
 
@@ -187,8 +220,15 @@ Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 | F12 / Ctrl+B | ir para definição |
 | Ctrl+[ / Ctrl+] | início/fim do bloco estrutural |
 | Ctrl+R / Ctrl+D | executar arquivo atual / debug com Xdebug |
-| Ctrl+F2 | parar execução/debug |
-| F9 | breakpoint na linha do cursor |
+| Ctrl+F2 | parar execução/debug (Stop confiável) |
+| F9 | breakpoint na linha do cursor; **Resume** com sessão de debug ativa¹ |
+| F7 / F8 / Shift+F8 | Step Into / Step Over / Step Out (com debug pausado) |
+| Alt+F10 / Alt+F8 | Show Execution Point / Evaluate por frame (painel Debug) |
+
+¹ Atalhos de debug são **contextuais**: com sessão DBGp ativa, F9/F7/F8/
+Shift+F8/Alt+F10 controlam o debugger; fora de sessão, F9 mantém o toggle
+de breakpoint do baseline. A migração global da keymap (conflitos em
+`REQUISITOS.md` 6.7) é um requisito próprio.
 | Ctrl+` | Quick Switch Scheme |
 | Ctrl+= / Ctrl+- / Ctrl+0 | zoom |
 

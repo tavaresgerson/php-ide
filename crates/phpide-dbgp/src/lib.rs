@@ -1,176 +1,72 @@
-//! Cliente DBGp mínimo — protocolo de depuração do Xdebug (Estágio 4).
+//! phpide-dbgp — cliente DBGp/Xdebug (Estágio 4 → Estágio 8).
 //!
-//! XML sobre TCP, mensagens terminadas em `\0`. Escopo MVP: a IDE escuta a
-//! porta, o PHP (com Xdebug) conecta de volta, registramos breakpoints,
-//! damos `run`, e ao parar lemos pilha (`stack_get`) e variáveis locais
-//! (`context_get`) antes do `detach`. Stepping interativo fica para o 4.1.
+//! Protocolo de depuração do Xdebug: XML sobre TCP, mensagens terminadas em
+//! `\0`. A IDE escuta a porta, o PHP (com Xdebug) conecta de volta, breakpoints
+//! são sincronizados e a execução é controlada por comandos DBGp. Painéis e
+//! controles `egui` ficam na UI — aqui é só protocolo e máquina de estados.
 //!
-//! Referência: DBGp spec (https://xdebug.org/docs/dbgp) — as respostas são
-//! parseadas por atributos, sem depender de crate XML.
+//! - [`proto`]: codificação/parsing de pacotes e respostas;
+//! - [`breakpoint`]: modelo e estados dos breakpoints + sincronização
+//!   (T-RUN-DBG-003-01);
+//! - [`mapping`]: path mappings local↔remoto e associação da conexão ao
+//!   projeto (T-RUN-DBG-001-02);
+//! - [`listener`]: listener configurável, IDE key e XDEBUG_CONFIG
+//!   (T-RUN-DBG-001-01);
+//! - [`session`]: run/stepping, frames, variáveis, evaluate e watches
+//!   (T-RUN-DBG-001-03, T-RUN-DBG-002-01/02);
+//! - [`engine`]: máquina de estados da sessão com cleanup confiável de
+//!   sockets e processos (T-RUN-DBG-001-03/04).
 
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+pub mod breakpoint;
+pub mod engine;
+pub mod listener;
+pub mod mapping;
+pub mod proto;
+pub mod session;
 
-pub const DEFAULT_PORT: u16 = 9003;
+pub use breakpoint::{Breakpoint, BreakpointKind, BreakpointStatus, BreakpointStore, SyncEvent};
+pub use engine::{DebugEngine, EngineCommand, EngineEvent, SessionEnd};
+pub use listener::{
+    parse_init, xdebug_env, AcceptOutcome, DebugListener, InitInfo, ListenerConfig, DEFAULT_IDE_KEY,
+};
+pub use mapping::{ConnectionMatch, PathMappings};
+pub use proto::{
+    attr, encode_command, error_message, fileuri, listen, parse_response, property_names,
+    read_packet, uri_to_path, DbgpSession, ResponseInfo, DEFAULT_PORT,
+};
+pub use session::{
+    base64_encode, parse_context, parse_stack, ContinueCommand, Frame, StepOutcome, StopReason,
+    Variable, Watch, WatchValue,
+};
 
-/// Mensagens para o painel Execução durante uma sessão de debug.
+/// Mensagens para o painel Execução durante uma sessão de debug (legado
+/// Estágio 4, usado pela UI até a migração para a engine).
 pub enum DebugMsg {
     Line(String),
     Done,
 }
 
-// ---------------------------------------------------------------------------
-// Codificação / parsing
-// ---------------------------------------------------------------------------
-
-/// Monta um comando DBGp: `cmd -a v ... -i id\0` (sem suporte a `-- data` no MVP).
-pub fn encode_command(cmd: &str, args: &[(&str, &str)], transaction: i64) -> Vec<u8> {
-    let mut s = cmd.to_string();
-    for (k, v) in args {
-        s.push_str(&format!(" -{k} {v}"));
-    }
-    s.push_str(&format!(" -i {transaction}\0"));
-    s.into_bytes()
-}
-
-/// Lê um pacote terminado em \0. None em EOF.
-pub fn read_packet(reader: &mut impl BufRead) -> io::Result<Option<String>> {
-    let mut buf = Vec::new();
-    let n = reader.read_until(0, &mut buf)?;
-    if n == 0 {
-        return Ok(None);
-    }
-    if buf.last() == Some(&0) {
-        buf.pop();
-    }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
-}
-
-/// Extrai o valor de um atributo XML: `status="break"`.
-pub fn attr<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
-    let needle = format!("{name}=\"");
-    let start = xml.find(&needle)? + needle.len();
-    let rel_end = xml[start..].find('"')?;
-    Some(&xml[start..start + rel_end])
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResponseInfo {
-    pub command: String,
-    pub transaction: String,
-    pub success: bool,
-    pub status: String,
-}
-
-pub fn parse_response(xml: &str) -> Option<ResponseInfo> {
-    Some(ResponseInfo {
-        command: attr(xml, "command")?.to_string(),
-        transaction: attr(xml, "transaction_id").unwrap_or("").to_string(),
-        success: attr(xml, "success") == Some("1"),
-        status: attr(xml, "status").unwrap_or("").to_string(),
-    })
-}
-
-/// Nomes das propriedades (variáveis) de um context_get.
-pub fn property_names(xml: &str) -> Vec<String> {
-    xml.match_indices("<property ")
-        .filter_map(|(i, _)| attr(&xml[i..], "name").map(str::to_string))
-        .collect()
-}
-
-/// file:// URI para breakpoint_set (mesma codificação mínima do cliente LSP).
-pub fn fileuri(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    let mut out = String::from("file://");
-    for b in s.as_bytes() {
-        let c = *b as char;
-        if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | '@' | ':' | '+' | '=' | ',') {
-            out.push(c);
-        } else {
-            out.push_str(&format!("%{:02X}", b));
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Sessão
-// ---------------------------------------------------------------------------
-
-pub struct DbgpSession {
-    stream: TcpStream,
-    reader: BufReader<TcpStream>,
-    transaction: i64,
-}
-
-impl DbgpSession {
-    /// Envia comando e devolve o XML completo da resposta.
-    pub fn send_xml(&mut self, cmd: &str, args: &[(&str, &str)]) -> io::Result<String> {
-        self.transaction += 1;
-        self.stream.write_all(&encode_command(cmd, args, self.transaction))?;
-        read_packet(&mut self.reader)?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "debugger encerrou"))
-    }
-
-    /// Envia comando e devolve só os metadados.
-    pub fn send(&mut self, cmd: &str, args: &[(&str, &str)]) -> io::Result<ResponseInfo> {
-        let xml = self.send_xml(cmd, args)?;
-        parse_response(&xml).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resposta DBGp inválida"))
-    }
-}
-
-/// Escuta a porta com prazo; aceita a conexão do Xdebug e consome o `<init>`.
-pub fn listen(port: u16, timeout: Duration) -> io::Result<Option<DbgpSession>> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
-    listener.set_nonblocking(true)?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                let mut reader = BufReader::new(match stream.try_clone() {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                });
-                if let Ok(Some(init)) = read_packet(&mut reader) {
-                    if init.contains("<init") {
-                        return Ok(Some(DbgpSession {
-                            stream,
-                            reader,
-                            transaction: 0,
-                        }));
-                    }
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if Instant::now() > deadline {
-                    return Ok(None);
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(_) => thread::sleep(Duration::from_millis(20)),
-        }
-    }
-}
-
-/// Sessão completa do MVP: breakpoints -> run -> (pilha+variáveis se parar) -> detach.
-/// Tudo o que acontece é reportado linha a linha pela canal.
+/// Sessão completa do MVP (Estágio 4): breakpoints -> run -> (pilha+variáveis
+/// se parar) -> detach. Mantida para compatibilidade do painel legado; o
+/// fluxo novo usa [`DebugEngine`].
 pub fn run_with_breakpoints(
     port: u16,
-    wait: Duration,
-    breakpoints: &[(PathBuf, u32)],
-    tx: mpsc::Sender<DebugMsg>,
-) -> io::Result<()> {
-    let say = |tx: &mpsc::Sender<DebugMsg>, line: String| {
+    wait: std::time::Duration,
+    breakpoints: &[(std::path::PathBuf, u32)],
+    tx: std::sync::mpsc::Sender<DebugMsg>,
+) -> std::io::Result<()> {
+    let say = |tx: &std::sync::mpsc::Sender<DebugMsg>, line: String| {
         let _ = tx.send(DebugMsg::Line(line));
     };
-    say(&tx, format!("[debug] aguardando xdebug em 127.0.0.1:{port} ({:?})...", wait));
+    say(
+        &tx,
+        format!("[debug] aguardando xdebug em 127.0.0.1:{port} ({wait:?})..."),
+    );
     let Some(mut session) = listen(port, wait)? else {
-        say(&tx, "[debug] tempo esgotado — xdebug não conectou".to_string());
+        say(
+            &tx,
+            "[debug] tempo esgotado — xdebug não conectou".to_string(),
+        );
         let _ = tx.send(DebugMsg::Done);
         return Ok(());
     };
@@ -215,51 +111,8 @@ pub fn run_with_breakpoints(
     }
 
     let _ = session.send("detach", &[]);
+    session.close();
     say(&tx, "[debug] sessão encerrada (detach)".to_string());
     let _ = tx.send(DebugMsg::Done);
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Testes
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_format() {
-        let bytes = encode_command("breakpoint_set", &[("t", "line"), ("n", "3")], 7);
-        let s = String::from_utf8(bytes).unwrap();
-        assert_eq!(s, "breakpoint_set -t line -n 3 -i 7\0");
-    }
-
-    #[test]
-    fn parses_response_attrs() {
-        // run carrega status; success só aparece em comandos como breakpoint_set.
-        let xml = r#"<response xmlns="urn:debugger_protocol_v1" command="run" transaction_id="3" status="break" reason="ok"></response>"#;
-        let r = parse_response(xml).unwrap();
-        assert_eq!(r.command, "run");
-        assert_eq!(r.status, "break");
-        assert!(!r.success);
-
-        let bp = r#"<response command="breakpoint_set" transaction_id="2" id="10" success="1"></response>"#;
-        assert!(parse_response(bp).unwrap().success);
-
-        assert_eq!(attr(xml, "transaction_id"), Some("3"));
-        assert_eq!(attr(xml, "inexistente"), None);
-    }
-
-    #[test]
-    fn extracts_property_names() {
-        let xml = r#"<response command="context_get" transaction_id="5"><property name="$total" fullname="$total" type="int"><![CDATA[42]]></property><property name="$items" fullname="$items" type="array"></property></response>"#;
-        assert_eq!(property_names(xml), vec!["$total", "$items"]);
-    }
-
-    #[test]
-    fn packet_roundtrip() {
-        let mut reader = BufReader::new("dGVzdA==\0".as_bytes());
-        assert_eq!(read_packet(&mut reader).unwrap().unwrap(), "dGVzdA==");
-    }
 }

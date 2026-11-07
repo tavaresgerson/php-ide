@@ -52,7 +52,14 @@ fn server_reports_php_syntax_diagnostics() {
     let deadline = Instant::now() + Duration::from_secs(45);
     let mut found = Vec::new();
     while Instant::now() < deadline {
-        if let Some(items) = client.shared.diagnostics.lock().unwrap().get(&file).cloned() {
+        if let Some(items) = client
+            .shared
+            .diagnostics
+            .lock()
+            .unwrap()
+            .get(&file)
+            .cloned()
+        {
             if !items.is_empty() {
                 found = items;
                 break;

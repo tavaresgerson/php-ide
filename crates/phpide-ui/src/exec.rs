@@ -189,7 +189,7 @@ impl ExecState {
 }
 
 /// Lê os scripts de composer.json (se existir): (nome, descrição).
-pub fn composer_scripts(root: &PathBuf) -> Vec<(String, String)> {
+pub fn composer_scripts(root: &std::path::Path) -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(root.join("composer.json")) else {
         return Vec::new();
     };
@@ -257,6 +257,16 @@ pub fn resolve_composer(
         &settings.composer_path,
     )
     .map(|info| info.program.to_string_lossy().into_owned())
+}
+
+/// Monta o `BuildContext` do domínio de execução a partir das ferramentas
+/// já resolvidas (NFR-003-01: configuração explícita antes do PATH).
+pub fn build_context(settings: &crate::settings::Settings, php: &str) -> phpide_run::BuildContext {
+    phpide_run::BuildContext {
+        php: php.to_string(),
+        composer: resolve_composer(settings).ok(),
+        phpunit: None,
+    }
 }
 
 #[cfg(test)]

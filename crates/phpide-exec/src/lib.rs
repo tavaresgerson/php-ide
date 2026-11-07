@@ -14,6 +14,8 @@
 
 mod discover;
 mod process;
+mod stream;
 
 pub use discover::{discover, ToolInfo, ToolRequest};
 pub use process::{kill_process_tree, run, spawn_job, CommandSpec, Completed};
+pub use stream::{spawn_stream, StreamEvent, StreamingChild};

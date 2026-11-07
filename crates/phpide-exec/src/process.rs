@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Especificação completa de um spawn (NFR-003-02).
+#[derive(Debug, Clone)]
 pub struct CommandSpec {
     /// Programa (caminho absoluto ou nome no PATH).
     pub program: String,
@@ -106,7 +107,7 @@ pub fn kill_process_tree(child: &mut Child, kill_tree: bool) {
 }
 
 /// Configura o spawn: pipes, cwd, env e (Unix) grupo de processos próprio.
-fn build_command(spec: &CommandSpec) -> Command {
+pub(crate) fn build_command(spec: &CommandSpec) -> Command {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
         .stdin(Stdio::null())

@@ -380,7 +380,7 @@ fn clone_from_vcs(url: &str, base: PathBuf) -> Result<PathBuf, String> {
 }
 
 /// Cria esqueleto mínimo de projeto PHP (New Project).
-fn create_project(dir: &PathBuf) -> std::io::Result<()> {
+fn create_project(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("src"))?;
     std::fs::write(
         dir.join("composer.json"),

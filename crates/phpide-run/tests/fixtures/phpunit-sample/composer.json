@@ -1,0 +1,6 @@
+{
+    "name": "phpide/fixture-phpunit",
+    "description": "Fixture do Test Runner (amostra de projeto real)",
+    "autoload": { "psr-4": { "App\\": "src/" } },
+    "autoload-dev": { "psr-4": { "App\\Tests\\": "tests/" } }
+}

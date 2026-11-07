@@ -197,11 +197,23 @@ mod tests {
     fn blocks_carry_symbol_names() {
         let code = "<?php\nnamespace Demo\\Loja;\nclass Product {\n    public function price(): float {\n        return 1.0;\n    }\n}\n";
         let report = analyze(code);
-        let ns = report.blocks.iter().find(|b| b.kind == "namespace_definition").unwrap();
+        let ns = report
+            .blocks
+            .iter()
+            .find(|b| b.kind == "namespace_definition")
+            .unwrap();
         assert_eq!(ns.name, "Demo\\Loja");
-        let class = report.blocks.iter().find(|b| b.kind == "class_declaration").unwrap();
+        let class = report
+            .blocks
+            .iter()
+            .find(|b| b.kind == "class_declaration")
+            .unwrap();
         assert_eq!(class.name, "Product");
-        let method = report.blocks.iter().find(|b| b.kind == "method_declaration").unwrap();
+        let method = report
+            .blocks
+            .iter()
+            .find(|b| b.kind == "method_declaration")
+            .unwrap();
         assert_eq!(method.name, "price");
     }
 
@@ -210,7 +222,14 @@ mod tests {
         let code = "<?php\nnamespace Demo\\Loja;\nclass Product {\n    public function price(): float {\n        return 1.0;\n    }\n}\n";
         let trail = breadcrumb_trail(code, 4);
         let kinds: Vec<_> = trail.iter().map(|b| b.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["namespace_definition", "class_declaration", "method_declaration"]);
+        assert_eq!(
+            kinds,
+            vec![
+                "namespace_definition",
+                "class_declaration",
+                "method_declaration"
+            ]
+        );
         let names: Vec<_> = trail.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, vec!["Demo\\Loja", "Product", "price"]);
     }

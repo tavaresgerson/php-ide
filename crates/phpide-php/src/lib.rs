@@ -54,7 +54,7 @@ fn dark_theme() -> &'static Theme {
     })
 }
 
-fn php_syntax<'a>(ss: &'a SyntaxSet) -> &'a SyntaxReference {
+fn php_syntax(ss: &SyntaxSet) -> &SyntaxReference {
     ss.find_syntax_by_extension("php")
         .or_else(|| ss.find_syntax_by_name("PHP"))
         .unwrap_or_else(|| ss.find_syntax_plain_text())

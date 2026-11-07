@@ -93,8 +93,11 @@ pub fn sticky_trail(blocks: &[phpide_syntax::Block], line0: usize, max: usize) -
     chain.into_iter().take(max).map(|(i, _)| i).collect()
 }
 
-/// Pinta o gutter (números, breakpoint sobre o número, bookmark, linha atual)
-/// e devolve ações de clique/hover. `breakpoints`/`bookmarks` são 1-based.
+/// Pinta o gutter (números, breakpoint sobre o número, bookmark, linha atual
+/// e faixa de cobertura) e devolve ações de clique/hover. `breakpoints`/
+/// `bookmarks` são 1-based. `coverage` vem do relatório importado (Clover):
+/// linha executável coberta (verde) ou não coberta (vermelho) — linhas fora
+/// do mapa não são pintadas (ausência ≠ sucesso, RUN-TST-003).
 #[allow(clippy::too_many_arguments)]
 pub fn paint_gutter(
     ui: &egui::Ui,
@@ -104,6 +107,7 @@ pub fn paint_gutter(
     breakpoints: &BTreeSet<usize>,
     bookmarks: &BTreeSet<usize>,
     galley_rows: usize,
+    coverage: Option<&phpide_run::coverage::FileCoverage>,
 ) -> GutterAction {
     let mut action = GutterAction::default();
     let vp = geom.viewport;
@@ -152,6 +156,26 @@ pub fn paint_gutter(
         let y = geom.row_y(line0);
         let row_center = y + geom.row_height * 0.5;
         let center = egui::pos2(num_x, row_center);
+
+        // Faixa de cobertura na borda esquerda do gutter (T-RUN-TST-003-02):
+        // só linhas executáveis do relatório são pintadas.
+        if let Some(cov) = coverage {
+            if let Some(hits) = cov.line_hits(line1 as u32) {
+                let color = if hits > 0 {
+                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
+                } else {
+                    egui::Color32::from_rgb(0xC6, 0x28, 0x28)
+                };
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(gutter_rect.left(), y),
+                        egui::vec2(3.0, geom.row_height),
+                    ),
+                    egui::CornerRadius::ZERO,
+                    color.gamma_multiply(0.85),
+                );
+            }
+        }
 
         if breakpoints.contains(&line1) {
             // Breakpoint SOBRE o número (New UI): círculo vermelho na posição
