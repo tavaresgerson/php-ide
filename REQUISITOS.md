@@ -911,6 +911,8 @@ Arquivos privados de ambiente devem ser ignorados pelo VCS por padrão. Execuç�
 
 ## 9. Frontend
 
+*Estado (2026-11-07): Fase 7 entregue (recorte essencial) — infra WorkspaceEdit multiarquivo com undo coeso (PHP-021-01) e auto-import por additionalTextEdits (PHP-003-05); typescript-language-server + vscode-html/css-language-server integrados via LspClient genérico com roteamento por extensão (FE-001-01/02, FE-002-01): diagnósticos, completion, navegação, type declaration e hints reais; Emmet/MDN via servidores e color preview por documentColor (FE-001-03); node_modules como biblioteca fora da árvore (FE-001-04); gate Vite+TS de ponta a ponta (FE-001-05). Servidores são dependência de ambiente (third_party, gitignored) — sem eles o recurso se autapura (NFR-003), sem anúncio de suporte. TypeScript-Go (FE-002-03) e frameworks (FE-003) pendente.*
+
 `FE-001` — **HTML, CSS e JavaScript essenciais — P1**
 
 - Highlight e diagnósticos.

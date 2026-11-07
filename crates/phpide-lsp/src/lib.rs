@@ -5,6 +5,8 @@
 //! `request()` devolve um `Receiver` que a UI consulta sem bloquear, mesmo
 //! padrão do Estágio 2 (busca, watcher).
 
+pub mod edits;
+
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};

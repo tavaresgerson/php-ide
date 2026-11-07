@@ -13,7 +13,7 @@ use ropey::Rope;
 
 pub mod error;
 pub mod fixtures;
-mod fsutil;
+pub mod fsutil;
 pub mod jobs;
 pub mod log;
 pub mod offsets;
@@ -495,6 +495,13 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scan_skips_node_modules() {
+        // FE-001-04: node_modules é biblioteca (indexada pelo tsserver), não
+        // parte da árvore do projeto — sem varredura redundante.
+        assert!(SKIP_DIRS.contains(&"node_modules"));
+    }
+
     use super::*;
 
     #[test]

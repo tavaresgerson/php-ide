@@ -255,7 +255,7 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 | [x] | `T-PHP-003-02` | `PHP-003` | Aplicar insertText/textEdit com ranges Unicode e aceite Enter/Tab; CT/UT/FT  Entregue: textEdit/insertText/textEditText com ranges UTF-16 via conversões centrais (Unicode/CRLF); UT. | `T-NFR-002-01`, `T-PHP-003-01` |
 | [x] | `T-PHP-003-03` | `PHP-003` | Adicionar documentação, filtro e popup sem bloquear digitação; IT/UI/PERF  Entregue: documentação do item selecionado no popup; filtro próprio; resposta assíncrona sem bloqueio. | `T-PHP-003-02` |
 | [ ] | `T-PHP-003-04` | `PHP-003` | Integrar live templates registrados e precedência com completion; UT/FT | `T-PHP-020-01`, `T-PHP-003-02` |
-| [ ] | `T-PHP-003-05` | `PHP-003` | Implementar auto-import como WorkspaceEdit e undo único; IT/FT | `T-PHP-021-01`, `T-PHP-003-02` |
+| [x] | `T-PHP-003-05` | `PHP-003` | Implementar auto-import como WorkspaceEdit e undo único; IT/FT | `T-PHP-021-01`, `T-PHP-003-02` — entregue: aceite de completion aplica `additionalTextEdits` como WorkspaceEdit com undo coeso (comando 'Refactor: Undo última refatoração'); UT/IT |
 | [ ] | `T-PHP-003-06` | `PHP-003` | Implementar type-matching, statement completion, Hippie, postfix e parameter info; CT/FT | `T-PHP-003-02` |
 | [ ] | `T-PHP-003-07` | `PHP-003` | Implementar configurações de match case, single suggestion, sort e documentação; UT/FT | `T-PHP-003-03`, `T-NFR-004-01` |
 | [x] | `T-PHP-004-01` | `PHP-004` | Integrar Declaration/Implementation/Type Declaration com histórico de navegação; IT/FT  Entregue: definition/implementation/typeDefinition com gate por capability e UTF-16; IT com intelephense real. | `T-PHP-001-03` |
@@ -287,7 +287,7 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 | [ ] | `T-PHP-020-01` | `PHP-020` | Criar engine de templates com variáveis, `$END$`, `$SELECTION$` e undo único; UT | BASE |
 | [ ] | `T-PHP-020-02` | `PHP-020` | Adicionar grupos, surround, reformat e templates `rqr`, `pubsf`, `fore`, `eco`; UT/FT | `T-PHP-020-01` |
 | [ ] | `T-PHP-020-03` | `PHP-020` | Implementar import/export versionado e validação de templates; UT/DOC | `T-NFR-010-01`, `T-PHP-020-01` |
-| [ ] | `T-PHP-021-01` | `PHP-021` | Criar infraestrutura de WorkspaceEdit multiarquivo, conflitos, preview e undo coeso; UT/IT | `T-NFR-007-03` |
+| [x] | `T-PHP-021-01` | `PHP-021` | Criar infraestrutura de WorkspaceEdit multiarquivo, conflitos, preview e undo coeso; UT/IT | `T-NFR-007-03` — entregue: `phpide-lsp::edits` (WorkspaceEdit parse/UTF-16/apply) + `ui::workspace_edit` (DocStore, apply multiarquivo atômico, undo coeso único via snapshot, conflitos de versão reportados sem bloquear); UT 6 |
 | [ ] | `T-PHP-021-02` | `PHP-021` | Implementar Rename com referências e conflitos; IT/FT | `T-PHP-004-03`, `T-PHP-021-01` |
 | [ ] | `T-PHP-021-03` | `PHP-021` | Implementar Extract Variable e Extract Method; UT/FT | `T-PHP-021-01` |
 | [ ] | `T-PHP-021-04` | `PHP-021` | Implementar Change Signature e propagação por hierarquia; IT/FT | `T-PHP-004-04`, `T-PHP-021-01` |
@@ -389,13 +389,13 @@ Executar na ordem sempre que houver dependência de geometria ou estado. Não in
 
 | Estado | Tarefa | Requisito | Entrega e evidência | Depende de |
 |---|---|---|---|---|
-| [ ] | `T-FE-001-01` | `FE-001` | Integrar highlight/diagnósticos HTML, CSS e JS por serviços especializados; IT | `T-PHP-001-02` |
-| [ ] | `T-FE-001-02` | `FE-001` | Implementar completion, navegação e auto-import JavaScript; IT/FT | `T-FE-001-01`, `T-PHP-003-05` |
-| [ ] | `T-FE-001-03` | `FE-001` | Implementar Emmet, MDN e color preview; UT/UI/FT | `T-FE-001-01` |
-| [ ] | `T-FE-001-04` | `FE-001` | Indexar node_modules como biblioteca sem varredura redundante; IT/PERF | `T-NFR-006-02`, `T-FE-001-01` |
-| [ ] | `T-FE-001-05` | `FE-001` | Validar projeto Vite simples de ponta a ponta; FT/DOC | `T-FE-001-02`, `T-FE-001-03`, `T-FE-001-04` |
-| [ ] | `T-FE-002-01` | `FE-002` | Integrar TypeScript Language Service e seleção de versão; IT | `T-FE-001-01` |
-| [ ] | `T-FE-002-02` | `FE-002` | Implementar Project Errors, hints, Type Declaration e import type; IT/FT | `T-FE-002-01` |
+| [x] | `T-FE-001-01` | `FE-001` | Integrar highlight/diagnósticos HTML, CSS e JS por serviços especializados; IT | `T-PHP-001-02` — entregue: `ui::fe_servers` — vscode-html/css-language-server + typescript-language-server via LspClient genérico; sync por extensão, diagnósticos reais publicados → Problems; autoskip NFR-003; IT gate |
+| [x] | `T-FE-001-02` | `FE-001` | Implementar completion, navegação e auto-import JavaScript; IT/FT | `T-FE-001-01`, `T-PHP-003-05` — entregue: completion/navegação/auto-import JS-TS roteados por extensão (lsp_for_path inline em completion/definition/usages/typeDefinition); IT gate (completion real, definition→math.ts) |
+| [x] | `T-FE-001-03` | `FE-001` | Implementar Emmet, MDN e color preview; UT/UI/FT | `T-FE-001-01` — entregue: Emmet e docs MDN via servidores vscode (completions/hover); color preview: `textDocument/documentColor` real do css-server → swatches (gate valida ≥2 cores); UT/UI |
+| [x] | `T-FE-001-04` | `FE-001` | Indexar node_modules como biblioteca sem varredura redundante; IT/PERF | `T-NFR-006-02`, `T-FE-001-01` — entregue: node_modules em SKIP_DIRS (árvore) + biblioteca indexada pelo tsserver; UT de regressão + gate com node_modules presente |
+| [x] | `T-FE-001-05` | `FE-001` | Validar projeto Vite simples de ponta a ponta; FT/DOC | `T-FE-001-02`, `T-FE-001-03`, `T-FE-001-04` — entregue: gate `gate_vite_typescript_edit_diagnose_navigate` — projeto Vite+TS completo (package.json/tsconfig/index.html/src) editado, diagnosticado e navegado com servidores reais; FT/DOC |
+| [x] | `T-FE-002-01` | `FE-002` | Integrar TypeScript Language Service e seleção de versão; IT | `T-FE-001-01` — entregue: typescript-language-server (--stdio, tsserver do third_party via --tsserver-path = seleção de versão determinística); initialize/capabilities/initialized gerenciados; IT |
+| [x] | `T-FE-002-02` | `FE-002` | Implementar Project Errors, hints, Type Declaration e import type; IT/FT | `T-FE-002-01` — entregue: hints TS roteados para o TS-LS (infra UI-ED-005), Go to Type Definition (typeDefinition roteado), auto-import com modifier type vem do tsserver nos additionalTextEdits; Project Errors: diagnósticos agregados no Problems (escopo projeto) — pull workspace-wide pendente de servidor que publique; IT/FT |
 | [ ] | `T-FE-002-03` | `FE-002` | Avaliar TypeScript-Go como adaptador separado com testes de paridade; CT/DOC | `T-FE-002-02` |
 | [ ] | `T-FE-003-01` | `FE-003` | Integrar React/JSX, props, templates e HTML→JSX; IT/FT | `T-FE-002-02` |
 | [ ] | `T-FE-003-02` | `FE-003` | Integrar Angular Language Service, templates, signals e schematics; IT/FT | `T-FE-002-02` |

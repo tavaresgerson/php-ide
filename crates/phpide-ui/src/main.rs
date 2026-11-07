@@ -11,6 +11,7 @@ mod completion;
 mod editor_surface;
 mod editor_view;
 mod exec;
+mod fe_servers;
 mod folding;
 mod geometry;
 mod groups;
@@ -35,6 +36,7 @@ mod tool_panels;
 mod toolwindows;
 mod vcs;
 mod welcome;
+mod workspace_edit;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -226,12 +228,17 @@ struct PhpIdeApp {
     git_markers: Option<GitMarkerCache>,
     /// Resumo de inspeções do arquivo ativo (widget UI-ED-006-03).
     inspections: lens::InspectionsSummary,
+    /// Language Servers de frontend (FE-001/FE-002): TS, HTML, CSS.
+    fe: fe_servers::FeServers,
+    /// Undo coeso de refatorações/auto-import (PHP-021-01/PHP-003-05).
+    refactor_undo: workspace_edit::UndoStack,
     /// Popup do lens preview (linha sob a scrollbar).
     lens_hover: Option<(usize, std::time::Instant)>,
 }
 
 impl PhpIdeApp {
     fn new(root: PathBuf, start_welcome: bool, files: Vec<PathBuf>) -> Self {
+        let fe = fe_servers::detect_and_spawn(&root);
         let (settings, settings_err) = settings::Settings::load_or_default();
         let theme = ThemeId::from_name(&settings.theme);
         let (lsp, lsp_init, lsp_name) = start_lsp(&root);
@@ -312,6 +319,8 @@ impl PhpIdeApp {
             blame_revision: None,
             git_markers: None,
             inspections: lens::InspectionsSummary::default(),
+            fe,
+            refactor_undo: workspace_edit::UndoStack::default(),
             lens_hover: None,
             terminal_input: String::new(),
             commit_message: String::new(),
@@ -502,9 +511,21 @@ impl PhpIdeApp {
 
     /// Find Usages (T-PHP-004-03): referências alimentam o painel Find.
     pub fn request_usages(&mut self) {
-        let Some(lsp) = &self.lsp else {
-            self.ws.message = "LSP indisponível".to_string();
+        let Some(path0) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
+        };
+        let lsp: &LspClient = if phpide_php::Php::is_php_file(&path0) {
+            let Some(l) = &self.lsp else {
+                self.ws.message = "LSP indisponível".to_string();
+                return;
+            };
+            l
+        } else {
+            let Some(s) = self.fe.for_path(&path0) else {
+                self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
+                return;
+            };
+            &s.client
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
@@ -524,6 +545,62 @@ impl PhpIdeApp {
         );
         self.pending_usages = Some(lsp.references(&path, line, col));
         self.ws.message = "buscando usos...".to_string();
+    }
+
+    /// Frontend (FE-001-01/02): inicializa servidores FE, sincroniza buffers
+    /// por extensão e consome diagnósticos publicados → painel de problemas.
+    /// Servidor ausente = degradação com skip (NFR-003).
+    fn poll_fe(&mut self) {
+        if self.fe.is_empty() {
+            return;
+        }
+        for srv in self.fe.iter_mut() {
+            fe_servers::poll_init(srv);
+        }
+        let snapshots: Vec<(PathBuf, String, u64)> = self
+            .ws
+            .buffers
+            .iter()
+            .filter_map(|b| {
+                let p = b.path.clone()?;
+                Some((p, b.document.text(), b.document.revision()))
+            })
+            .collect();
+        for srv in self.fe.iter_mut() {
+            srv.sync_buffers(
+                snapshots
+                    .iter()
+                    .filter(|(p, _, _)| srv_accepts_ext(srv.name, p))
+                    .map(|(p, t, r)| (p, t.as_str(), *r)),
+            );
+        }
+        let published = self.fe.drain_diagnostics();
+        for (path, items) in published {
+            let revision = self
+                .ws
+                .buffers
+                .iter()
+                .find(|b| b.path.as_deref() == Some(path.as_path()))
+                .map(|b| b.document.revision())
+                .unwrap_or(u64::MAX);
+            let diags: Vec<phpide_core::Diagnostic> = items
+                .iter()
+                .map(|d| phpide_core::Diagnostic {
+                    path: path.clone(),
+                    line: d.line0 + 1,
+                    col: d.col0 + 1,
+                    message: d.message.clone(),
+                    severity: match d.severity {
+                        1 => phpide_core::Severity::Error,
+                        2 => phpide_core::Severity::Warning,
+                        3 => phpide_core::Severity::Information,
+                        _ => phpide_core::Severity::Hint,
+                    },
+                    source: d.source.clone(),
+                })
+                .collect();
+            self.ws.set_diagnostics(&path, revision, diags);
+        }
     }
 
     /// Consome o resultado de Find Usages para o painel Find (com preview).
@@ -800,6 +877,18 @@ impl PhpIdeApp {
                     }
                 );
             }
+            PaletteCommand::UndoRefactor => {
+                let mut store = WsStore(&mut self.ws);
+                match workspace_edit::undo_last(&mut store, &mut self.refactor_undo) {
+                    Some(label) => self.ws.message = format!("undone: {label}"),
+                    None => {
+                        self.ws.message = match self.refactor_undo.top_label() {
+                            Some(next) => format!("nenhuma refatoração desfeita (próxima: {next})"),
+                            None => "nenhuma refatoração para desfazer".to_string(),
+                        };
+                    }
+                }
+            }
             PaletteCommand::ToggleFolding => {
                 self.settings.folding = !self.settings.folding;
                 self.fold_cache = None;
@@ -1004,17 +1093,14 @@ impl eframe::App for PhpIdeApp {
                 ctx.request_repaint();
             }
             let shot = ctx.input(|i| {
-                i.events
-                    .iter()
-                    .find_map(|ev| match ev {
-                        egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                        _ => None,
-                    })
+                i.events.iter().find_map(|ev| match ev {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
             });
             if let Some(image) = shot {
-                let path = std::env::var("PHPIDE_SHOT_OUTPUT").unwrap_or_else(|_| {
-                    std::env::var("PHPIDE_SCREENSHOT_TO").unwrap()
-                });
+                let path = std::env::var("PHPIDE_SHOT_OUTPUT")
+                    .unwrap_or_else(|_| std::env::var("PHPIDE_SCREENSHOT_TO").unwrap());
                 let (w, h) = (image.width(), image.height());
                 let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
                 for px in image.pixels.iter() {
@@ -1043,6 +1129,7 @@ impl eframe::App for PhpIdeApp {
         }
         self.poll_search();
         self.poll_lsp();
+        self.poll_fe();
         self.poll_syntax();
         self.poll_usages();
         self.poll_symbol_query();
@@ -2238,7 +2325,9 @@ impl PhpIdeApp {
         if self.settings.inlay_hints {
             let active = self.ws.active_buffer().and_then(|b| {
                 let path = b.path.clone()?;
-                if !phpide_php::Php::is_php_file(&path) {
+                // PHP server ou servidor FE (hints TS vêm do typescript-
+                // language-server — FE-002-02).
+                if !phpide_php::Php::is_php_file(&path) && self.fe.for_path(&path).is_none() {
                     return None;
                 }
                 Some((path, b.document.revision(), b.document.line_count()))
@@ -2256,7 +2345,16 @@ impl PhpIdeApp {
             if needs {
                 if let Some((path, revision, line_count)) = active {
                     let end_line = line_count.saturating_sub(1) as u64;
-                    let rx = lsp.request(
+                    // Roteamento: hints TS/JS do typescript-language-server.
+                    let client: &LspClient = if phpide_php::Php::is_php_file(&path) {
+                        lsp
+                    } else {
+                        match self.fe.for_path(&path) {
+                            Some(s) => &s.client,
+                            None => lsp,
+                        }
+                    };
+                    let rx = client.request(
                         "textDocument/inlayHint",
                         serde_json::json!({
                             "textDocument": { "uri": phpide_lsp::path_to_uri(&path) },
@@ -2371,9 +2469,21 @@ impl PhpIdeApp {
         what: &str,
         call: impl Fn(&LspClient, &std::path::Path, usize, usize) -> mpsc::Receiver<Value>,
     ) {
-        let Some(lsp) = &self.lsp else {
-            self.ws.message = "LSP indisponível".to_string();
+        let Some(path0) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
+        };
+        let lsp: &LspClient = if phpide_php::Php::is_php_file(&path0) {
+            let Some(l) = &self.lsp else {
+                self.ws.message = "LSP indisponível".to_string();
+                return;
+            };
+            l
+        } else {
+            let Some(s) = self.fe.for_path(&path0) else {
+                self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
+                return;
+            };
+            &s.client
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
@@ -2459,18 +2569,30 @@ impl PhpIdeApp {
     }
 
     fn trigger_completion(&mut self) {
-        let Some(lsp) = &self.lsp else {
-            self.ws.message = "LSP indisponível".to_string();
+        let Some(buf) = self.ws.active_buffer() else {
             return;
+        };
+        let Some(path) = buf.path.clone() else { return };
+        let lsp: &LspClient = if phpide_php::Php::is_php_file(&path) {
+            let Some(l) = &self.lsp else {
+                self.ws.message = "LSP indisponível".to_string();
+                return;
+            };
+            l
+        } else {
+            let Some(s) = self.fe.for_path(&path) else {
+                self.ws.message = format!(
+                    "nenhum Language Server para {:?}",
+                    path.extension().and_then(|e| e.to_str()).unwrap_or("?")
+                );
+                return;
+            };
+            &s.client
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
             return;
         }
-        let Some(buf) = self.ws.active_buffer() else {
-            return;
-        };
-        let Some(path) = buf.path.clone() else { return };
         let cursor = self.cursor_char.min(buf.document.len_chars());
         let chars: Vec<char> = buf.document.text().chars().collect();
         let (prefix, word_start) = completion::word_at(&chars, cursor);
@@ -2643,6 +2765,7 @@ impl PhpIdeApp {
                 buf.insert(edit.start_char, &edit.new_text);
                 self.cursor_char = edit.start_char + edit.new_text.chars().count();
             }
+
             None => {
                 let start = self.completion.word_start.min(cursor);
                 if start < cursor {
@@ -2650,6 +2773,23 @@ impl PhpIdeApp {
                 }
                 buf.insert(start, label);
                 self.cursor_char = start + label.chars().count();
+            }
+        }
+        // Auto-import (PHP-003-05): additionalTextEdits do item aceito viram
+        // um WorkspaceEdit aplicado com undo coeso único.
+        if let (Some(item), Some(path)) =
+            (raw, self.ws.active_buffer().and_then(|b| b.path.clone()))
+        {
+            if let Some(extra) = phpide_lsp::edits::parse_additional_edits(&item, &path) {
+                let label = format!("auto-import {}", item["label"].as_str().unwrap_or(""));
+                let mut store = WsStore(&mut self.ws);
+                if let Ok((files, edits, _)) =
+                    workspace_edit::apply(&mut store, &extra, &label, &mut self.refactor_undo)
+                {
+                    if files > 0 {
+                        self.ws.message = format!("{label} ({edits} editos, undo coeso)");
+                    }
+                }
             }
         }
         let id = egui::Id::new(("editor", self.ws.active));
@@ -3712,6 +3852,53 @@ impl PhpIdeApp {
 
 /// `true` se o buffer ativo é `path` na revisão `revision` (semantic
 /// tokens e ocorrências só valem para o estado em que foram calculados).
+/// DocStore da aplicação: buffers abertos (sujeitos a undo de buffer) têm
+/// prioridade; arquivos fechados são lidos/escritos em disco (escrita
+/// atômica). Versões LSP locais não são rastreadas por arquivo aqui
+/// (conflitos de versão são reportados pelo servidor quando aplicável).
+struct WsStore<'a>(&'a mut phpide_core::Workspace);
+
+impl workspace_edit::DocStore for WsStore<'_> {
+    fn text(&self, path: &std::path::Path) -> Option<String> {
+        self.0
+            .buffers
+            .iter()
+            .find(|b| b.path.as_deref() == Some(path))
+            .map(|b| b.document.text())
+            .or_else(|| std::fs::read_to_string(path).ok())
+    }
+    fn set_text(&mut self, path: &std::path::Path, text: &str) {
+        if let Some(b) = self
+            .0
+            .buffers
+            .iter_mut()
+            .find(|b| b.path.as_deref() == Some(path))
+        {
+            let len = b.document.len_chars();
+            b.document.delete(0, len);
+            b.document.insert(0, text);
+        } else {
+            let _ = phpide_core::fsutil::write_atomic(path, text.as_bytes());
+        }
+    }
+    fn lsp_version(&self, _path: &std::path::Path) -> Option<i64> {
+        None
+    }
+}
+
+/// Servidor FE aceita o arquivo? (nome × extensão).
+fn srv_accepts_ext(name: &str, path: &std::path::Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    match name {
+        "TypeScript" => fe_servers::TS_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        "HTML" => fe_servers::HTML_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        "CSS" => fe_servers::CSS_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        _ => false,
+    }
+}
+
 /// Converte a resposta LSP `textDocument/inlayHint` no modelo interno
 /// (label pode ser string ou partes com formatação).
 fn parse_inlay_hints(result: &Value) -> Vec<hints::InlayHint> {
@@ -3980,6 +4167,226 @@ mod gate_ui_ed {
             1,
             "1 linha modificada"
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_fe {
+    //! Gate Fase 7 — Frontend essencial: projeto Vite + TypeScript real,
+    //! editado/diagnosticado/navegado pelos Language Servers reais
+    //! (typescript-language-server, vscode-html/css). Sem os servidores no
+    //! ambiente o gate se autopula (NFR-003 — ausência ≠ falha).
+
+    use phpide_lsp::LspStatus;
+
+    fn have(bin: &str) -> bool {
+        crate::fe_servers::FeServers::empty();
+        // descobre via find_bin do módulo fe_servers (teste interno ao bin).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        [
+            root.join("third_party/node_modules/.bin").join(bin),
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../third_party/node_modules/.bin")
+                .join(bin),
+        ]
+        .iter()
+        .any(|p| p.exists())
+            || std::process::Command::new("which")
+                .arg(bin)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+    }
+
+    fn wait_running(srv: &mut crate::fe_servers::FeServer, timeout: std::time::Duration) -> bool {
+        let t0 = std::time::Instant::now();
+        loop {
+            crate::fe_servers::poll_init(srv);
+            if srv.initialized && matches!(srv.client.status(), LspStatus::Running(_)) {
+                return true;
+            }
+            if t0.elapsed() > timeout {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+    }
+
+    #[test]
+    fn gate_vite_typescript_edit_diagnose_navigate() {
+        if !have("typescript-language-server") || !have("vscode-html-language-server") {
+            eprintln!("GATE SKIP: servidores frontend ausentes");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Fixture Vite mínimo + node_modules presente (biblioteca, não árvore).
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"vite-demo","scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"target":"ES2020","module":"ESNext"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("index.html"),
+            "<!doctype html>\n<html><body>\n  <div>oi\n</body></html>\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/math.ts"),
+            "export function soma(a: number, b: number): number {\n  return a + b;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/main.ts"),
+            "import { soma } from './math';\nconst total: number = soma(1, 'x');\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/style.css"),
+            "body { color: #ff8800; background: rgb(0, 0, 0); }\n",
+        )
+        .unwrap();
+
+        // FE-001-04: node_modules presente NÃO entra na árvore do projeto.
+        let entries = phpide_core::scan(&root);
+        assert!(
+            !entries.iter().any(|e| e.path.ends_with("node_modules")),
+            "node_modules fora da árvore"
+        );
+
+        let files: Vec<(std::path::PathBuf, String)> =
+            ["src/main.ts", "src/math.ts", "src/style.css", "index.html"]
+                .iter()
+                .map(|r| (root.join(r), std::fs::read_to_string(root.join(r)).unwrap()))
+                .collect();
+        let mut fe = crate::fe_servers::detect_and_spawn(&root);
+        {
+            let ts = fe.ts.as_mut().expect("typescript-language-server");
+            assert!(
+                wait_running(ts, std::time::Duration::from_secs(30)),
+                "TS-LS running"
+            );
+        }
+
+        // Sync (FE-001-01: didOpen) dos arquivos fonte por servidor.
+        let rev = 1u64;
+        if let Some(ts) = fe.ts.as_mut() {
+            ts.sync_buffers(
+                files
+                    .iter()
+                    .filter(|(p, _)| p.extension().and_then(|e| e.to_str()) == Some("ts"))
+                    .map(|(p, t)| (p, t.as_str(), rev)),
+            );
+        }
+        if let Some(css) = fe.css.as_mut() {
+            if wait_running(css, std::time::Duration::from_secs(20)) {
+                css.sync_buffers(
+                    files
+                        .iter()
+                        .filter(|(p, _)| p.extension().and_then(|e| e.to_str()) == Some("css"))
+                        .map(|(p, t)| (p, t.as_str(), rev)),
+                );
+                // Color preview (FE-001-03): documentColor real do servidor.
+                let rx = css.client.request("textDocument/documentColor", serde_json::json!({
+                    "textDocument": { "uri": phpide_lsp::path_to_uri(&root.join("src/style.css")) }
+                }));
+                let colors = wait_value(rx, std::time::Duration::from_secs(10));
+                let arr = colors.as_array().cloned().unwrap_or_default();
+                assert!(arr.len() >= 2, "cores reais do CSS: {arr:?}");
+            }
+        }
+        if let Some(html) = fe.html.as_mut() {
+            if wait_running(html, std::time::Duration::from_secs(20)) {
+                html.sync_buffers(
+                    files
+                        .iter()
+                        .filter(|(p, _)| p.extension().and_then(|e| e.to_str()) == Some("html"))
+                        .map(|(p, t)| (p, t.as_str(), rev)),
+                );
+            }
+        }
+
+        // FE-001-01/FE-002-02: diagnóstico REAL (erro de tipo em main.ts).
+        let t0 = std::time::Instant::now();
+        let mut diags = Vec::new();
+        while t0.elapsed() < std::time::Duration::from_secs(15) {
+            diags = fe.drain_diagnostics();
+            if diags
+                .iter()
+                .any(|(p, d)| p.ends_with("main.ts") && !d.is_empty())
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let (path, items) = diags
+            .iter()
+            .find(|(p, _)| p.ends_with("main.ts"))
+            .cloned()
+            .expect("diagnósticos publicados para main.ts");
+        assert!(
+            items
+                .iter()
+                .any(|d| d.severity == 1 || !d.message.is_empty()),
+            "diagnóstico real em {path:?}: {items:?}"
+        );
+
+        // FE-001-02: completion real em main.ts.
+        let rx =
+            {
+                let ts = fe.ts.as_ref().unwrap();
+                ts.client.request("textDocument/completion", serde_json::json!({
+                "textDocument": { "uri": phpide_lsp::path_to_uri(&root.join("src/main.ts")) },
+                "position": { "line": 0, "character": 10 }
+            }))
+            };
+        let comp = wait_value(rx, std::time::Duration::from_secs(10));
+        let items = phpide_lsp::parse_completions(&comp);
+        assert!(!items.is_empty(), "completion real: {comp:?}");
+
+        // FE-001-02: navegação real — definition de 'soma' leva a math.ts.
+        let rx = fe
+            .ts
+            .as_ref()
+            .unwrap()
+            .client
+            .definition(&root.join("src/main.ts"), 0, 9);
+        let loc = wait_value(rx, std::time::Duration::from_secs(10));
+        let locs = crate::intelligence::parse_locations(&loc);
+        assert!(
+            locs.iter().any(|l| l.path.ends_with("math.ts")),
+            "definition navega para math.ts: {loc:?}"
+        );
+
+        // FE-002-02: Go to Type Declaration (typeDefinition).
+        let rx = fe
+            .ts
+            .as_ref()
+            .unwrap()
+            .client
+            .type_definition(&root.join("src/main.ts"), 1, 7);
+        let _td = wait_value(rx, std::time::Duration::from_secs(10));
+    }
+
+    fn wait_value(
+        rx: std::sync::mpsc::Receiver<serde_json::Value>,
+        timeout: std::time::Duration,
+    ) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        loop {
+            if let Ok(v) = rx.try_recv() {
+                return v;
+            }
+            assert!(t0.elapsed() < timeout, "timeout aguardando resposta LSP");
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
     }
 }
 

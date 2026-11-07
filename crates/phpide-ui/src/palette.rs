@@ -66,6 +66,7 @@ pub enum PaletteCommand {
     GotoSymbol,
     FindUsages,
     SplitRight,
+    UndoRefactor,
     SplitDown,
     ToggleBlame,
     ToggleFolding,
@@ -162,6 +163,10 @@ const COMMANDS: &[(&str, PaletteCommand)] = &[
     ("Navegar: Ir para símbolo", PaletteCommand::GotoSymbol),
     ("Navegar: Find Usages", PaletteCommand::FindUsages),
     ("Window: Split Right", PaletteCommand::SplitRight),
+    (
+        "Refactor: Undo última refatoração",
+        PaletteCommand::UndoRefactor,
+    ),
     ("Window: Split Down", PaletteCommand::SplitDown),
     ("Git: Toggle Blame Gutter", PaletteCommand::ToggleBlame),
     ("Editor: Toggle Folding", PaletteCommand::ToggleFolding),
