@@ -14,6 +14,8 @@ cargo run --release -- /caminho/do/projeto-php [arquivos...]
 (sem argumento, abre a **Welcome Screen**; arquivos extras são abertos em abas).
 Atalhos: `Ctrl+S` salva, `Ctrl+Z`/`Ctrl+Shift+Z` desfaz/refaz.
 
+> **Pendências e débitos:** [docs/PENDENCIAS.md](docs/PENDENCIAS.md) — bugs conhecidos, limitações de recorte e problemas de ambiente que precisam de revisão.
+
 ## Capturas de tela
 
 Editor com highlight sintático, gutter, tool windows e status bar (tema islands-dark):
