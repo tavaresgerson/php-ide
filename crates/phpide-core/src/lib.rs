@@ -127,7 +127,7 @@ impl Buffer {
         Buffer {
             document: Document::new("<?php\n\n"),
             path: None,
-            dirty: true,
+            dirty: false,
             preview: false,
             pinned: false,
             readonly: false,
@@ -156,7 +156,7 @@ impl Buffer {
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "sem-titulo.php".to_string())
+            .unwrap_or_else(|| "untitled.php".to_string())
     }
 
     fn record(&mut self) {
@@ -238,10 +238,21 @@ impl Buffer {
                 .path
                 .as_ref()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "sem-titulo".to_string());
+                .unwrap_or_else(|| "untitled".to_string());
             IdeError::from_io(Component::Core, "save", &what, &e)
                 .with_detail("edição preservada na memória; buffer continua sujo")
         })
+    }
+
+    pub fn replace_all(&mut self, text: &str) {
+        self.record();
+        let len = self.document.len_chars();
+        if len > 0 {
+            self.document.delete(0, len);
+        }
+        self.document.insert(0, text);
+        self.dirty = true;
+        self.preview = false;
     }
 }
 
@@ -325,13 +336,21 @@ pub struct Workspace {
 pub const TAB_LIMIT: usize = 10;
 
 impl Workspace {
+    /// Opens a project: scans the file tree. No buffer is opened.
     pub fn open(root: PathBuf) -> Self {
-        let files = scan(&root);
-        let mut ws = Workspace {
+        let mut ws = Self::unscanned(root);
+        ws.files = scan(&ws.root);
+        ws
+    }
+
+    /// Workspace without a file-tree scan (used while the Welcome screen is
+    /// open, before any project is chosen).
+    pub fn unscanned(root: PathBuf) -> Self {
+        Workspace {
             root,
             buffers: Vec::new(),
             active: 0,
-            files,
+            files: Vec::new(),
             diagnostics: Vec::new(),
             diag_revisions: std::collections::HashMap::new(),
             outline: Vec::new(),
@@ -341,9 +360,7 @@ impl Workspace {
             nav_forward: Vec::new(),
             recent_files: Vec::new(),
             tab_limit: TAB_LIMIT,
-        };
-        ws.new_file();
-        ws
+        }
     }
 
     pub fn refresh_files(&mut self) {
@@ -433,7 +450,8 @@ impl Workspace {
         self.recent_files.truncate(50);
     }
 
-    /// Fecha a aba `i` ajustando o índice ativo. Retorna true se sobraram abas.
+    /// Closes tab `i` and adjusts the active index. Returns true if tabs remain.
+    /// Closing the last tab leaves the editor empty (no automatic untitled tab).
     pub fn close_tab(&mut self, i: usize) -> bool {
         if i >= self.buffers.len() {
             return !self.buffers.is_empty();
@@ -446,10 +464,6 @@ impl Workspace {
                 .min(self.buffers.len().saturating_sub(1));
         } else if i < self.active {
             self.active -= 1;
-        }
-        if self.buffers.is_empty() {
-            self.new_file();
-            self.active = 0;
         }
         !self.buffers.is_empty()
     }
@@ -474,9 +488,6 @@ impl Workspace {
                     .position(|b| b.path.as_deref() == Some(p.as_path()))
             })
             .unwrap_or(0);
-        if self.buffers.is_empty() {
-            self.new_file();
-        }
     }
 
     pub fn close_active(&mut self) -> bool {
@@ -529,6 +540,14 @@ mod tests {
         assert_eq!(buf.document.text(), "<?php\n\n");
         assert!(buf.redo());
         assert!(buf.document.text().ends_with("echo 1;"));
+    }
+
+    #[test]
+    fn untitled_starts_clean_and_becomes_dirty_only_after_editing() {
+        let mut buffer = Buffer::untitled();
+        assert!(!buffer.dirty);
+        buffer.insert(0, "// mudança\n");
+        assert!(buffer.dirty);
     }
 
     #[test]
@@ -673,6 +692,24 @@ mod tests {
             ws.buffers[0].path.as_deref(),
             Some(dir.join("x.php").as_path())
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opening_a_project_does_not_create_an_untitled_tab() {
+        let dir = std::env::temp_dir().join(format!("phpide-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.php"), "<?php").unwrap();
+        let mut ws = Workspace::open(dir.clone());
+        assert!(ws.buffers.is_empty());
+        assert!(ws.active_buffer().is_none());
+        assert!(!ws.files.is_empty(), "open() still scans the tree");
+        ws.open_file_ex(&dir.join("a.php"), false);
+        assert!(!ws.close_tab(0), "closing the last tab leaves no tabs");
+        assert!(ws.buffers.is_empty());
+        assert!(ws.active_buffer().is_none());
+        assert!(Workspace::unscanned(dir.clone()).files.is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 

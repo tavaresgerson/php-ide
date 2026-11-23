@@ -17,6 +17,9 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+mod vector;
+pub use vector::{prims, Prim};
+
 /// Identificadores semânticos do catálogo (UI-ICON-001-03).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]

@@ -12,6 +12,7 @@ use crate::value::Value;
 pub struct SqliteDriver;
 pub struct SqliteSession {
     conn: rusqlite::Connection,
+    interrupt: std::sync::Arc<rusqlite::InterruptHandle>,
     in_tx: bool,
 }
 
@@ -23,7 +24,7 @@ impl SqliteDriver {
 
 fn io(op: &str, e: impl std::fmt::Display) -> IdeError {
     IdeError::new(
-        Component::Core,
+        Component::Db,
         op.to_string(),
         ErrorKind::Io,
         format!("SQLite falhou em {op}"),
@@ -62,7 +63,12 @@ impl Driver for SqliteDriver {
         let path = p.remove("path").unwrap_or_default();
         let conn = rusqlite::Connection::open(if path.is_empty() { ":memory:" } else { &path })
             .map_err(|e| io("connect", e))?;
-        Ok(Box::new(SqliteSession { conn, in_tx: false }))
+        let interrupt = std::sync::Arc::new(conn.get_interrupt_handle());
+        Ok(Box::new(SqliteSession {
+            conn,
+            interrupt,
+            in_tx: false,
+        }))
     }
 }
 
@@ -168,12 +174,12 @@ impl DbSession for SqliteSession {
     }
 
     fn cancel(&self) {
-        // rusqlite 0.32 expõe interrupt handle via get_interrupt_handle.
-        // Acessamos por unsafe mínimo? Não: cancelamento cooperativo — o
-        // handle de interrupção exige &self interior mutável; guardamos uma
-        // cópia no open (ver new_with_interrupt). Simplificação documentada:
-        // drop da conexão interrompe a query; aqui marcamos sem estado.
-        // (Interrupt real é aplicado pelo CancelHandle fechando a sessão.)
+        self.interrupt.interrupt();
+    }
+
+    fn cancellation_callback(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        let interrupt = self.interrupt.clone();
+        Some(std::sync::Arc::new(move || interrupt.interrupt()))
     }
 
     fn in_transaction(&self) -> bool {
@@ -201,56 +207,59 @@ impl DbSession for SqliteSession {
         Ok(())
     }
 
-    fn update_row(
-        &mut self,
-        table: &str,
-        key: &[(String, Value)],
-        changes: &[(String, Value)],
-    ) -> Result<u64, IdeError> {
-        if changes.is_empty() || key.is_empty() {
+    fn update_row(&mut self, update: &RowUpdate) -> Result<u64, IdeError> {
+        if update.changes.is_empty() || update.key.is_empty() {
             return Err(IdeError::new(
-                Component::Core,
+                Component::Db,
                 "sqlite.update",
                 ErrorKind::InvalidInput,
                 "edição exige chave e ao menos uma coluna",
                 "selecione uma linha pela chave primária",
             ));
         }
-        let t = crate::grid::quote_ident(DriverKind::Sqlite, table);
-        let sets = changes
+        let table = crate::grid::quote_ident(DriverKind::Sqlite, &update.table);
+        let sets = update
+            .changes
             .iter()
             .enumerate()
-            .map(|(i, (c, _))| {
+            .map(|(index, change)| {
                 format!(
                     "{} = ?{}",
-                    crate::grid::quote_ident(DriverKind::Sqlite, c),
-                    i + 1
+                    crate::grid::quote_ident(DriverKind::Sqlite, &change.column),
+                    index + 1
                 )
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let conds = key
+        let mut params: Vec<rusqlite::types::Value> = update
+            .changes
             .iter()
-            .enumerate()
-            .map(|(i, (c, _))| {
-                format!(
-                    "{} = ?{}",
-                    crate::grid::quote_ident(DriverKind::Sqlite, c),
-                    i + changes.len() + 1
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let sql = format!("UPDATE {t} SET {sets} WHERE {conds}");
-        let mut params: Vec<rusqlite::types::Value> = changes
-            .iter()
-            .map(|(_, v)| v.to_sql())
-            .chain(key.iter().map(|(_, v)| v.to_sql()))
+            .map(|change| change.new.to_sql())
             .collect();
-        let n = self
+        let mut conditions = Vec::new();
+        let mut append_condition = |column: &str, value: &Value| {
+            let quoted = crate::grid::quote_ident(DriverKind::Sqlite, column);
+            if value.is_null() {
+                conditions.push(format!("{quoted} IS NULL"));
+            } else {
+                params.push(value.to_sql());
+                conditions.push(format!("{quoted} = ?{}", params.len()));
+            }
+        };
+        for (column, value) in &update.key {
+            append_condition(column, value);
+        }
+        for change in &update.changes {
+            append_condition(&change.column, &change.old);
+        }
+        let sql = format!(
+            "UPDATE {table} SET {sets} WHERE {}",
+            conditions.join(" AND ")
+        );
+        let affected = self
             .conn
-            .execute(&sql, rusqlite::params_from_iter(params.drain(..)))
-            .map_err(|e| io("update", e))?;
-        Ok(n as u64)
+            .execute(&sql, rusqlite::params_from_iter(params))
+            .map_err(|error| io("update", error))?;
+        Ok(affected as u64)
     }
 }

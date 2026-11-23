@@ -31,10 +31,13 @@ pub fn paginate(
 ) -> Result<GridPage, IdeError> {
     let ident = quote_ident(session.kind(), table);
     let mut sql = format!("SELECT * FROM {ident}");
-    if let Some(f) = &opts.filter {
-        if !f.trim().is_empty() {
-            sql.push_str(&format!(" WHERE {}", f.trim()));
-        }
+    if !opts.filters.is_empty() {
+        let filters = opts
+            .filters
+            .iter()
+            .map(|filter| filter_sql(session.kind(), filter))
+            .collect::<Result<Vec<_>, _>>()?;
+        sql.push_str(&format!(" WHERE {}", filters.join(" AND ")));
     }
     if let Some((col, asc)) = &opts.order_by {
         sql.push_str(&format!(
@@ -54,7 +57,7 @@ pub fn paginate(
             total: None,
         }),
         other => Err(IdeError::new(
-            Component::Core,
+            Component::Db,
             "grid.paginate",
             ErrorKind::InvalidInput,
             format!("paginação inesperada: {other:?}"),
@@ -65,11 +68,75 @@ pub fn paginate(
 
 /// Quoting de identificador por dialeto.
 pub fn quote_ident(kind: crate::contracts::DriverKind, name: &str) -> String {
-    let (l, r) = match kind {
-        crate::contracts::DriverKind::MySql => ('`', '`'),
-        _ => ('"', '"'),
+    match kind {
+        crate::contracts::DriverKind::MySql => format!("`{}`", name.replace('`', "``")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
+    }
+}
+
+fn filter_sql(
+    kind: crate::contracts::DriverKind,
+    filter: &crate::contracts::GridFilter,
+) -> Result<String, IdeError> {
+    use crate::contracts::FilterOperator;
+    let column = quote_ident(kind, &filter.column);
+    let operator = match filter.operator {
+        FilterOperator::IsNull => return Ok(format!("{column} IS NULL")),
+        FilterOperator::IsNotNull => return Ok(format!("{column} IS NOT NULL")),
+        FilterOperator::Eq => "=",
+        FilterOperator::NotEq => "<>",
+        FilterOperator::Less => "<",
+        FilterOperator::LessEq => "<=",
+        FilterOperator::Greater => ">",
+        FilterOperator::GreaterEq => ">=",
+        FilterOperator::Like => "LIKE",
     };
-    format!("{l}{}{r}", name.replace('"', ""))
+    if filter.value.is_null() {
+        return Err(IdeError::new(
+            Component::Db,
+            "grid.filter",
+            ErrorKind::InvalidInput,
+            "NULL exige operador IS NULL ou IS NOT NULL",
+            "escolha um operador de nulo ou informe um valor",
+        ));
+    }
+    let value = match &filter.value {
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) if value.is_finite() => value.to_string(),
+        Value::Float(_) => {
+            return Err(IdeError::new(
+                Component::Db,
+                "grid.filter",
+                ErrorKind::InvalidInput,
+                "filtro numérico não finito",
+                "informe um número finito",
+            ))
+        }
+        Value::Bool(value) => value.to_string(),
+        Value::Decimal(value) => value
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .map(|_| value.clone())
+            .ok_or_else(|| {
+                IdeError::new(
+                    Component::Db,
+                    "grid.filter",
+                    ErrorKind::InvalidInput,
+                    "decimal inválido",
+                    "informe um decimal válido",
+                )
+            })?,
+        Value::Bytes(value) => format!(
+            "X'{}'",
+            value
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<String>()
+        ),
+        other => format!("'{}'", other.display().replace('\'', "''")),
+    };
+    Ok(format!("{column} {operator} {value}"))
 }
 
 /// Célula formatada para a view Text (uma coluna por linha, Record por
@@ -221,5 +288,32 @@ mod tests {
             CellView::Text(lines) => assert_eq!(lines[0], "a: NULL"),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn identifiers_and_structured_filters_resist_injection() {
+        assert_eq!(
+            quote_ident(crate::contracts::DriverKind::Sqlite, "a\"b; --"),
+            "\"a\"\"b; --\""
+        );
+        assert_eq!(
+            quote_ident(crate::contracts::DriverKind::MySql, "a`b"),
+            "`a``b`"
+        );
+        let filter = crate::contracts::GridFilter {
+            column: "nome\"; DROP TABLE users; --".into(),
+            operator: crate::contracts::FilterOperator::Eq,
+            value: Value::Text("x'; DROP TABLE users; -- 😀".into()),
+        };
+        let sql = filter_sql(crate::contracts::DriverKind::Sqlite, &filter).unwrap();
+        assert!(sql.starts_with("\"nome\"\"; DROP TABLE users; --\" = '"));
+        assert!(sql.contains("x''; DROP TABLE users; -- 😀"));
+        assert!(sql.ends_with('\''));
+        let null = crate::contracts::GridFilter {
+            column: "x".into(),
+            operator: crate::contracts::FilterOperator::Eq,
+            value: Value::Null,
+        };
+        assert!(filter_sql(crate::contracts::DriverKind::Sqlite, &null).is_err());
     }
 }

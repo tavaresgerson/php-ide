@@ -9,6 +9,7 @@
 //! - [`inspections_summary`]: contagens por severidade → widget que abre
 //!   Problems no escopo certo.
 
+use eframe::egui;
 use phpide_core::Severity;
 
 /// Faixa agregada na scrollbar: fração 0..1 + cor por categoria.
@@ -112,6 +113,17 @@ pub fn line_at_scrollbar_frac(frac: f32, total_lines: usize) -> usize {
     ((frac.clamp(0.0, 1.0) * total_lines as f32) as usize).min(total_lines - 1)
 }
 
+pub fn popup_position(pointer: egui::Pos2, viewport: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
+    let x = (viewport.right() - size.x - 12.0).max(viewport.left());
+    let max_y = (viewport.bottom() - size.y).max(viewport.top());
+    let y = (pointer.y + 12.0).clamp(viewport.top(), max_y);
+    egui::pos2(x, y)
+}
+
+pub fn markers_are_current(cached_revision: u64, current_revision: u64, dirty: bool) -> bool {
+    !dirty && cached_revision == current_revision
+}
+
 /// Contagens do widget Inspections por severidade.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InspectionsSummary {
@@ -192,6 +204,23 @@ mod tests {
         assert_eq!(p.lines[0], "l0", "clamp no início");
         assert_eq!(line_at_scrollbar_frac(0.5, 50), 25);
         assert_eq!(line_at_scrollbar_frac(1.5, 50), 49, "clamp no fim");
+        let viewport = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(500.0, 200.0));
+        let size = egui::vec2(300.0, 100.0);
+        assert_eq!(
+            popup_position(egui::pos2(490.0, 50.0), viewport, size).y,
+            62.0
+        );
+        assert_eq!(
+            popup_position(egui::pos2(490.0, 215.0), viewport, size).y,
+            120.0
+        );
+        assert_eq!(
+            popup_position(egui::pos2(490.0, 0.0), viewport, size).y,
+            20.0
+        );
+        assert!(markers_are_current(4, 4, false));
+        assert!(!markers_are_current(4, 5, false));
+        assert!(!markers_are_current(4, 4, true));
     }
 
     #[test]

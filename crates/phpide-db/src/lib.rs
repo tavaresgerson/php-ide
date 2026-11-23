@@ -1,10 +1,8 @@
 //! phpide-db — Database Tools (REQUISITOS §10): drivers, segredos, data
 //! sources, introspection, console, grade e edição transacional.
 //!
-//! Onda 1 (fundação e leitura) entregue neste recorte; onda 2 (edição) tem
-//! modelo completo (`edit`) validado no SQLite/fake. PostgreSQL/MySQL:
-//! contratos prontos, implementação bloqueada por ambiente (documentado em
-//! `drivers::remote`).
+//! Ondas 1 e 2: modelo e UI com SQLite, PostgreSQL e MariaDB reais. Onda 3
+//! (administração avançada e outros SGBDs) permanece fora do recorte.
 
 pub mod console;
 pub mod contracts;
@@ -15,6 +13,8 @@ pub mod value;
 
 pub mod drivers {
     pub mod fake;
+    pub mod mysql;
+    pub mod postgres;
     pub mod remote;
     pub mod sqlite;
 }
@@ -28,14 +28,10 @@ pub use value::Value;
 
 #[cfg(test)]
 mod tests {
-    //! Gate Fase 8 — explorer, console e grade read-only no SQLite real +
-    //! fake; edição transacional validada separadamente (DB-006) — os dois
-    //! lados do gate do recorte. PG/MySQL: sem servidor instalável sem root
-    //! neste ambiente — drivers falham com diagnóstico claro (documentado).
+    //! Gates de modelo e integração dos três drivers reais e do fake.
 
     use super::drivers::fake::FakeDriver;
     use super::*;
-    use phpide_core::ErrorKind;
 
     fn sqlite_memory_with_data() -> Box<dyn DbSession> {
         let d = drivers::sqlite::SqliteDriver::boxed();
@@ -139,7 +135,7 @@ mod tests {
         });
         let dml = preview_dml(&p, DriverKind::Sqlite);
         assert!(
-            dml.contains("UPDATE \"users\" SET \"name\" = 'ana maria' WHERE \"id\" = 1;"),
+            dml.contains("UPDATE \"users\" SET \"name\" = 'ana maria' WHERE \"id\" = 1 AND \"name\" = 'ana';"),
             "{dml}"
         );
         assert_eq!(edit::apply(&mut *s, &p).unwrap(), 1);
@@ -192,16 +188,141 @@ mod tests {
     }
 
     #[test]
-    fn gate_remote_drivers_fail_with_clear_diagnostic_not_fake_support() {
-        // PG/MySQL: sem servidor no ambiente — driver falha explícito e NÃO
-        // anuncia suporte (sem conteúdo fictício, como os demais domínios).
+    fn gate_optimistic_concurrency_two_sqlite_sessions_and_null_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("concurrency.db").display());
+        let driver = drivers::sqlite::SqliteDriver;
+        let mut a = driver.connect(&url).unwrap();
+        a.execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
+            &QueryOptions::default(),
+        )
+        .unwrap();
+        a.execute(
+            "INSERT INTO users VALUES (1, 'ana', NULL)",
+            &QueryOptions::default(),
+        )
+        .unwrap();
+        let mut b = driver.connect(&url).unwrap();
+        let change = |old, new| {
+            let mut pending = PendingChanges::default();
+            pending.push(edit::CellChange {
+                table: "users".into(),
+                key: vec![("id".into(), Value::Int(1))],
+                column: "name".into(),
+                old,
+                new,
+            });
+            pending
+        };
+        edit::apply(
+            &mut *b,
+            &change(Value::Text("ana".into()), Value::Text("bia".into())),
+        )
+        .unwrap();
+        let error = edit::apply(
+            &mut *a,
+            &change(Value::Text("ana".into()), Value::Text("carla".into())),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("conflito"));
+        let ExecResult::Rows { rows, .. } = b
+            .execute(
+                "SELECT name FROM users WHERE id = 1",
+                &QueryOptions::default(),
+            )
+            .unwrap()
+        else {
+            panic!("rows")
+        };
+        assert_eq!(rows[0][0], Value::Text("bia".into()));
+
+        let null_change = |old, new| {
+            let mut pending = PendingChanges::default();
+            pending.push(edit::CellChange {
+                table: "users".into(),
+                key: vec![("id".into(), Value::Int(1))],
+                column: "age".into(),
+                old,
+                new,
+            });
+            pending
+        };
+        edit::apply(&mut *b, &null_change(Value::Null, Value::Int(42))).unwrap();
+        edit::apply(&mut *a, &null_change(Value::Null, Value::Int(99))).unwrap_err();
+        let ExecResult::Rows { rows, .. } = b
+            .execute(
+                "SELECT age FROM users WHERE id = 1",
+                &QueryOptions::default(),
+            )
+            .unwrap()
+        else {
+            panic!("rows")
+        };
+        assert_eq!(rows[0][0], Value::Int(42));
+    }
+
+    #[test]
+    fn gate_non_unique_key_and_multi_column_update_are_atomic() {
+        let mut session = sqlite_memory_with_data();
+        session
+            .execute(
+                "CREATE TABLE pairs (grp INTEGER, value TEXT)",
+                &QueryOptions::default(),
+            )
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO pairs VALUES (1, 'x'), (1, 'x')",
+                &QueryOptions::default(),
+            )
+            .unwrap();
+        let mut pending = PendingChanges::default();
+        pending.push(edit::CellChange {
+            table: "pairs".into(),
+            key: vec![("grp".into(), Value::Int(1))],
+            column: "value".into(),
+            old: Value::Text("x".into()),
+            new: Value::Text("y".into()),
+        });
+        let error = edit::apply(&mut *session, &pending).unwrap_err();
+        assert!(error.message.contains("esperado exatamente 1"));
+        let ExecResult::Rows { rows, .. } = session
+            .execute("SELECT value FROM pairs", &QueryOptions::default())
+            .unwrap()
+        else {
+            panic!("rows")
+        };
+        assert!(rows.iter().all(|row| row[0] == Value::Text("x".into())));
+
+        let mut pending = PendingChanges::default();
+        for (column, old, new) in [
+            (
+                "name",
+                Value::Text("ana".into()),
+                Value::Text("ana maria".into()),
+            ),
+            ("saldo", Value::Float(10.5), Value::Float(20.0)),
+        ] {
+            pending.push(edit::CellChange {
+                table: "users".into(),
+                key: vec![("id".into(), Value::Int(1))],
+                column: column.into(),
+                old,
+                new,
+            });
+        }
+        assert_eq!(edit::apply(&mut *session, &pending).unwrap(), 1);
+    }
+
+    #[test]
+    fn gate_remote_drivers_have_real_implementations() {
         let pg = drivers::remote::driver_for("postgresql://u@localhost:1/db").unwrap();
         let err = pg.test("postgresql://u@localhost:1/db").unwrap_err();
-        assert_eq!(err.kind, ErrorKind::NotFound);
-        assert!(err.message.contains("postgresql"), "{err:?}");
+        assert!(err.message.contains("PostgreSQL"), "{err:?}");
         let my = drivers::remote::driver_for("mysql://u@localhost:1/db").unwrap();
         assert_eq!(my.kind(), DriverKind::MySql);
-        // Test Connection do SQLite real (DB-002-03) — diagnóstico real.
+        // Conexão recusada permanece erro real, nunca sucesso fictício. Test Connection do SQLite real (DB-002-03).
         let sq = drivers::remote::driver_for("sqlite://:memory:").unwrap();
         assert!(sq.test("sqlite://:memory:").unwrap().starts_with("SQLite"));
     }

@@ -27,7 +27,11 @@ pub fn show(app: &mut PhpIdeApp, ctx: &egui::Context, tw: ToolWindow) {
         Anchor::Bottom => {
             egui::TopBottomPanel::bottom(format!("tool-window-{}", tw.title()))
                 .resizable(true)
-                .default_height(190.0)
+                .default_height(if tw == ToolWindow::Database {
+                    360.0
+                } else {
+                    190.0
+                })
                 .show(ctx, |ui| panel(app, ui, tw));
         }
     }
@@ -206,20 +210,7 @@ fn output(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn database(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Data Sources and Drivers").strong());
-        if ui.button("Database Settings").clicked() {
-            app.settings_dialog.open(SettingsPage::Named("Database"));
-        }
-    });
-    ui.separator();
-    ui.label("Nenhum data source configurado.");
-    ui.label(
-        egui::RichText::new(
-            "O console SQL, introspection e a grade de dados serão implementados no módulo RF-DB.",
-        )
-        .weak(),
-    );
+    crate::database::show(app, ui);
 }
 
 fn notifications(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

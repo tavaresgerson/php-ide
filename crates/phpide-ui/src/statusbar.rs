@@ -15,15 +15,8 @@ pub fn status_bar(app: &mut PhpIdeApp, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
         ui.horizontal(|ui| {
             let msg = app.ws.message.clone();
-            if ui
-                .button("Processes")
-                .on_hover_text("Processes — Services (Alt+8)")
-                .clicked()
-            {
-                app.tw.toggle(ToolWindow::Services);
-            }
             let message = if msg.is_empty() {
-                "Pronto".to_string()
+                "Ready".to_string()
             } else {
                 msg
             };
@@ -44,12 +37,13 @@ pub fn status_bar(app: &mut PhpIdeApp, ctx: &egui::Context) {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 memory_widget(app, ui);
-                deployment_widget(app, ui);
+                if crate::scope::EXPERIMENTAL {
+                    deployment_widget(app, ui);
+                }
                 debug_listen_widget(app, ui);
                 readonly_widget(app, ui);
                 branch_widget(app, ui);
                 indent_widget(app, ui);
-                column_selection_widget(app, ui);
                 encoding_widget(app, ui);
                 line_ending_widget(app, ui);
                 caret_widget(app, ui);
@@ -97,13 +91,6 @@ fn navigation_bar_contents(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 ui.label(component.as_os_str().to_string_lossy());
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new("Navigation Bar · Alt+Home")
-                    .weak()
-                    .small(),
-            );
-        });
     });
 }
 
@@ -215,18 +202,6 @@ fn readonly_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     }
 }
 
-fn column_selection_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    let selected = app.settings.column_selection;
-    if ui
-        .selectable_label(selected, "Column")
-        .on_hover_text("Column Selection Mode (Alt+Shift+Insert)")
-        .clicked()
-    {
-        app.settings.column_selection = !selected;
-        app.persist_settings();
-    }
-}
-
 fn debug_listen_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let on = app.debug_listen;
     let label = if on { "Listen on" } else { "Listen off" };
@@ -267,11 +242,6 @@ fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn memory_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    if ui
-        .button(format!("{} MB", app.rss_mb()))
-        .on_hover_text("Memory indicator — RSS")
-        .clicked()
-    {
-        app.tw.set_visible(ToolWindow::Services, true);
-    }
+    ui.label(egui::RichText::new(format!("{} MB", app.rss_mb())).weak())
+        .on_hover_text("Memory used by PHP IDE (RSS)");
 }

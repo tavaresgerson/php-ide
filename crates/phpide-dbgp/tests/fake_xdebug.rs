@@ -106,7 +106,7 @@ fn bp_response(id: &str) -> String {
 
 fn run_break(file: &str, line: u32) -> String {
     format!(
-        r#"<response command="run" transaction_id="3" status="break" reason="ok"><xdebug:message filename="file://{file}" lineno="{line}"/></response>"#
+        r#"<response xmlns:xdebug="urn:debugger_protocol_v1" command="run" transaction_id="3" status="break" reason="ok"><xdebug:message filename="file://{file}" lineno="{line}"/></response>"#
     )
 }
 

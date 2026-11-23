@@ -6,3 +6,4 @@ license.workspace = true
 description = "Cliente DBGp mínimo (Xdebug): escuta TCP, breakpoints, run, pilha e variáveis"
 
 [dependencies]
+roxmltree = "0.20"

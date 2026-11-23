@@ -1,8 +1,7 @@
 //! Status por arquivo (porcelain v1) — apoio a stage/unstage e diff.
 //!
-//! `git status --porcelain=v1` dá pares XY (index/worktree) por arquivo;
-//! paths com caracteres especiais vêm entre aspas com escapes estilo C —
-//! o parser abaixo desfaz só o que o git produz (`\"` e `\\`).
+//! `git status --porcelain=v1 -z` dá pares XY (index/worktree) e caminhos
+//! separados por NUL, sem ambiguidade de espaços, aspas ou quebras de linha.
 
 use std::path::{Path, PathBuf};
 
@@ -74,48 +73,21 @@ impl FileStatus {
 }
 
 /// Desfaz a quotação estilo C que o porcelain v1 aplica a paths especiais.
-fn unquote(path: &str) -> String {
-    let p = path.as_bytes();
-    if p.len() < 2 || p[0] != b'"' || p[p.len() - 1] != b'"' {
-        return path.to_string();
-    }
-    let inner = &p[1..p.len() - 1];
-    let mut out = Vec::with_capacity(inner.len());
-    let mut i = 0;
-    while i < inner.len() {
-        if inner[i] == b'\\' && i + 1 < inner.len() {
-            match inner[i + 1] {
-                b'"' => out.push(b'"'),
-                b'\\' => out.push(b'\\'),
-                b'n' => out.push(b'\n'),
-                b't' => out.push(b'\t'),
-                other => {
-                    out.push(b'\\');
-                    out.push(other);
-                }
-            }
-            i += 2;
-        } else {
-            out.push(inner[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Parse do porcelain v1 (mesma função que `status` usa — UT cobre o real).
-fn parse_porcelain(text: &str) -> Vec<FileStatus> {
+fn parse_porcelain_z(bytes: &[u8]) -> Vec<FileStatus> {
     let mut list = Vec::new();
-    for raw in text.lines() {
+    let mut records = bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .peekable();
+    while let Some(raw) = records.next() {
         if raw.len() < 4 {
             continue;
         }
-        let bytes = raw.as_bytes();
-        let (x, y, untracked) = match (bytes[0], bytes[1]) {
+        let (x, y, untracked) = match (raw[0], raw[1]) {
             (b'?', b'?') => (None, None, true),
             (xc, yc) => {
-                let x = ChangeKind::from_code(xc).and_then(|o| o);
-                let y = ChangeKind::from_code(yc).and_then(|o| o);
+                let x = ChangeKind::from_code(xc).and_then(|value| value);
+                let y = ChangeKind::from_code(yc).and_then(|value| value);
                 if x.is_none() && y.is_none() {
                     continue;
                 }
@@ -123,22 +95,44 @@ fn parse_porcelain(text: &str) -> Vec<FileStatus> {
             }
         };
         list.push(FileStatus {
-            path: PathBuf::from(unquote(raw[3..].trim())),
+            path: PathBuf::from(String::from_utf8_lossy(&raw[3..]).into_owned()),
             staged: x,
             unstaged: y,
             untracked,
         });
+        if matches!(raw[0], b'R' | b'C') {
+            let _old_path = records.next();
+        }
     }
     list
 }
 
+pub fn git_version_at_least(version: &str, minimum: (u32, u32, u32)) -> bool {
+    let mut parts = version
+        .split_whitespace()
+        .find(|part| {
+            part.bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_digit())
+        })
+        .unwrap_or("0.0.0")
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    let actual = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    actual >= minimum
+}
+
 /// Status de todos os arquivos alterados sob `root`.
 pub fn status(root: &Path) -> Result<Vec<FileStatus>, IdeError> {
-    let out = run_git(root, &["status", "--porcelain=v1"])?;
+    let out = run_git(root, &["status", "--porcelain=v1", "-z"])?;
     if !out.status.success() {
         return Err(git_error("status", &out));
     }
-    Ok(parse_porcelain(&String::from_utf8_lossy(&out.stdout)))
+    Ok(parse_porcelain_z(&out.stdout))
 }
 
 /// Status de um arquivo específico (None = limpo/ausente).
@@ -173,7 +167,8 @@ mod tests {
 
     #[test]
     fn parses_xy_codes_and_untracked() {
-        let list = parse_porcelain(" M src/a.php\nM  src/b.php\nA  src/c.php\n?? src/novo.php\n");
+        let list =
+            parse_porcelain_z(b" M src/a.php\0M  src/b.php\0A  src/c.php\0?? src/novo.php\0");
         assert_eq!(list.len(), 4);
         assert_eq!(list[0].path, PathBuf::from("src/a.php"));
         assert_eq!(list[0].staged, None);
@@ -188,16 +183,31 @@ mod tests {
 
     #[test]
     fn skips_clean_lines_and_short_input() {
-        let list = parse_porcelain("M  a.php\n\nx\n  limpo.php\n");
+        let list = parse_porcelain_z(b"M  a.php\0\0x\0  limpo.php\0");
         // '  limpo.php' tem os dois slots vazios: ignorado.
         assert_eq!(list.len(), 1);
     }
 
     #[test]
-    fn unquotes_c_style_paths() {
-        assert_eq!(unquote("src/a b.php"), "src/a b.php");
-        assert_eq!(unquote("\"src/a b.php\""), "src/a b.php");
-        assert_eq!(unquote("\"src/\\\"aspas\\\".php\""), "src/\"aspas\".php");
+    fn parses_nul_separated_rename_and_special_paths() {
+        let list = parse_porcelain_z(
+            b"R  novo nome.php\0nome antigo.php\0?? unicode-\xF0\x9F\x98\x80.php\0",
+        );
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].path, PathBuf::from("novo nome.php"));
+        assert_eq!(list[0].staged, Some(ChangeKind::Renamed));
+        assert!(list[1].untracked);
+        assert!(list[1].path.to_string_lossy().contains('😀'));
+    }
+
+    #[test]
+    fn porcelain_z_requires_only_a_stable_git_baseline() {
+        assert!(git_version_at_least("git version 2.39.2", (2, 20, 0)));
+        assert!(!git_version_at_least("git version 2.19.9", (2, 20, 0)));
+        if let Ok(output) = std::process::Command::new("git").arg("--version").output() {
+            let version = String::from_utf8_lossy(&output.stdout);
+            assert!(git_version_at_least(&version, (2, 20, 0)), "{version}");
+        }
     }
 
     #[test]

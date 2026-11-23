@@ -52,8 +52,11 @@ fn open_edit_undo_save_close_sequence_preserves_state() {
     );
 
     // 5. Fechar: aba some, reabrir lê do disco (estado salvo, sem perda).
-    assert!(ws.close_tab(0));
-    assert_eq!(ws.buffers.len(), 1, "fecha e mantém a estrutura (untitled)");
+    assert!(
+        !ws.close_tab(0),
+        "closing the last tab leaves the editor empty"
+    );
+    assert!(ws.buffers.is_empty(), "no automatic untitled tab");
     ws.open_file_ex(&file, false);
     let reopened = ws.active_buffer().expect("aba reaberta");
     assert_eq!(

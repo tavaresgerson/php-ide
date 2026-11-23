@@ -1,7 +1,7 @@
 //! Codificação/parsing DBGp — protocolo Xdebug (Estágio 4, estendido no 8).
 //!
-//! XML sobre TCP, mensagens terminadas em `\0`. Parsing por atributos, sem
-//! crate XML (mesma política do cliente LSP). Referência:
+//! XML sobre TCP, mensagens terminadas em `\0`, validado por `roxmltree`.
+//! Referência:
 //! https://xdebug.org/docs/dbgp
 
 use std::io::{self, BufRead, Write};
@@ -50,15 +50,50 @@ pub fn read_message(reader: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(None)
 }
 
-/// Extrai o valor de um atributo XML: `status="break"`.
-///
-/// A chave exige fronteira de espaço/quebra: `id` não casa dentro de
-/// `transaction_id` (bug real encontrado na sincronização de breakpoints).
-pub fn attr<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
-    let needle = format!(" {name}=\"");
-    let start = xml.find(&needle)? + needle.len();
-    let rel_end = xml[start..].find('"')?;
-    Some(&xml[start..start + rel_end])
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct XmlElement {
+    pub attributes: std::collections::HashMap<String, String>,
+    pub text: Option<String>,
+}
+
+impl XmlElement {
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.attributes.get(name).map(String::as_str)
+    }
+}
+
+fn element(node: roxmltree::Node<'_, '_>) -> XmlElement {
+    XmlElement {
+        attributes: node
+            .attributes()
+            .map(|attribute| (attribute.name().to_string(), attribute.value().to_string()))
+            .collect(),
+        text: node.text().map(str::to_string),
+    }
+}
+
+pub fn response_element(xml: &str) -> Option<XmlElement> {
+    let document = roxmltree::Document::parse(xml).ok()?;
+    Some(element(document.root_element()))
+}
+
+pub fn elements(xml: &str, name: &str) -> Option<Vec<XmlElement>> {
+    let document = roxmltree::Document::parse(xml).ok()?;
+    Some(
+        document
+            .descendants()
+            .filter(|node| {
+                node.is_element()
+                    && node
+                        .tag_name()
+                        .name()
+                        .rsplit(':')
+                        .next()
+                        .is_some_and(|local| local == name)
+            })
+            .map(element)
+            .collect(),
+    )
 }
 
 /// Metadados da resposta DBGp.
@@ -74,29 +109,32 @@ pub fn parse_response(xml: &str) -> Option<ResponseInfo> {
     // `success` ausente = sucesso: o atributo foi depreciado no DBGp 1.0 e o
     // Xdebug 3 não o envia (erros vêm como `<error>` ou `success="0"` — o
     // peer fiel do ambiente sem extensão manda `success="1"` explicitamente).
+    let root = response_element(xml)?;
     Some(ResponseInfo {
-        command: attr(xml, "command")?.to_string(),
-        transaction: attr(xml, "transaction_id").unwrap_or("").to_string(),
-        success: attr(xml, "success").map(|s| s == "1").unwrap_or(true)
+        command: root.attr("command")?.to_string(),
+        transaction: root.attr("transaction_id").unwrap_or("").to_string(),
+        success: root
+            .attr("success")
+            .map(|value| value == "1")
+            .unwrap_or(true)
             && error_message(xml).is_none(),
-        status: attr(xml, "status").unwrap_or("").to_string(),
+        status: root.attr("status").unwrap_or("").to_string(),
     })
 }
 
 /// Mensagem de erro embutida na resposta (`<error ...><message>`).
 pub fn error_message(xml: &str) -> Option<String> {
-    if !xml.contains("<error") {
-        return None;
-    }
-    let start = xml.find("<message>")? + "<message>".len();
-    let end = xml[start..].find("</message>")? + start;
-    Some(xml[start..end].to_string())
+    elements(xml, "message")?
+        .into_iter()
+        .find_map(|element| element.text)
 }
 
 /// Nomes das propriedades (variáveis) de um context_get.
 pub fn property_names(xml: &str) -> Vec<String> {
-    xml.match_indices("<property ")
-        .filter_map(|(i, _)| attr(&xml[i..], "name").map(str::to_string))
+    elements(xml, "property")
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|element| element.attr("name").map(str::to_string))
         .collect()
 }
 
@@ -275,8 +313,9 @@ mod tests {
 
         let bp = r#"<response command="breakpoint_set" transaction_id="2" id="10" success="1"></response>"#;
         assert!(parse_response(bp).unwrap().success);
-        assert_eq!(attr(xml, "transaction_id"), Some("3"));
-        assert_eq!(attr(xml, "inexistente"), None);
+        let root = response_element(xml).unwrap();
+        assert_eq!(root.attr("transaction_id"), Some("3"));
+        assert_eq!(root.attr("inexistente"), None);
     }
 
     #[test]
@@ -322,6 +361,20 @@ mod tests {
     fn extracts_property_names() {
         let xml = r#"<response command="context_get" transaction_id="5"><property name="$total" fullname="$total" type="int"><![CDATA[42]]></property><property name="$items" fullname="$items" type="array"></property></response>"#;
         assert_eq!(property_names(xml), vec!["$total", "$items"]);
+    }
+
+    #[test]
+    fn real_xml_supports_namespaces_entities_cdata_and_rejects_duplicates() {
+        let xml = r#"<dbgp:response xmlns:dbgp="urn:debugger_protocol_v1" command="run" transaction_id="7"><dbgp:error><dbgp:message><![CDATA[erro <xml> & dados]]></dbgp:message></dbgp:error></dbgp:response>"#;
+        let response = parse_response(xml).unwrap();
+        assert_eq!(response.command, "run");
+        assert!(!response.success);
+        assert_eq!(error_message(xml).as_deref(), Some("erro <xml> & dados"));
+        let entity =
+            r#"<response command="run" transaction_id="8"><property name="a&amp;b" /></response>"#;
+        assert_eq!(property_names(entity), vec!["a&b"]);
+        let duplicate = r#"<response command="run" command="stop" />"#;
+        assert!(parse_response(duplicate).is_none());
     }
 
     #[test]

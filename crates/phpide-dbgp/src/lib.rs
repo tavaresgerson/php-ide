@@ -31,8 +31,9 @@ pub use listener::{
 };
 pub use mapping::{ConnectionMatch, PathMappings};
 pub use proto::{
-    attr, encode_command, error_message, fileuri, listen, parse_response, property_names,
-    read_packet, uri_to_path, DbgpSession, ResponseInfo, DEFAULT_PORT,
+    elements, encode_command, error_message, fileuri, listen, parse_response, property_names,
+    read_packet, response_element, uri_to_path, DbgpSession, ResponseInfo, XmlElement,
+    DEFAULT_PORT,
 };
 pub use session::{
     base64_encode, parse_context, parse_stack, ContinueCommand, Frame, StepOutcome, StopReason,
@@ -87,13 +88,13 @@ pub fn run_with_breakpoints(
             say(&tx, format!("[debug] run -> status={}", r.status));
             if r.status == "break" {
                 if let Ok(stack) = session.send_xml("stack_get", &[]) {
-                    let frame = stack
-                        .match_indices("<stack ")
-                        .next()
-                        .and_then(|(i, _)| {
-                            let f = attr(&stack[i..], "filename")?;
-                            let l = attr(&stack[i..], "lineno")?;
-                            Some(format!("{f}:{}", l))
+                    let frame = elements(&stack, "stack")
+                        .unwrap_or_default()
+                        .first()
+                        .and_then(|element| {
+                            let file = element.attr("filename")?;
+                            let line = element.attr("lineno")?;
+                            Some(format!("{file}:{line}"))
                         })
                         .unwrap_or_else(|| "?".to_string());
                     say(&tx, format!("[debug] parado em {frame}"));

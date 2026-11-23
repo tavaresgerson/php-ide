@@ -1,5 +1,5 @@
-//! Tool windows da New UI (REQUISITOS 1.2): catálogo, âncoras, atalhos,
-//! barras laterais/inferior, More tool windows, Hide Active e Hide All.
+//! Tool windows: catalog, anchors, shortcuts, side/bottom bars, More tool
+//! windows, Hide Active and Hide All.
 
 use eframe::egui;
 
@@ -111,6 +111,17 @@ impl ToolWindow {
         }
     }
 
+    /// Whether the tool window belongs to the v1.0 scope. Frozen windows are
+    /// only reachable with the `experimental` feature.
+    pub fn is_available(self) -> bool {
+        match self {
+            ToolWindow::Services | ToolWindow::Database | ToolWindow::RemoteHost => {
+                crate::scope::EXPERIMENTAL
+            }
+            _ => true,
+        }
+    }
+
     pub fn from_digit(digit: u8) -> Option<ToolWindow> {
         match digit {
             0 => Some(ToolWindow::Commit),
@@ -155,6 +166,9 @@ impl ToolWindows {
     }
 
     pub fn set_visible(&mut self, tw: ToolWindow, visible: bool) {
+        if visible && !tw.is_available() {
+            return;
+        }
         self.visible[tw as usize] = visible;
         self.all_hidden = false;
         if visible {
@@ -213,7 +227,7 @@ impl ToolWindows {
             ui.vertical_centered(|ui| {
                 ui.add_space(if compact { 2.0 } else { 5.0 });
                 for tw in ToolWindow::ALL {
-                    if tw.anchor() != side {
+                    if tw.anchor() != side || !tw.is_available() {
                         continue;
                     }
                     let selected = self.is_visible(tw);
@@ -226,6 +240,9 @@ impl ToolWindows {
                 ui.menu_button("...", |ui| {
                     ui.label(egui::RichText::new("More tool windows").weak().small());
                     for tw in ToolWindow::ALL {
+                        if !tw.is_available() {
+                            continue;
+                        }
                         let mut visible = self.is_visible(tw);
                         if ui.checkbox(&mut visible, tw.title()).changed() {
                             self.set_visible(tw, visible);
@@ -259,7 +276,7 @@ impl ToolWindows {
                     }
                     ui.menu_button("... More tool windows", |ui| {
                         for tw in ToolWindow::ALL {
-                            if PRIMARY.contains(&tw) {
+                            if PRIMARY.contains(&tw) || !tw.is_available() {
                                 continue;
                             }
                             let mut visible = self.is_visible(tw);
@@ -298,6 +315,21 @@ mod tests {
         }
         assert_eq!(ToolWindow::Database.shortcut_label(), "Ctrl+Alt+3");
         assert_eq!(ToolWindow::Terminal.shortcut_label(), "Alt+F12");
+    }
+
+    #[test]
+    fn frozen_tool_windows_only_open_with_experimental_feature() {
+        let mut tw = ToolWindows::default();
+        for frozen in [
+            ToolWindow::Services,
+            ToolWindow::Database,
+            ToolWindow::RemoteHost,
+        ] {
+            tw.set_visible(frozen, true);
+            assert_eq!(tw.is_visible(frozen), crate::scope::EXPERIMENTAL);
+        }
+        tw.set_visible(ToolWindow::Terminal, true);
+        assert!(tw.is_visible(ToolWindow::Terminal));
     }
 
     #[test]

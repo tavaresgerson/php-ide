@@ -6,3 +6,4 @@ license.workspace = true
 description = "Iconografia da IDE: conjunto visual próprio, manifesto de licenças e registry semântico com cache/fallback/tint (UI-ICON-001)"
 
 [dependencies]
+roxmltree = "0.20"

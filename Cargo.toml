@@ -5,7 +5,7 @@ members = ["crates/phpide-core", "crates/phpide-db", "crates/phpide-dbgp", "crat
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/phpide"
+repository = "https://github.com/tavaresgerson/php-ide.git"
 
 [profile.release]
 opt-level = 2

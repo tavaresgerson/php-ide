@@ -80,15 +80,46 @@ pub enum ExecResult {
     Affected { count: u64, message: String },
 }
 
-/// Filtro/ordenação server-side (DB-005-03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOperator {
+    Eq,
+    NotEq,
+    Less,
+    LessEq,
+    Greater,
+    GreaterEq,
+    Like,
+    IsNull,
+    IsNotNull,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridFilter {
+    pub column: String,
+    pub operator: FilterOperator,
+    pub value: Value,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QueryOptions {
     pub limit: Option<u64>,
     pub offset: Option<u64>,
-    /// (coluna, ascendente).
     pub order_by: Option<(String, bool)>,
-    /// Expressão WHERE (já validada/quotada pelo chamador — grade interna).
-    pub filter: Option<String>,
+    pub filters: Vec<GridFilter>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnUpdate {
+    pub column: String,
+    pub old: Value,
+    pub new: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowUpdate {
+    pub table: String,
+    pub key: Vec<(String, Value)>,
+    pub changes: Vec<ColumnUpdate>,
 }
 
 /// Uma sessão conectada (cancelável, transacional).
@@ -100,6 +131,9 @@ pub trait DbSession: Send {
     fn execute(&mut self, sql: &str, opts: &QueryOptions) -> Result<ExecResult, IdeError>;
     /// Cancela a execução em curso (DB-004-04).
     fn cancel(&self);
+    fn cancellation_callback(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
     /// Estado da transação (DB-006-04).
     fn in_transaction(&self) -> bool;
     fn begin(&mut self) -> Result<(), IdeError>;
@@ -107,12 +141,7 @@ pub trait DbSession: Send {
     fn rollback(&mut self) -> Result<(), IdeError>;
     /// Edição de linha: aplica um UPDATE por chave (DB-006-02), com checagem
     /// de concorrência (linhas afetadas ≠ 1 → conflito, DB-006-05).
-    fn update_row(
-        &mut self,
-        table: &str,
-        key: &[(String, Value)],
-        changes: &[(String, Value)],
-    ) -> Result<u64, IdeError>;
+    fn update_row(&mut self, update: &RowUpdate) -> Result<u64, IdeError>;
 }
 
 /// Fábrica de sessões ( Driver provider ).
@@ -127,7 +156,7 @@ pub trait Driver: Send + Sync {
 pub fn parse_url(url: &str) -> Result<(DriverKind, BTreeMap<String, String>), IdeError> {
     let (scheme, rest) = url.split_once("://").ok_or_else(|| {
         IdeError::new(
-            phpide_core::Component::Core,
+            phpide_core::Component::Db,
             "db.parse_url",
             phpide_core::ErrorKind::InvalidInput,
             format!("URL sem esquema: {url}"),
@@ -136,7 +165,7 @@ pub fn parse_url(url: &str) -> Result<(DriverKind, BTreeMap<String, String>), Id
     })?;
     let kind = DriverKind::from_name(scheme).ok_or_else(|| {
         IdeError::new(
-            phpide_core::Component::Core,
+            phpide_core::Component::Db,
             "db.parse_url",
             phpide_core::ErrorKind::InvalidInput,
             format!("driver desconhecido: {scheme}"),

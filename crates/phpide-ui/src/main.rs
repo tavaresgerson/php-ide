@@ -1,4 +1,4 @@
-//! phpide — IDE em Rust focada em PHP.
+//! PHP IDE — a PHP-focused IDE written in Rust.
 //!
 //! Estágio 6 — shell de IDE com paridade visual à New UI do PhpStorm
 //! (REQUISITOS.md, Parte 1): window header unificado, tool windows com
@@ -7,7 +7,9 @@
 //! editor tabs com preview/pin/Closing Policy e breadcrumbs.
 
 mod blame_gutter;
+mod close;
 mod completion;
+mod database;
 mod editor_surface;
 mod editor_view;
 mod exec;
@@ -22,9 +24,11 @@ mod intelligence;
 mod lens;
 mod palette;
 mod plugins;
+mod routing;
 mod run_debug;
 mod run_panels;
 mod scheme;
+mod scope;
 mod search;
 mod settings;
 mod settings_dialog;
@@ -85,6 +89,12 @@ pub enum PendingClose {
     Exit,
 }
 
+#[cfg(test)]
+thread_local! {
+    static DIRTY_BUTTON_RECTS: std::cell::Cell<Option<[egui::Rect; 3]>> =
+        const { std::cell::Cell::new(None) };
+}
+
 fn main() -> eframe::Result<()> {
     // Uso: phpide [projeto] [arquivos...]. Sem projeto, abre a Welcome Screen;
     // arquivos extras são abertos em abas (preview) após carregar o projeto.
@@ -95,7 +105,11 @@ fn main() -> eframe::Result<()> {
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let title = format!("phpide — {}", root.display());
+    let title = if arg.is_some() {
+        format!("PHP IDE — {}", root.display())
+    } else {
+        "PHP IDE".to_string()
+    };
     let loaded = settings::Settings::load();
     let theme = ThemeId::from_name(&loaded.theme);
     // Sem argumento de projeto, abre na Welcome Screen (REQUISITOS 1.5).
@@ -104,7 +118,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([640.0, 480.0]),
+            .with_min_inner_size([640.0, 480.0])
+            .with_app_id("php-ide"),
         ..Default::default()
     };
 
@@ -122,6 +137,7 @@ type GitMarkerCache = (PathBuf, u64, Vec<(u32, bool)>);
 
 struct PhpIdeApp {
     ws: Workspace,
+    db: database::DatabaseState,
     collapsed: HashSet<PathBuf>,
     selected: Option<PathBuf>,
     cursor_char: usize,
@@ -145,9 +161,7 @@ struct PhpIdeApp {
     lsp_crash_notified: bool,
     /// Caminho -> revisão já enviada ao servidor.
     lsp_opened: HashMap<PathBuf, u64>,
-    /// Definição pendente com (path, revisão): resposta de sessão/revisão
-    /// antiga é descartada (T-PHP-001-04).
-    pending_def: Option<(PathBuf, u64, mpsc::Receiver<Value>)>,
+    pending_requests: routing::LspRouting,
     pending_outline: Option<(PathBuf, mpsc::Receiver<Value>)>,
     last_outline_key: Option<(PathBuf, u64)>,
     /// Go to Symbol: resultados da última consulta workspace/symbol.
@@ -162,8 +176,7 @@ struct PhpIdeApp {
     /// cursor para outra palavra na mesma revisão recalcula.
     occurrences: Option<(PathBuf, u64, String, Vec<intelligence::CharRange>)>,
     pending_occurrences: Option<mpsc::Receiver<Value>>,
-    /// Find Usages pendente (T-PHP-004-03).
-    pending_usages: Option<mpsc::Receiver<Value>>,
+
     /// Descoberta do projeto Composer (T-PHP-030-01/02).
     composer: Option<phpide_php::composer::ComposerInfo>,
     composer_warned: bool,
@@ -218,7 +231,7 @@ struct PhpIdeApp {
     groups: groups::EditorGroups,
     /// Inlay hints por revisão (UI-ED-005).
     hints: hints::HintStore,
-    pending_hints: Option<(PathBuf, u64, mpsc::Receiver<Value>)>,
+    hints_path: Option<PathBuf>,
     /// Code Vision (lenses) por arquivo/revisão.
     code_vision: hints::CodeVision,
     /// Gutter de blame (UI-ED-007) com cache por revisão salva.
@@ -233,15 +246,28 @@ struct PhpIdeApp {
     /// Undo coeso de refatorações/auto-import (PHP-021-01/PHP-003-05).
     refactor_undo: workspace_edit::UndoStack,
     /// Popup do lens preview (linha sob a scrollbar).
-    lens_hover: Option<(usize, std::time::Instant)>,
+    lens_hover: Option<(usize, egui::Pos2, std::time::Instant)>,
 }
 
 impl PhpIdeApp {
     fn new(root: PathBuf, start_welcome: bool, files: Vec<PathBuf>) -> Self {
-        let fe = fe_servers::detect_and_spawn(&root);
+        // While the Welcome screen is open there is no project yet: do not
+        // scan, watch or start language servers for the current directory
+        // (it is often $HOME when launched from a desktop entry).
+        let has_project = !start_welcome;
+        let fe = if has_project && scope::EXPERIMENTAL {
+            fe_servers::detect_and_spawn(&root)
+        } else {
+            fe_servers::FeServers::empty()
+        };
+        let db = database::DatabaseState::new(&root);
         let (settings, settings_err) = settings::Settings::load_or_default();
         let theme = ThemeId::from_name(&settings.theme);
-        let (lsp, lsp_init, lsp_name) = start_lsp(&root);
+        let (lsp, lsp_init, lsp_name) = if has_project {
+            start_lsp(&root)
+        } else {
+            (None, None, String::new())
+        };
         let plugins = plugins::discover_plugins(&root, &settings::config_dir());
         let logger = Logger::stderr();
         let session = std::process::id() as u64;
@@ -252,8 +278,17 @@ impl PhpIdeApp {
             &[("root", &root.display().to_string())],
         );
         let mut app = PhpIdeApp {
-            watcher: start_watcher(&root),
-            ws: Workspace::open(root),
+            watcher: if has_project {
+                start_watcher(&root)
+            } else {
+                None
+            },
+            db,
+            ws: if has_project {
+                Workspace::open(root.clone())
+            } else {
+                Workspace::unscanned(root.clone())
+            },
             collapsed: HashSet::new(),
             selected: None,
             cursor_char: 0,
@@ -270,7 +305,7 @@ impl PhpIdeApp {
             lsp_name,
             lsp_crash_notified: false,
             lsp_opened: HashMap::new(),
-            pending_def: None,
+            pending_requests: routing::LspRouting::default(),
             pending_outline: None,
             last_outline_key: None,
             symbol_results: Vec::new(),
@@ -280,7 +315,6 @@ impl PhpIdeApp {
             pending_semantic: None,
             occurrences: None,
             pending_occurrences: None,
-            pending_usages: None,
             composer: None,
             composer_warned: false,
             composer_mtime: None,
@@ -313,7 +347,7 @@ impl PhpIdeApp {
             switcher: switcher::MruSwitcher::default(),
             groups: groups::EditorGroups::default(),
             hints: hints::HintStore::default(),
-            pending_hints: None,
+            hints_path: None,
             code_vision: hints::CodeVision::default(),
             blame: blame_gutter::BlameCache::default(),
             blame_revision: None,
@@ -338,6 +372,43 @@ impl PhpIdeApp {
                 app.ws.root.join(f)
             };
             app.ws.open_file_ex(&path, true);
+        }
+        if std::env::var_os("PHPIDE_SMOKE_PROJECT_CLOSE").is_some() {
+            if let Some(buffer) = app.ws.active_buffer_mut() {
+                buffer.insert(0, "// alteração de teste\n");
+            }
+            app.pending_close = Some(PendingClose::Project(root.join("other")));
+        }
+        if std::env::var_os("PHPIDE_SMOKE_SAVE_FAILURE").is_some() {
+            let active = app.ws.active;
+            if let Some(buffer) = app.ws.buffers.get_mut(active) {
+                buffer.insert(0, "// edição que deve ser preservada\n");
+                if let Some(path) = buffer.path.clone() {
+                    let _ = std::fs::remove_file(&path);
+                    let _ = std::fs::create_dir(&path);
+                }
+            }
+            app.pending_close = Some(PendingClose::Tab(active));
+        }
+        if let Ok(url) = std::env::var("PHPIDE_DB_URL") {
+            app.db.connect_url_for_smoke(&url);
+        }
+        if std::env::var("PHPIDE_TOOL_WINDOW").as_deref() == Ok("database") {
+            app.tw.set_visible(ToolWindow::Database, true);
+        }
+        if let Ok(axis) = std::env::var("PHPIDE_SPLIT") {
+            if let Some(path) = app
+                .ws
+                .active_buffer()
+                .and_then(|buffer| buffer.path.clone())
+            {
+                app.groups.open(path.to_string_lossy().into_owned());
+                app.groups.split_root(if axis == "down" {
+                    groups::Axis::Vertical
+                } else {
+                    groups::Axis::Horizontal
+                });
+            }
         }
         if let Some(err) = settings_err {
             // Configuração inválida: defaults em uso, original preservado.
@@ -396,10 +467,11 @@ impl PhpIdeApp {
         self.lsp_init = lsp_init;
         self.lsp_name = lsp_name;
         self.lsp_opened.clear();
-        self.pending_def = None;
+        self.pending_requests.clear();
         self.pending_outline = None;
         self.last_outline_key = None;
         self.syntax = None;
+        self.db.reset_project(&root);
         self.ws = Workspace::open(root.clone());
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.refresh_composer(false);
@@ -409,7 +481,7 @@ impl PhpIdeApp {
         self.git_refreshed = Instant::now() - Duration::from_secs(60);
         self.welcome_open = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "phpide — {}",
+            "PHP IDE — {}",
             root.display()
         )));
         self.ws.message = format!("projeto aberto: {}", root.display());
@@ -487,7 +559,7 @@ impl PhpIdeApp {
         }
         self.lsp_init = None;
         self.lsp_opened.clear();
-        self.pending_def = None;
+        self.pending_requests.clear_origin(routing::LspOrigin::Php);
         self.pending_outline = None;
         self.last_outline_key = None;
         self.pending_symbols = None;
@@ -496,7 +568,7 @@ impl PhpIdeApp {
         self.pending_semantic = None;
         self.occurrences = None;
         self.pending_occurrences = None;
-        self.pending_usages = None;
+        self.pending_requests.clear_origin(routing::LspOrigin::Php);
         self.lsp_crash_notified = false;
         let (lsp, lsp_init, lsp_name) = start_lsp(&self.ws.root);
         self.lsp = lsp;
@@ -514,18 +586,9 @@ impl PhpIdeApp {
         let Some(path0) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
         };
-        let lsp: &LspClient = if phpide_php::Php::is_php_file(&path0) {
-            let Some(l) = &self.lsp else {
-                self.ws.message = "LSP indisponível".to_string();
-                return;
-            };
-            l
-        } else {
-            let Some(s) = self.fe.for_path(&path0) else {
-                self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
-                return;
-            };
-            &s.client
+        let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path0) else {
+            self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
+            return;
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
@@ -543,7 +606,15 @@ impl PhpIdeApp {
             self.cursor_char.min(buf.document.len_chars()),
             phpide_core::PositionEncoding::Utf16,
         );
-        self.pending_usages = Some(lsp.references(&path, line, col));
+        self.pending_requests.insert(
+            routing::RequestKey {
+                origin,
+                operation: routing::RequestOperation::Usages,
+                path: path.clone(),
+                revision: buf.document.revision(),
+            },
+            lsp.references(&path, line, col),
+        );
         self.ws.message = "buscando usos...".to_string();
     }
 
@@ -604,12 +675,7 @@ impl PhpIdeApp {
     }
 
     /// Consome o resultado de Find Usages para o painel Find (com preview).
-    fn poll_usages(&mut self) {
-        let Some(rx) = &self.pending_usages else {
-            return;
-        };
-        let Ok(result) = rx.try_recv() else { return };
-        self.pending_usages = None;
+    fn handle_usages_result(&mut self, result: Value) {
         let locs = intelligence::parse_locations(&result);
         // Code Vision (UI-ED-005-05): lens de usages com resultados reais no
         // bloco estrutural sob o cursor.
@@ -713,6 +779,7 @@ impl PhpIdeApp {
     }
 
     pub fn git_refresh(&mut self) {
+        self.git_markers = None;
         self.git_branch_cache = vcs::current_branch(&self.ws.root);
         self.git_refreshed = Instant::now();
     }
@@ -880,13 +947,14 @@ impl PhpIdeApp {
             PaletteCommand::UndoRefactor => {
                 let mut store = WsStore(&mut self.ws);
                 match workspace_edit::undo_last(&mut store, &mut self.refactor_undo) {
-                    Some(label) => self.ws.message = format!("undone: {label}"),
-                    None => {
+                    Ok(Some(label)) => self.ws.message = format!("undone: {label}"),
+                    Ok(None) => {
                         self.ws.message = match self.refactor_undo.top_label() {
                             Some(next) => format!("nenhuma refatoração desfeita (próxima: {next})"),
                             None => "nenhuma refatoração para desfazer".to_string(),
                         };
                     }
+                    Err(error) => self.ws.message = error.to_string(),
                 }
             }
             PaletteCommand::ToggleFolding => {
@@ -956,11 +1024,12 @@ impl PhpIdeApp {
                 .text()
                 .replace("\r\n", "\n")
                 .replace('\n', "\r\n");
-            buf.document = phpide_core::Document::new(&text);
+            if text != buf.document.text() {
+                buf.replace_all(&text);
+            }
         }
         let corr = Correlation::session(self.session).with_document(
-            path.clone()
-                .unwrap_or_else(|| PathBuf::from("<sem-titulo>")),
+            path.clone().unwrap_or_else(|| PathBuf::from("<untitled>")),
             buf.document.revision(),
         );
         match buf.try_save() {
@@ -981,6 +1050,7 @@ impl PhpIdeApp {
                 return false;
             }
         }
+        self.git_markers = None;
         if let (Some(lsp), Some(path)) = (&self.lsp, path) {
             if phpide_php::Php::is_php_file(&path) {
                 let text = self
@@ -995,13 +1065,26 @@ impl PhpIdeApp {
         true
     }
 
-    /// Salva todos os buffers sujos (confirmação "Salvar Tudo").
-    fn save_all_dirty(&mut self) {
-        for i in 0..self.ws.buffers.len() {
-            if self.ws.buffers[i].dirty {
-                self.save_buffer_at(i);
-            }
-        }
+    fn save_all_dirty(&mut self) -> close::SaveReport {
+        let indices: Vec<usize> = (0..self.ws.buffers.len()).collect();
+        self.save_dirty_indices(&indices)
+    }
+
+    fn save_dirty_indices(&mut self, indices: &[usize]) -> close::SaveReport {
+        let descriptors: Vec<_> = indices
+            .iter()
+            .map(|index| {
+                (
+                    *index,
+                    self.ws
+                        .buffers
+                        .get(*index)
+                        .and_then(|buffer| buffer.path.clone()),
+                    self.ws.buffers.get(*index).map(|b| b.dirty).unwrap_or(true),
+                )
+            })
+            .collect();
+        close::save_dirty_indices(&descriptors, |index| self.save_buffer_at(index))
     }
 
     fn any_dirty(&self) -> bool {
@@ -1062,6 +1145,7 @@ impl eframe::App for PhpIdeApp {
         if let Some(lsp) = self.lsp.take() {
             lsp.stop();
         }
+        self.db.shutdown();
         self.logger.info(
             Component::Ui,
             &Correlation::session(self.session),
@@ -1131,9 +1215,12 @@ impl eframe::App for PhpIdeApp {
         self.poll_lsp();
         self.poll_fe();
         self.poll_syntax();
-        self.poll_usages();
+        self.poll_routed_requests();
+        self.poll_hints();
+        self.poll_completion();
         self.poll_symbol_query();
         self.exec.poll();
+        self.db.poll();
         // Estágio 8: sessões de execução + engine DBGp (eventos, testes,
         // cobertura) e sync do widget de listener na status bar.
         self.rd.poll();
@@ -1163,7 +1250,13 @@ impl eframe::App for PhpIdeApp {
         scheme::scheme_popup(self, ctx);
         self.goto_line_popup(ctx);
         settings_dialog::show(self, ctx);
-        self.dirty_close_modal(ctx);
+        if std::env::var("PHPIDE_SMOKE_SAVE_ACTION").as_deref() == Ok("save") {
+            static TRIGGER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            if TRIGGER.get().is_none() {
+                self.confirm_save_close(ctx);
+                let _ = TRIGGER.set(());
+            }
+        }
 
         ctx.set_zoom_factor(self.zoom);
         let compact = self.settings.compact_mode;
@@ -1182,6 +1275,7 @@ impl eframe::App for PhpIdeApp {
 
         if self.welcome_open {
             welcome::welcome_screen(self, ctx);
+            self.dirty_close_modal(ctx);
             if self.watcher.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(150));
             }
@@ -1234,6 +1328,7 @@ impl eframe::App for PhpIdeApp {
             }
         }
         self.editor(ctx);
+        self.dirty_close_modal(ctx);
 
         if self.watcher.is_some() {
             // O watcher dispara entre frames; mantém a UI viva para aplicar mudanças.
@@ -1803,6 +1898,32 @@ impl PhpIdeApp {
         }
     }
 
+    fn confirm_save_close(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_close.clone() else {
+            return;
+        };
+        let indices = close::targets(&pending, self.ws.buffers.len());
+        let report = if matches!(&pending, PendingClose::Project(_) | PendingClose::Exit) {
+            self.save_all_dirty()
+        } else {
+            self.save_dirty_indices(&indices)
+        };
+        match close::after_successful_save(&mut self.ws, &pending, &report) {
+            close::CloseAction::Closed => self.pending_close = None,
+            close::CloseAction::LoadProject(path) => {
+                self.pending_close = None;
+                self.load_project(path, ctx);
+            }
+            close::CloseAction::Exit => {
+                self.pending_close = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            close::CloseAction::Blocked => {
+                self.ws.message = format!("{} ({})", report.summary(), self.ws.message);
+            }
+        }
+    }
+
     /// Modal de confirmação para buffers sujos (NFR-007-02): aba, Close
     /// Others, troca de projeto e fechamento da IDE. Salvar grava tudo o que
     /// for necessário; Descartar fecha sem salvar; Cancelar volta ao fluxo.
@@ -1840,12 +1961,11 @@ impl PhpIdeApp {
             ),
         };
         let mut action: Option<&'static str> = None;
-        egui::Window::new("dirty-close")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        egui::Modal::new(egui::Id::new("dirty-close"))
+            .area(
+                egui::Modal::default_area(egui::Id::new("dirty-close"))
+                    .fixed_pos(ctx.screen_rect().center() - egui::vec2(220.0, 60.0)),
+            )
             .frame(
                 egui::Frame::window(&ctx.style())
                     .shadow(egui::epaint::Shadow::default())
@@ -1857,44 +1977,30 @@ impl PhpIdeApp {
                 ui.label(body);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Salvar").clicked() {
+                    let save_response = ui.button("Salvar");
+                    let discard_response = ui.button("Não Salvar");
+                    let cancel_response = ui.button("Cancelar");
+                    #[cfg(test)]
+                    DIRTY_BUTTON_RECTS.with(|rects| {
+                        rects.set(Some([
+                            save_response.rect,
+                            discard_response.rect,
+                            cancel_response.rect,
+                        ]));
+                    });
+                    if save_response.clicked() {
                         action = Some("save");
                     }
-                    if ui.button("Não Salvar").clicked() {
+                    if discard_response.clicked() {
                         action = Some("discard");
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if cancel_response.clicked() {
                         action = Some("cancel");
                     }
                 });
             });
         match action {
-            Some("save") => {
-                match pending {
-                    PendingClose::Tab(i) => {
-                        if self.save_buffer_at(i) {
-                            self.ws.close_tab(i);
-                        }
-                    }
-                    PendingClose::Others(keep) => {
-                        self.save_all_dirty();
-                        self.ws.close_other_tabs(keep);
-                    }
-                    PendingClose::Project(path) => {
-                        self.save_all_dirty();
-                        self.pending_close = None;
-                        self.load_project(path, ctx);
-                        return;
-                    }
-                    PendingClose::Exit => {
-                        self.save_all_dirty();
-                        self.pending_close = None;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        return;
-                    }
-                }
-                self.pending_close = None;
-            }
+            Some("save") => self.confirm_save_close(ctx),
             Some("discard") => {
                 match pending {
                     PendingClose::Tab(i) => {
@@ -1921,6 +2027,7 @@ impl PhpIdeApp {
                 }
                 self.pending_close = None;
             }
+            Some("cancel") => close::cancel(&mut self.pending_close),
             _ => {}
         }
     }
@@ -2134,36 +2241,7 @@ impl PhpIdeApp {
             self.ws.set_diagnostics(&path, revision, diags);
         }
 
-        // 4. Definição pendente (F12/Ctrl+B): aplica apenas se o buffer ainda
-        // estiver na mesma revisão do disparo (T-PHP-001-04).
-        if let Some((req_path, req_revision, rx)) = &self.pending_def {
-            if let Ok(result) = rx.try_recv() {
-                let (req_path, req_revision) = (req_path.clone(), *req_revision);
-                self.pending_def = None;
-                let current = self
-                    .ws
-                    .buffers
-                    .iter()
-                    .find(|b| b.path.as_deref() == Some(req_path.as_path()));
-                let stale = match current {
-                    Some(buf) => buf.document.revision() != req_revision,
-                    None => true,
-                };
-                if stale {
-                    self.logger.info(
-                        Component::Lsp,
-                        &Correlation::session(self.session).with_document(req_path, req_revision),
-                        "stale_response_discarded",
-                        &[("kind", "definition")],
-                    );
-                } else {
-                    let locs = intelligence::parse_locations(&result);
-                    if let Some(loc) = locs.first() {
-                        self.ws.open_file_at(&loc.path, loc.line0, loc.col0);
-                    }
-                }
-            }
-        }
+        // 4. Navegação FE/PHP é consumida pelo dispatcher neutro.
 
         // 5. Outline pendente (só aplica se o arquivo ainda for o ativo e na
         // mesma revisão pedida).
@@ -2296,82 +2374,6 @@ impl PhpIdeApp {
             self.semantic = None;
         }
 
-        // 8b. Inlay hints (UI-ED-005-01/02): resposta por revisão, descartada
-        // se o documento já avançou (provedor lento não pinta dado velho).
-        if let Some((req_path, req_revision, rx)) = &self.pending_hints {
-            if let Ok(result) = rx.try_recv() {
-                let (req_path, req_revision) = (req_path.clone(), *req_revision);
-                self.pending_hints = None;
-                let current_rev = self
-                    .ws
-                    .buffers
-                    .iter()
-                    .find(|b| b.path.as_deref() == Some(req_path.as_path()))
-                    .map(|b| b.document.revision());
-                if current_rev == Some(req_revision) {
-                    let parsed = parse_inlay_hints(&result);
-                    self.hints.apply(hints::HintResponse {
-                        revision: hints::Revision(req_revision),
-                        hints: parsed,
-                        status: if result.is_null() {
-                            Some("servidor sem inlay hints".to_string())
-                        } else {
-                            None
-                        },
-                    });
-                }
-            }
-        }
-        if self.settings.inlay_hints {
-            let active = self.ws.active_buffer().and_then(|b| {
-                let path = b.path.clone()?;
-                // PHP server ou servidor FE (hints TS vêm do typescript-
-                // language-server — FE-002-02).
-                if !phpide_php::Php::is_php_file(&path) && self.fe.for_path(&path).is_none() {
-                    return None;
-                }
-                Some((path, b.document.revision(), b.document.line_count()))
-            });
-            let needs = match (&active, &self.pending_hints, self.hints.current) {
-                (Some((p, r, _)), pending, cur) => {
-                    let pending_ok = pending
-                        .as_ref()
-                        .map(|(pp, pr, _)| pp == p && pr == r)
-                        .unwrap_or(false);
-                    !pending_ok && cur != Some(hints::Revision(*r))
-                }
-                (None, _, _) => false,
-            };
-            if needs {
-                if let Some((path, revision, line_count)) = active {
-                    let end_line = line_count.saturating_sub(1) as u64;
-                    // Roteamento: hints TS/JS do typescript-language-server.
-                    let client: &LspClient = if phpide_php::Php::is_php_file(&path) {
-                        lsp
-                    } else {
-                        match self.fe.for_path(&path) {
-                            Some(s) => &s.client,
-                            None => lsp,
-                        }
-                    };
-                    let rx = client.request(
-                        "textDocument/inlayHint",
-                        serde_json::json!({
-                            "textDocument": { "uri": phpide_lsp::path_to_uri(&path) },
-                            "range": {
-                                "start": { "line": 0, "character": 0 },
-                                "end": { "line": end_line, "character": 10_000 }
-                            }
-                        }),
-                    );
-                    self.pending_hints = Some((path, revision, rx));
-                    self.hints.begin(hints::Revision(revision));
-                }
-            }
-        } else if self.hints.current.is_some() {
-            self.hints.invalidate();
-        }
-
         // 9. Ocorrências (documentHighlight) com fallback local (005-02).
         if let Some(rx) = &self.pending_occurrences {
             if let Ok(result) = rx.try_recv() {
@@ -2455,6 +2457,133 @@ impl PhpIdeApp {
         }
     }
 
+    fn poll_routed_requests(&mut self) {
+        for (key, result) in self.pending_requests.poll() {
+            let current_revision = self
+                .ws
+                .buffers
+                .iter()
+                .find(|buffer| buffer.path.as_deref() == Some(key.path.as_path()))
+                .map(|buffer| buffer.document.revision());
+            if !key.is_current(&key.path, current_revision.unwrap_or(u64::MAX)) {
+                self.logger.info(
+                    Component::Lsp,
+                    &Correlation::session(self.session).with_document(key.path, key.revision),
+                    "stale_response_discarded",
+                    &[("operation", &format!("{:?}", key.operation))],
+                );
+                continue;
+            }
+            match key.operation {
+                routing::RequestOperation::Definition
+                | routing::RequestOperation::Implementation
+                | routing::RequestOperation::TypeDefinition => {
+                    let locations = intelligence::parse_locations(&result);
+                    if let Some(location) = locations.first() {
+                        self.ws
+                            .open_file_at(&location.path, location.line0, location.col0);
+                    }
+                }
+                routing::RequestOperation::Hints => {
+                    if active_path_matches(&self.ws, &key.path, key.revision) {
+                        let parsed = parse_inlay_hints(&result);
+                        self.hints.apply(hints::HintResponse {
+                            revision: hints::Revision(key.revision),
+                            hints: parsed,
+                            status: result
+                                .is_null()
+                                .then(|| "servidor sem inlay hints".to_string()),
+                        });
+                        self.hints_path = Some(key.path);
+                    }
+                }
+                routing::RequestOperation::Usages => {
+                    if active_path_matches(&self.ws, &key.path, key.revision) {
+                        self.handle_usages_result(result);
+                    }
+                }
+            }
+        }
+    }
+
+    fn poll_hints(&mut self) {
+        if !self.settings.inlay_hints {
+            if self.hints.current.is_some() {
+                self.hints.invalidate();
+            }
+            self.hints_path = None;
+            return;
+        }
+        let Some(buffer) = self.ws.active_buffer() else {
+            return;
+        };
+        let Some(path) = buffer.path.clone() else {
+            return;
+        };
+        let revision = buffer.document.revision();
+        let line_count = buffer.document.line_count();
+        let Some((client, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path) else {
+            return;
+        };
+        if !matches!(client.status(), LspStatus::Running(_)) {
+            return;
+        }
+        let key = routing::RequestKey {
+            origin,
+            operation: routing::RequestOperation::Hints,
+            path: path.clone(),
+            revision,
+        };
+        let cached = self.hints_path.as_ref() == Some(&path)
+            && self.hints.current == Some(hints::Revision(revision));
+        if cached || self.pending_requests.contains(&key) {
+            return;
+        }
+        let end_line = line_count.saturating_sub(1) as u64;
+        let receiver = client.request(
+            "textDocument/inlayHint",
+            serde_json::json!({
+                "textDocument": { "uri": phpide_lsp::path_to_uri(&path) },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": end_line, "character": 10_000 }
+                }
+            }),
+        );
+        self.pending_requests.insert(key, receiver);
+        self.hints.begin(hints::Revision(revision));
+    }
+
+    fn poll_completion(&mut self) {
+        if !self.completion.open {
+            return;
+        }
+        let path = self
+            .ws
+            .active_buffer()
+            .and_then(|buffer| buffer.path.clone());
+        let revision = self
+            .ws
+            .active_buffer()
+            .map(|buffer| buffer.document.revision())
+            .unwrap_or(0);
+        let origin = self.completion.origin;
+        if let Some(client) = lsp_client_for_origin(&self.lsp, &self.fe, origin) {
+            self.completion.poll(client, path.as_deref(), revision);
+        } else {
+            self.completion.close_without_client();
+        }
+    }
+
+    fn close_completion(&mut self) {
+        let origin = self.completion.origin;
+        if let Some(client) = lsp_client_for_origin(&self.lsp, &self.fe, origin) {
+            self.completion.close(client);
+        } else {
+            self.completion.close_without_client();
+        }
+    }
+
     fn request_definition(&mut self) {
         self.request_locations("definition", |lsp, path, line, col| {
             lsp.definition(path, line, col)
@@ -2466,24 +2595,15 @@ impl PhpIdeApp {
     /// gate por capability e descarte por revisão (T-PHP-001-04).
     fn request_locations(
         &mut self,
-        what: &str,
+        what: &'static str,
         call: impl Fn(&LspClient, &std::path::Path, usize, usize) -> mpsc::Receiver<Value>,
     ) {
         let Some(path0) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
         };
-        let lsp: &LspClient = if phpide_php::Php::is_php_file(&path0) {
-            let Some(l) = &self.lsp else {
-                self.ws.message = "LSP indisponível".to_string();
-                return;
-            };
-            l
-        } else {
-            let Some(s) = self.fe.for_path(&path0) else {
-                self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
-                return;
-            };
-            &s.client
+        let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path0) else {
+            self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
+            return;
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
@@ -2509,8 +2629,22 @@ impl PhpIdeApp {
             self.cursor_char.min(buf.document.len_chars()),
             phpide_core::PositionEncoding::Utf16,
         );
-        let rx = call(lsp, &path, line, col);
-        self.pending_def = Some((path, revision, rx));
+        let operation = match what {
+            "definition" => routing::RequestOperation::Definition,
+            "implementation" => routing::RequestOperation::Implementation,
+            "typeDefinition" => routing::RequestOperation::TypeDefinition,
+            _ => return,
+        };
+        let receiver = call(lsp, &path, line, col);
+        self.pending_requests.insert(
+            routing::RequestKey {
+                origin,
+                operation,
+                path,
+                revision,
+            },
+            receiver,
+        );
     }
 
     fn request_implementation(&mut self) {
@@ -2573,21 +2707,12 @@ impl PhpIdeApp {
             return;
         };
         let Some(path) = buf.path.clone() else { return };
-        let lsp: &LspClient = if phpide_php::Php::is_php_file(&path) {
-            let Some(l) = &self.lsp else {
-                self.ws.message = "LSP indisponível".to_string();
-                return;
-            };
-            l
-        } else {
-            let Some(s) = self.fe.for_path(&path) else {
-                self.ws.message = format!(
-                    "nenhum Language Server para {:?}",
-                    path.extension().and_then(|e| e.to_str()).unwrap_or("?")
-                );
-                return;
-            };
-            &s.client
+        let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path) else {
+            self.ws.message = format!(
+                "nenhum Language Server para {:?}",
+                path.extension().and_then(|e| e.to_str()).unwrap_or("?")
+            );
+            return;
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
             self.ws.message = "LSP ainda não está pronto".to_string();
@@ -2601,6 +2726,7 @@ impl PhpIdeApp {
         self.completion.begin(
             lsp,
             &path,
+            origin,
             line.saturating_sub(1),
             col.saturating_sub(1),
             word_start,
@@ -2613,25 +2739,9 @@ impl PhpIdeApp {
         if !self.completion.open {
             return;
         }
-        // Descarta respostas de revisões antigas (digitação durante o voo).
-        let revision = self
-            .ws
-            .active_buffer()
-            .map(|b| b.document.revision())
-            .unwrap_or(0);
-        if let Some(lsp) = &self.lsp {
-            self.completion.poll(lsp, revision);
-        }
-        if !self.completion.open {
-            return;
-        }
         let items = self.completion.filtered();
         if items.is_empty() && !self.completion.loading() {
-            if let Some(lsp) = &self.lsp {
-                self.completion.close(lsp);
-            } else {
-                self.completion.open = false;
-            }
+            self.close_completion();
             return;
         }
         let mut accept: Option<String> = None;
@@ -2721,11 +2831,7 @@ impl PhpIdeApp {
             });
 
         if close {
-            if let Some(lsp) = &self.lsp {
-                self.completion.close(lsp);
-            } else {
-                self.completion.open = false;
-            }
+            self.close_completion();
         }
         if let Some(label) = accept {
             self.accept_completion(ctx, &label);
@@ -2742,15 +2848,11 @@ impl PhpIdeApp {
             self.completion.selected_raw(idx).cloned()
         };
         let Some(buf) = self.ws.active_buffer_mut() else {
-            if let Some(lsp) = &self.lsp {
-                self.completion.close(lsp);
-            }
+            self.close_completion();
             return;
         };
         if buf.readonly {
-            if let Some(lsp) = &self.lsp {
-                self.completion.close(lsp);
-            }
+            self.close_completion();
             return;
         }
         let cursor = self.cursor_char.min(buf.document.len_chars());
@@ -2780,15 +2882,21 @@ impl PhpIdeApp {
         if let (Some(item), Some(path)) =
             (raw, self.ws.active_buffer().and_then(|b| b.path.clone()))
         {
-            if let Some(extra) = phpide_lsp::edits::parse_additional_edits(&item, &path) {
+            let version = self
+                .ws
+                .active_buffer()
+                .map(|b| b.document.revision() as i64);
+            if let Some(extra) =
+                phpide_lsp::edits::parse_additional_edits_at_version(&item, &path, version)
+            {
                 let label = format!("auto-import {}", item["label"].as_str().unwrap_or(""));
                 let mut store = WsStore(&mut self.ws);
-                if let Ok((files, edits, _)) =
-                    workspace_edit::apply(&mut store, &extra, &label, &mut self.refactor_undo)
-                {
-                    if files > 0 {
+                match workspace_edit::apply(&mut store, &extra, &label, &mut self.refactor_undo) {
+                    Ok((files, edits, _)) if files > 0 => {
                         self.ws.message = format!("{label} ({edits} editos, undo coeso)");
                     }
+                    Ok(_) => {}
+                    Err(error) => self.ws.message = error.to_string(),
                 }
             }
         }
@@ -2803,9 +2911,7 @@ impl PhpIdeApp {
             secondary: cc,
         }));
         st.store(ctx, id);
-        if let Some(lsp) = &self.lsp {
-            self.completion.close(lsp);
-        }
+        self.close_completion();
     }
 
     /// Análise estrutural do buffer ativo (tree-sitter). Diagnósticos locais só
@@ -3515,7 +3621,15 @@ impl PhpIdeApp {
             .active_buffer()
             .map(|b| b.document.revision())
             .unwrap_or(0);
-        let git_fresh = matches!(&self.git_markers, Some((p, r, _)) if p == &path && *r == rev);
+        let git_fresh = matches!(&self.git_markers, Some((p, _, _)) if p == &path)
+            && lens::markers_are_current(
+                self.git_markers
+                    .as_ref()
+                    .map(|(_, revision, _)| *revision)
+                    .unwrap_or(u64::MAX),
+                rev,
+                buffer_dirty,
+            );
         if !git_fresh && !buffer_dirty {
             let markers = phpide_vcs::markers_for_file(&self.ws.root, &path)
                 .map(|m| {
@@ -3526,31 +3640,55 @@ impl PhpIdeApp {
                 .unwrap_or_default();
             self.git_markers = Some((path.clone(), rev, markers));
         }
-        let git: Vec<(u32, bool)> = self
-            .git_markers
-            .as_ref()
-            .filter(|(p, _, _)| p == &path)
-            .map(|(_, _, mk)| {
-                mk.iter()
-                    .map(|(l, added)| ((map_line(*l as usize) as u32).saturating_add(1), *added))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let git_stale = !git_fresh
+            && self
+                .git_markers
+                .as_ref()
+                .filter(|(p, _, _)| p == &path)
+                .is_some();
+        let git: Vec<(u32, bool)> = if !git_fresh {
+            Vec::new()
+        } else {
+            self.git_markers
+                .as_ref()
+                .filter(|(p, _, _)| p == &path)
+                .map(|(_, _, mk)| {
+                    mk.iter()
+                        .map(|(l, added)| {
+                            ((map_line(*l as usize) as u32).saturating_add(1), *added)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        if git_stale {
+            ui.painter().text(
+                egui::pos2(viewport.right() - 150.0, viewport.top() + 4.0),
+                egui::Align2::LEFT_TOP,
+                "Git: atualize ao salvar",
+                egui::FontId::proportional(10.0),
+                ui.visuals().weak_text_color(),
+            );
+        }
         let markers = lens::aggregate_scrollbar_markers(&diags, &git, total_lines);
         editor_surface::paint_scroll_markers(ui, &geom, &markers);
         // Lens preview (UI-ED-006-02).
         if self.settings.lens_mode {
             if let Some(line0) = editor_surface::scrollbar_hover_line(ui, &geom, total_lines) {
-                self.lens_hover = Some((line0, std::time::Instant::now()));
+                let pointer = ui
+                    .ctx()
+                    .input(|input| input.pointer.hover_pos())
+                    .unwrap_or_else(|| geom.viewport.center());
+                self.lens_hover = Some((line0, pointer, std::time::Instant::now()));
             } else if self
                 .lens_hover
                 .as_ref()
-                .map(|(_, t)| t.elapsed() > std::time::Duration::from_millis(400))
+                .map(|(_, _, t)| t.elapsed() > std::time::Duration::from_millis(400))
                 .unwrap_or(false)
             {
                 self.lens_hover = None;
             }
-            if let Some((line0, _)) = self.lens_hover {
+            if let Some((line0, pointer, _)) = self.lens_hover {
                 let doc_line0 = match proj {
                     Some(p) => p.visual_to_doc.get(line0).copied().unwrap_or(line0),
                     None => line0,
@@ -3559,7 +3697,11 @@ impl PhpIdeApp {
                 let preview = lens::lens_preview(&doc_lines, doc_line0, 3);
                 egui::Area::new(egui::Id::new("lens-preview"))
                     .order(egui::Order::Foreground)
-                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-24.0, 80.0))
+                    .fixed_pos(lens::popup_position(
+                        pointer,
+                        viewport,
+                        egui::vec2(360.0, 168.0),
+                    ))
                     .show(ui.ctx(), |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
                             for l in &preview.lines {
@@ -3605,6 +3747,10 @@ impl PhpIdeApp {
                 return;
             }
 
+            let split_layout = self.groups.root_split();
+            macro_rules! primary_pane {
+                ($ui:expr) => {{
+                    let ui = $ui;
             // Salto pendente (palette, busca, problemas): posiciona cursor.
             let pending = self
                 .ws
@@ -3775,62 +3921,85 @@ impl PhpIdeApp {
                     }
                 }
             }
-            // Segundo painel do split (UI-ED-003-04): mesma Document/rope do
-            // buffer (texto, dirty e undo compartilhados), mas TextEdit com
-            // id/scroll/caret próprios. Neste recorte o layout empilha o
-            // segundo painel (o eixo fica registrado no modelo de groups
-            // para o layout lado a lado da próxima iteração).
-            let second = match &self.groups.root {
-                groups::GroupNode::Split { children, .. } => match &children[1] {
-                    groups::GroupNode::Leaf { views, .. } => {
-                        views.first().map(|v| v.buffer.clone())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
-            if let Some(key) = second {
-                let buf_idx = self.ws.buffers.iter().position(|b| {
-                    b.path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .as_deref()
-                        == Some(key.as_str())
-                });
-                if let Some(idx) = buf_idx {
-                    ui.separator();
-                    let (text2, readonly2) = {
-                        let b = &self.ws.buffers[idx];
-                        (b.document.text(), b.readonly)
-                    };
-                    let mut edited2 = text2.clone();
-                    egui::ScrollArea::vertical()
-                        .id_salt(("pane2", idx))
-                        .max_height(ui.available_height() * 0.45)
-                        .show(ui, |ui| {
-                            egui::TextEdit::multiline(&mut edited2)
-                                .id(egui::Id::new(("editor", idx, "pane2")))
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .interactive(!readonly2)
-                                .show(ui);
-                        });
-                    if edited2 != text2 {
-                        if let Some((at, removed, inserted)) = Self::diff_edit(&text2, &edited2) {
-                            let b = &mut self.ws.buffers[idx];
-                            if removed > 0 {
-                                b.delete(at, at + removed);
+            }}}
+            macro_rules! secondary_pane {
+                ($ui:expr) => {{
+                    let ui = $ui;
+                    let second = match &self.groups.root {
+                        groups::GroupNode::Split { children, .. } => match &children[1] {
+                            groups::GroupNode::Leaf { views, .. } => {
+                                views.first().map(|v| v.buffer.clone())
                             }
-                            if !inserted.is_empty() {
-                                b.insert(at, &inserted);
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(key) = second {
+                        let buf_idx = self.ws.buffers.iter().position(|b| {
+                            b.path
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .as_deref()
+                                == Some(key.as_str())
+                        });
+                        if let Some(idx) = buf_idx {
+                            ui.separator();
+                            let (text2, readonly2) = {
+                                let b = &self.ws.buffers[idx];
+                                (b.document.text(), b.readonly)
+                            };
+                            let mut edited2 = text2.clone();
+                            if let Some((_, sizes)) = self.groups.root_split() {
+                                let mut first = sizes[0];
+                                if ui
+                                    .add(egui::Slider::new(&mut first, 0.1..=0.9).text("split"))
+                                    .changed()
+                                {
+                                    self.groups.resize_root(first);
+                                }
+                            }
+                            egui::ScrollArea::vertical()
+                                .id_salt(("pane2", idx))
+                                .max_height(ui.available_height())
+                                .show(ui, |ui| {
+                                    egui::TextEdit::multiline(&mut edited2)
+                                        .id(egui::Id::new(("editor", idx, "pane2")))
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_width(f32::INFINITY)
+                                        .interactive(!readonly2)
+                                        .show(ui);
+                                });
+                            if edited2 != text2 {
+                                if let Some((at, removed, inserted)) =
+                                    Self::diff_edit(&text2, &edited2)
+                                {
+                                    let b = &mut self.ws.buffers[idx];
+                                    if removed > 0 {
+                                        b.delete(at, at + removed);
+                                    }
+                                    if !inserted.is_empty() {
+                                        b.insert(at, &inserted);
+                                    }
+                                }
+                            }
+                            // Fechar o painel: remove a vista do segundo grupo.
+                            if ui.small_button("✕ Unsplit").clicked() {
+                                while self.groups.close_active_in_root_second().is_some() {}
                             }
                         }
                     }
-                    // Fechar o painel: remove a vista do segundo grupo.
-                    if ui.small_button("✕ Unsplit").clicked() {
-                        while self.groups.close_active_in_root_second().is_some() {}
-                    }
-                }
+                }};
+            }
+            if let Some((axis, sizes)) = split_layout {
+                let panels = groups::split_rect(ui.available_rect_before_wrap(), axis, sizes);
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panels[0]), |ui| {
+                    primary_pane!(ui)
+                });
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panels[1]), |ui| {
+                    secondary_pane!(ui)
+                });
+            } else {
+                primary_pane!(ui);
             }
         });
         if want_completion && !self.completion.open {
@@ -3859,30 +4028,79 @@ impl PhpIdeApp {
 struct WsStore<'a>(&'a mut phpide_core::Workspace);
 
 impl workspace_edit::DocStore for WsStore<'_> {
-    fn text(&self, path: &std::path::Path) -> Option<String> {
-        self.0
+    fn text(&self, path: &std::path::Path) -> Result<String, phpide_core::IdeError> {
+        if let Some(buffer) = self
+            .0
             .buffers
             .iter()
-            .find(|b| b.path.as_deref() == Some(path))
-            .map(|b| b.document.text())
-            .or_else(|| std::fs::read_to_string(path).ok())
+            .find(|buffer| buffer.path.as_deref() == Some(path))
+        {
+            return Ok(buffer.document.text());
+        }
+        std::fs::read_to_string(path).map_err(|error| {
+            phpide_core::IdeError::from_io(
+                Component::Lsp,
+                "workspace_edit_read",
+                &path.display().to_string(),
+                &error,
+            )
+        })
     }
-    fn set_text(&mut self, path: &std::path::Path, text: &str) {
-        if let Some(b) = self
+
+    fn set_text(
+        &mut self,
+        path: &std::path::Path,
+        text: &str,
+    ) -> Result<(), phpide_core::IdeError> {
+        if let Some(buffer) = self
             .0
             .buffers
             .iter_mut()
-            .find(|b| b.path.as_deref() == Some(path))
+            .find(|buffer| buffer.path.as_deref() == Some(path))
         {
-            let len = b.document.len_chars();
-            b.document.delete(0, len);
-            b.document.insert(0, text);
-        } else {
-            let _ = phpide_core::fsutil::write_atomic(path, text.as_bytes());
+            buffer.replace_all(text);
+            return Ok(());
         }
+        phpide_core::fsutil::write_atomic(path, text.as_bytes()).map_err(|error| {
+            phpide_core::IdeError::from_io(
+                Component::Lsp,
+                "workspace_edit_write",
+                &path.display().to_string(),
+                &error,
+            )
+        })
     }
-    fn lsp_version(&self, _path: &std::path::Path) -> Option<i64> {
-        None
+
+    fn lsp_version(&self, path: &std::path::Path) -> Option<i64> {
+        self.0
+            .buffers
+            .iter()
+            .find(|buffer| buffer.path.as_deref() == Some(path))
+            .map(|buffer| buffer.document.revision() as i64)
+    }
+}
+
+fn lsp_client_for_path<'a>(
+    php: &'a Option<LspClient>,
+    fe: &'a fe_servers::FeServers,
+    path: &Path,
+) -> Option<(&'a LspClient, routing::LspOrigin)> {
+    if phpide_php::Php::is_php_file(path) {
+        return php.as_ref().map(|client| (client, routing::LspOrigin::Php));
+    }
+    let server = fe.for_path(path)?;
+    let origin = routing::LspOrigin::from_server_name(server.name)?;
+    Some((&server.client, origin))
+}
+
+fn lsp_client_for_origin<'a>(
+    php: &'a Option<LspClient>,
+    fe: &'a fe_servers::FeServers,
+    origin: routing::LspOrigin,
+) -> Option<&'a LspClient> {
+    match origin {
+        routing::LspOrigin::Php => php.as_ref(),
+        _ => fe.for_origin(origin).map(|server| &server.client),
     }
 }
 
@@ -4170,7 +4388,8 @@ mod gate_ui_ed {
     }
 }
 
-#[cfg(test)]
+// Frontend language servers are frozen until v1.0 (see `scope`).
+#[cfg(all(test, feature = "experimental"))]
 mod gate_fe {
     //! Gate Fase 7 — Frontend essencial: projeto Vite + TypeScript real,
     //! editado/diagnosticado/navegado pelos Language Servers reais
@@ -4375,6 +4594,251 @@ mod gate_fe {
         let _td = wait_value(rx, std::time::Duration::from_secs(10));
     }
 
+    fn pump_app(app: &mut crate::PhpIdeApp) {
+        app.poll_lsp();
+        app.poll_fe();
+        app.poll_routed_requests();
+        app.poll_hints();
+        app.poll_completion();
+    }
+
+    fn wait_app(
+        label: &str,
+        timeout: std::time::Duration,
+        app: &mut crate::PhpIdeApp,
+        mut ready: impl FnMut(&crate::PhpIdeApp) -> bool,
+    ) {
+        let started = std::time::Instant::now();
+        while started.elapsed() < timeout {
+            pump_app(app);
+            if ready(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        panic!("timeout aguardando {label}");
+    }
+
+    fn typescript_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("src");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"routing-gate","scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"target":"ES2020","module":"ESNext"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("math.ts"),
+            "export function soma(a: number, b: number): number { return a + b; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("main.ts"),
+            "import { soma } from './math';\nconst total: number = soma(1, 2);\n",
+        )
+        .unwrap();
+        (dir, root.join("main.ts"), root.join("math.ts"))
+    }
+
+    #[test]
+    fn gate_application_typescript_without_php_completion_navigation_and_hints() {
+        if !have("typescript-language-server") {
+            panic!("typescript-language-server obrigatório para este gate");
+        }
+        let (_dir, main, math) = typescript_fixture();
+        let root = main.parent().unwrap().to_path_buf();
+        let mut app = crate::PhpIdeApp::new(root, false, vec![main.clone()]);
+        app.lsp = None;
+        app.lsp_init = None;
+        wait_app(
+            "inicialização",
+            std::time::Duration::from_secs(30),
+            &mut app,
+            |app| {
+                app.fe
+                    .ts
+                    .as_ref()
+                    .map(|server| server.initialized)
+                    .unwrap_or(false)
+            },
+        );
+        assert!(app.lsp.is_none());
+
+        app.cursor_char = 10;
+        app.trigger_completion();
+        assert_eq!(app.completion.origin, crate::routing::LspOrigin::TypeScript);
+        wait_app(
+            "completion",
+            std::time::Duration::from_secs(15),
+            &mut app,
+            |app| !app.completion.loading(),
+        );
+        app.completion.query.clear();
+        assert!(!app.completion.filtered().is_empty());
+        app.close_completion();
+
+        app.cursor_char = std::fs::read_to_string(&main)
+            .unwrap()
+            .find("./math")
+            .unwrap()
+            + 3;
+        app.request_definition();
+        assert!(
+            app.pending_requests
+                .has_operation(crate::routing::RequestOperation::Definition),
+            "{}",
+            app.ws.message
+        );
+        wait_app(
+            "definition",
+            std::time::Duration::from_secs(15),
+            &mut app,
+            |app| {
+                app.ws
+                    .active_buffer()
+                    .and_then(|buffer| buffer.path.as_deref())
+                    == Some(math.as_path())
+            },
+        );
+
+        app.ws.open_file(&main);
+        app.cursor_char = std::fs::read_to_string(&main)
+            .unwrap()
+            .find("total")
+            .unwrap();
+        app.request_type_definition();
+        wait_app(
+            "typeDefinition",
+            std::time::Duration::from_secs(15),
+            &mut app,
+            |app| {
+                !app.pending_requests
+                    .has_operation(crate::routing::RequestOperation::TypeDefinition)
+            },
+        );
+        let revision = app.ws.active_buffer().unwrap().document.revision();
+        wait_app(
+            "hints",
+            std::time::Duration::from_secs(15),
+            &mut app,
+            |app| {
+                app.hints_path.as_deref() == Some(main.as_path())
+                    && app.hints.current == Some(crate::hints::Revision(revision))
+            },
+        );
+
+        app.request_definition();
+        app.ws
+            .active_buffer_mut()
+            .unwrap()
+            .insert(0, "// edição local\n");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        pump_app(&mut app);
+        assert_eq!(
+            app.ws
+                .active_buffer()
+                .and_then(|buffer| buffer.path.as_deref()),
+            Some(main.as_path()),
+            "resposta de definição obsoleta não pode navegar"
+        );
+    }
+
+    #[test]
+    fn gate_application_php_and_typescript_requests_stay_on_their_clients() {
+        if !have("typescript-language-server") || !have("intelephense") {
+            panic!("Intelephense e TypeScript são obrigatórios para este gate");
+        }
+        let (_dir, main, math) = typescript_fixture();
+        let root = main.parent().unwrap().to_path_buf();
+        let php = root.join("a.php");
+        std::fs::write(&php, "<?php\nclass Greeter { public function greet(): void {} }\n$g = new Greeter();\n$g->greet();\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party"),
+            root.join("third_party"),
+        )
+        .unwrap();
+        let mut app = crate::PhpIdeApp::new(root, false, vec![main.clone(), php.clone()]);
+        wait_app(
+            "inicialização",
+            std::time::Duration::from_secs(30),
+            &mut app,
+            |app| {
+                app.lsp
+                    .as_ref()
+                    .map(|client| matches!(client.status(), LspStatus::Running(_)))
+                    .unwrap_or(false)
+                    && app
+                        .fe
+                        .ts
+                        .as_ref()
+                        .map(|server| server.initialized)
+                        .unwrap_or(false)
+            },
+        );
+
+        app.ws.open_file_ex(&main, false);
+        app.ws.active_buffer_mut().unwrap().preview = false;
+        pump_app(&mut app);
+        app.cursor_char = std::fs::read_to_string(&main)
+            .unwrap()
+            .find("./math")
+            .unwrap()
+            + 3;
+        app.request_definition();
+        app.ws.open_file_ex(&php, false);
+        app.ws.active_buffer_mut().unwrap().preview = false;
+        pump_app(&mut app);
+        app.cursor_char = std::fs::read_to_string(&php)
+            .unwrap()
+            .rfind("greet")
+            .unwrap();
+        app.request_definition();
+        assert!(
+            app.pending_requests.len() >= 2,
+            "PHP e TS devem permanecer pendentes juntos"
+        );
+        wait_app(
+            "multi definitions",
+            std::time::Duration::from_secs(20),
+            &mut app,
+            |app| {
+                !app.pending_requests
+                    .has_operation(crate::routing::RequestOperation::Definition)
+            },
+        );
+        assert!(
+            app.ws
+                .buffers
+                .iter()
+                .any(|buffer| buffer.path.as_deref() == Some(math.as_path())),
+            "resposta TS não chegou a math.ts: {:?}",
+            app.ws
+                .buffers
+                .iter()
+                .map(|buffer| &buffer.path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            app.ws
+                .buffers
+                .iter()
+                .any(|buffer| buffer.path.as_deref() == Some(php.as_path())),
+            "resposta PHP não foi consumida: {:?}",
+            app.ws
+                .buffers
+                .iter()
+                .map(|buffer| &buffer.path)
+                .collect::<Vec<_>>()
+        );
+    }
+
     fn wait_value(
         rx: std::sync::mpsc::Receiver<serde_json::Value>,
         timeout: std::time::Duration,
@@ -4390,8 +4854,11 @@ mod gate_fe {
     }
 }
 
+#[cfg(test)]
 mod gate_tests {
-    //! Gate do recorte UI-ED-000 e verificação do modo offline.
+    // Gate do recorte UI-ED-000 e verificação do modo offline.
+    use crate::DIRTY_BUTTON_RECTS;
+    use eframe::App as _;
 
     /// Modo offline (sem LSP): highlight sintático e diagnósticos estruturais
     /// locais continuam funcionais — são a degradação prevista pelo NFR
@@ -4458,5 +4925,101 @@ mod gate_tests {
         let v = serde_json::json!({ "zoom": s.zoom });
         let back = v["zoom"].as_f64().unwrap() as f32;
         assert_eq!(crate::settings::clamp_zoom(back), 1.7);
+    }
+
+    fn click_pending_close_button(
+        action: &str,
+    ) -> (crate::PhpIdeApp, tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let file = root.join("b.php");
+        std::fs::write(&file, "<?php\n").unwrap();
+        let other = root.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let mut app = crate::PhpIdeApp::new(root.clone(), false, vec![file.clone()]);
+        app.zoom = 1.0;
+        app.ws
+            .active_buffer_mut()
+            .unwrap()
+            .insert(0, "// alteração\n");
+        app.pending_close = Some(crate::PendingClose::Project(other));
+        let mut frame = eframe::Frame::_new_kittest();
+        let context = eframe::egui::Context::default();
+        let input = eframe::egui::RawInput {
+            screen_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::pos2(0.0, 0.0),
+                eframe::egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(input, |ctx| app.update(ctx, &mut frame));
+        let _ = context.run(eframe::egui::RawInput::default(), |ctx| {
+            app.update(ctx, &mut frame)
+        });
+        let index = match action {
+            "save" => 0,
+            "discard" => 1,
+            "cancel" => 2,
+            _ => unreachable!(),
+        };
+        let rect =
+            DIRTY_BUTTON_RECTS.with(|rects| rects.get().expect("botões renderizados")[index]);
+        let (x, y) = (rect.center().x, rect.center().y);
+        let press = eframe::egui::RawInput {
+            screen_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::pos2(0.0, 0.0),
+                eframe::egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![
+                eframe::egui::Event::PointerMoved(eframe::egui::pos2(x, y)),
+                eframe::egui::Event::PointerButton {
+                    pos: eframe::egui::pos2(x, y),
+                    button: eframe::egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: eframe::egui::Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let _ = context.run(press, |ctx| app.update(ctx, &mut frame));
+        let release = eframe::egui::RawInput {
+            screen_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::pos2(0.0, 0.0),
+                eframe::egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![eframe::egui::Event::PointerButton {
+                pos: eframe::egui::pos2(x, y),
+                button: eframe::egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: eframe::egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let _ = context.run(release, |ctx| app.update(ctx, &mut frame));
+        (app, dir, file)
+    }
+
+    #[test]
+    fn project_close_buttons_are_clickable_and_cancel_keeps_current_project() {
+        let (app, _, _) = click_pending_close_button("cancel");
+        assert!(app.pending_close.is_none(), "Cancelar não foi roteado");
+        assert!(!app.ws.root.ends_with("other"));
+    }
+
+    #[test]
+    fn project_close_discard_switches_project_without_saving() {
+        let (app, _, _) = click_pending_close_button("discard");
+        assert!(app.pending_close.is_none(), "Não Salvar não foi roteado");
+        assert!(app.ws.root.ends_with("other"));
+    }
+
+    #[test]
+    fn project_close_save_persists_and_switches_project() {
+        let (app, _dir, file) = click_pending_close_button("save");
+        assert!(app.pending_close.is_none(), "Salvar não foi roteado");
+        assert!(app.ws.root.ends_with("other"));
+        let text = std::fs::read_to_string(file).unwrap();
+        assert!(text.contains("// alteração"));
+        assert!(app.ws.buffers.iter().all(|buffer| !buffer.dirty));
     }
 }

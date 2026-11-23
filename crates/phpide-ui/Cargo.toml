@@ -11,6 +11,7 @@ notify = "7"
 serde_json = "1"
 libc = "0.2"
 phpide-core = { path = "../phpide-core" }
+phpide-db = { path = "../phpide-db" }
 phpide-dbgp = { path = "../phpide-dbgp" }
 phpide-exec = { path = "../phpide-exec" }
 phpide-lsp = { path = "../phpide-lsp" }
@@ -19,6 +20,13 @@ phpide-vcs = { path = "../phpide-vcs" }
 phpide-icons = { path = "../phpide-icons" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
+
+[features]
+# Features frozen until v1.0 (Database Tools, frontend language servers,
+# Services, Remote Host, Deployment, Plugins/Learn/Remote Development pages).
+# The code stays compiled and tested in CI with `--features experimental`,
+# but is hidden from the default build.
+experimental = []
 
 [dev-dependencies]
 tempfile = "3"
@@ -29,4 +37,8 @@ harness = false
 
 [[bench]]
 name = "viewport"
+harness = false
+
+[[bench]]
+name = "editor_pipeline"
 harness = false

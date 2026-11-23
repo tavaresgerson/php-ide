@@ -13,7 +13,7 @@ use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-use crate::proto::{attr, read_message, DbgpSession, DEFAULT_PORT};
+use crate::proto::{read_message, response_element, DbgpSession, DEFAULT_PORT};
 
 /// IDE key padrão da phpide.
 pub const DEFAULT_IDE_KEY: &str = "phpide";
@@ -34,10 +34,11 @@ pub fn parse_init(xml: &str) -> Option<InitInfo> {
     if !xml.contains("<init") {
         return None;
     }
+    let root = response_element(xml)?;
     Some(InitInfo {
-        fileuri: attr(xml, "fileuri").unwrap_or("").to_string(),
-        idekey: attr(xml, "idekey").map(str::to_string),
-        appid: attr(xml, "appid").unwrap_or("").to_string(),
+        fileuri: root.attr("fileuri").unwrap_or("").to_string(),
+        idekey: root.attr("idekey").map(str::to_string),
+        appid: root.attr("appid").unwrap_or("").to_string(),
     })
 }
 

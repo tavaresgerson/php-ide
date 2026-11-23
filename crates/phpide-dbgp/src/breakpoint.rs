@@ -230,7 +230,9 @@ impl BreakpointStore {
                 Ok(xml) => {
                     let success = crate::proto::parse_response(&xml).is_some_and(|r| r.success);
                     if success {
-                        let backend_id = crate::proto::attr(&xml, "id").unwrap_or("").to_string();
+                        let backend_id = crate::proto::response_element(&xml)
+                            .and_then(|root| root.attr("id").map(str::to_string))
+                            .unwrap_or_default();
                         if let Some(bp) = self.get_mut(local_id) {
                             bp.backend_id = Some(backend_id.clone());
                             bp.status = BreakpointStatus::Verified;

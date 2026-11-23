@@ -88,6 +88,15 @@ impl FeServers {
         }
     }
 
+    pub fn for_origin(&self, origin: crate::routing::LspOrigin) -> Option<&FeServer> {
+        match origin {
+            crate::routing::LspOrigin::Php => None,
+            crate::routing::LspOrigin::TypeScript => self.ts.as_ref(),
+            crate::routing::LspOrigin::Html => self.html.as_ref(),
+            crate::routing::LspOrigin::Css => self.css.as_ref(),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn for_path_mut(&mut self, path: &Path) -> Option<&mut FeServer> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();

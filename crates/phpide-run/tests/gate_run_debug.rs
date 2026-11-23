@@ -208,7 +208,7 @@ fn gate_executa_debuga_e_testa_php_real() {
             ),
             (
                 "run",
-                r#"<response command="run" transaction_id="3" status="break" reason="ok"><xdebug:message filename="file:///gate.php" lineno="2"/></response>"#,
+                r#"<response xmlns:xdebug="urn:debugger_protocol_v1" command="run" transaction_id="3" status="break" reason="ok"><xdebug:message filename="file:///gate.php" lineno="2"/></response>"#,
             ),
             (
                 "stack_get",

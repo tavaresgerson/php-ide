@@ -18,7 +18,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::proto::{attr, DbgpSession};
+use crate::proto::{elements, DbgpSession};
 
 /// Frame de pilha (stack_get).
 #[derive(Debug, Clone, PartialEq)]
@@ -103,17 +103,19 @@ impl ContinueCommand {
 
 /// Parse do stack_get → frames (arquivos convertidos de fileuri).
 pub fn parse_stack(xml: &str, to_local: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Frame> {
-    xml.match_indices("<stack ")
-        .filter_map(|(i, _)| {
-            let chunk = &xml[i..];
+    elements(xml, "stack")
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|element| {
             Some(Frame {
-                level: attr(chunk, "level")?.parse().ok()?,
-                name: attr(chunk, "where").unwrap_or("?").to_string(),
-                file: attr(chunk, "filename").and_then(to_local),
-                line: attr(chunk, "lineno")
-                    .and_then(|l| l.parse().ok())
+                level: element.attr("level")?.parse().ok()?,
+                name: element.attr("where").unwrap_or("?").to_string(),
+                file: element.attr("filename").and_then(to_local),
+                line: element
+                    .attr("lineno")
+                    .and_then(|line| line.parse().ok())
                     .unwrap_or(0),
-                kind: attr(chunk, "type").unwrap_or("file").to_string(),
+                kind: element.attr("type").unwrap_or("file").to_string(),
             })
         })
         .collect()
@@ -124,38 +126,29 @@ pub fn parse_stack(xml: &str, to_local: &dyn Fn(&str) -> Option<PathBuf>) -> Vec
 /// Valores com `encoding="base64"` (o Xdebug 3 os usa para strings) são
 /// decodificados para o texto original.
 pub fn parse_context(xml: &str) -> Vec<Variable> {
-    let mut out = Vec::new();
-    for (i, _) in xml.match_indices("<property ") {
-        let chunk = &xml[i..];
-        let tag_end = chunk.find('>').map(|p| p + 1).unwrap_or(chunk.len());
-        let own_tag = &chunk[..tag_end];
-        let mut value = cdata_of(chunk);
-        // `encoding` olha só a tag própria: o atributo de um <property> irmão
-        // mais adiante no XML não pode contaminar este valor.
-        if attr(own_tag, "encoding").is_some_and(|e| e == "base64") {
-            value = value
-                .as_deref()
-                .and_then(base64_decode)
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-        }
-        out.push(Variable {
-            name: attr(chunk, "name").unwrap_or("?").to_string(),
-            fullname: attr(chunk, "fullname").unwrap_or("?").to_string(),
-            type_name: attr(chunk, "type").unwrap_or("uninitialized").to_string(),
-            value,
-            num_children: attr(chunk, "numchildren")
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0),
-        });
-    }
-    out
-}
-
-/// Extrai o primeiro CDATA do elemento (`<property ...><![CDATA[x]]>`).
-fn cdata_of(chunk: &str) -> Option<String> {
-    let start = chunk.find("<![CDATA[")? + "<![CDATA[".len();
-    let end = chunk[start..].find("]]>")? + start;
-    Some(chunk[start..end].to_string())
+    elements(xml, "property")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|element| {
+            let mut value = element.text.clone();
+            if element.attr("encoding") == Some("base64") {
+                value = value
+                    .as_deref()
+                    .and_then(base64_decode)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Variable {
+                name: element.attr("name").unwrap_or("?").to_string(),
+                fullname: element.attr("fullname").unwrap_or("?").to_string(),
+                type_name: element.attr("type").unwrap_or("uninitialized").to_string(),
+                value,
+                num_children: element
+                    .attr("numchildren")
+                    .and_then(|count| count.parse().ok())
+                    .unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 /// Watch registrado (avaliado a cada parada; invalidado após Resume).
@@ -279,15 +272,18 @@ impl DbgpSession {
 
 /// Extrai o motivo da parada do XML do run/step.
 fn stop_reason_from(xml: &str, to_local: &dyn Fn(&str) -> Option<PathBuf>) -> StopReason {
-    if let Some(msg_idx) = xml.find("<xdebug:message ") {
-        let chunk = &xml[msg_idx..];
-        let message = attr(chunk, "exception").map(str::to_string);
-        if let Some(message) = message {
-            return StopReason::Exception(message);
+    if let Some(element) = elements(xml, "message")
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+    {
+        if let Some(message) = element.attr("exception") {
+            return StopReason::Exception(message.to_string());
         }
-        let file = attr(chunk, "filename").and_then(to_local);
-        let line = attr(chunk, "lineno")
-            .and_then(|l| l.parse().ok())
+        let file = element.attr("filename").and_then(to_local);
+        let line = element
+            .attr("lineno")
+            .and_then(|line| line.parse().ok())
             .unwrap_or(0);
         if let Some(file) = file {
             return StopReason::Location { file, line };
@@ -386,7 +382,7 @@ mod tests {
 
     #[test]
     fn stop_reason_break_location() {
-        let xml = r#"<response command="run" transaction_id="3" status="break" reason="ok"><xdebug:message filename="file:///proj/index.php" lineno="7"/></response>"#;
+        let xml = r#"<response xmlns:xdebug="urn:debugger_protocol_v1" command="run" transaction_id="3" status="break" reason="ok"><xdebug:message filename="file:///proj/index.php" lineno="7"/></response>"#;
         let reason = stop_reason_from(xml, &identity_local);
         assert_eq!(
             reason,
@@ -399,7 +395,7 @@ mod tests {
 
     #[test]
     fn stop_reason_exception_message() {
-        let xml = r#"<response command="run" transaction_id="3" status="break" reason="exception"><xdebug:message exception="DivisionByZeroError" filename="file:///proj/x.php" lineno="9"/></response>"#;
+        let xml = r#"<response xmlns:xdebug="urn:debugger_protocol_v1" command="run" transaction_id="3" status="break" reason="exception"><xdebug:message exception="DivisionByZeroError" filename="file:///proj/x.php" lineno="9"/></response>"#;
         let reason = stop_reason_from(xml, &identity_local);
         assert_eq!(
             reason,

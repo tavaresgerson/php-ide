@@ -225,30 +225,74 @@ pub fn commit(before: &FoldProjection, after_text: &str, doc_text: &str) -> Proj
     let after_mid = &after_lines[pre..after_lines.len() - suf];
 
     // Região do documento afetada: mapeia o início do hunk para doc_line.
-    let Some(&first_visual) = before.visual_to_doc.get(pre) else {
-        return ProjectedCommit::Unchanged;
+    let first_visual = before.visual_to_doc.get(pre).copied().unwrap_or_else(|| {
+        before
+            .visual_to_doc
+            .last()
+            .copied()
+            .map(|line| line + 1)
+            .unwrap_or(0)
+    });
+    let doc_lines: Vec<&str> = doc_text.lines().collect();
+    let start_doc = first_visual;
+    let end_doc = if before_mid.is_empty() {
+        start_doc
+    } else {
+        let last_visual = pre + before_mid.len() - 1;
+        before
+            .bands
+            .iter()
+            .find(|band| band.visual_line0 == last_visual)
+            .map(|band| band.doc_end + 1)
+            .or_else(|| before.visual_to_doc.get(last_visual).map(|line| line + 1))
+            .unwrap_or(start_doc)
     };
-    // Hunk tocando banda? Descarta (read-only).
-    let band_hit = before
+    if start_doc > end_doc || end_doc > doc_lines.len() {
+        return ProjectedCommit::Unchanged;
+    }
+    let bands: Vec<_> = before
         .bands
         .iter()
-        .any(|b| (pre..=pre + before_mid.len().saturating_sub(1)).contains(&b.visual_line0));
-    if band_hit {
+        .filter(|band| (pre..pre + before_mid.len()).contains(&band.visual_line0))
+        .collect();
+    let before_markers = before_mid
+        .iter()
+        .filter(|line| line.starts_with(FOLD_MARKER))
+        .count();
+    let after_markers = after_mid
+        .iter()
+        .filter(|line| line.starts_with(FOLD_MARKER))
+        .count();
+    if bands.len() != before_markers || before_markers != after_markers {
         return ProjectedCommit::Unchanged;
     }
-    let doc_lines: Vec<&str> = doc_text.lines().collect();
-    let mut new_doc: Vec<String> = doc_lines.iter().map(|s| s.to_string()).collect();
-    let start_doc = first_visual;
-    let remove_count = before_mid.len();
-    let inserted: Vec<String> = after_mid.iter().map(|s| s.to_string()).collect();
-    if start_doc > new_doc.len() {
-        return ProjectedCommit::Unchanged;
+    let mut replacement = Vec::new();
+    for line in after_mid {
+        if line.starts_with(FOLD_MARKER) {
+            let Some(band) = bands.iter().find(|band| {
+                before_lines
+                    .get(band.visual_line0)
+                    .is_some_and(|before_line| before_line == line)
+            }) else {
+                return ProjectedCommit::Unchanged;
+            };
+            replacement.extend(
+                doc_lines[band.doc_start..=band.doc_end]
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
+        } else {
+            replacement.push(line.to_string());
+        }
     }
-    new_doc.splice(
-        start_doc..(start_doc + remove_count).min(new_doc.len()),
-        inserted,
-    );
-    ProjectedCommit::NewDocText(new_doc.join("\n"))
+    let mut new_doc: Vec<String> = doc_lines.iter().map(|line| line.to_string()).collect();
+    new_doc.splice(start_doc..end_doc, replacement);
+    let trailing_newline = doc_text.ends_with('\n');
+    let mut text = new_doc.join("\n");
+    if trailing_newline {
+        text.push('\n');
+    }
+    ProjectedCommit::NewDocText(text)
 }
 
 /// Estado de folding de um buffer (UI-ED-002-02).
@@ -389,6 +433,45 @@ mod tests {
         // Unfold (projeção identidade) não é usado aqui; visuals vazio = doc cru.
         let id = project(doc, &FoldVisuals::default());
         assert_eq!(id.text, doc);
+    }
+
+    #[test]
+    fn commit_handles_nearby_hunks_multiline_and_eof_without_touching_folds() {
+        let doc = "before\nfn multiline() {\n  $s = 'first\nsecond';\n}\nafter\n";
+        let projection = project(doc, &FoldVisuals::new(&[(1, 3)]));
+        let edited = projection.text.replacen("before", "before\ninserted", 1);
+        let ProjectedCommit::NewDocText(updated) = commit(&projection, &edited, doc) else {
+            panic!("edição antes da dobra deveria ser aceita")
+        };
+        assert!(
+            updated.starts_with("before\ninserted\nfn multiline"),
+            "{updated}"
+        );
+        assert!(updated.contains("$s = 'first\nsecond'"));
+        assert!(updated.ends_with("after\n"));
+
+        let appended = format!("{edited}eof\n");
+        let ProjectedCommit::NewDocText(updated) = commit(&projection, &appended, doc) else {
+            panic!("append no EOF deveria ser aceito")
+        };
+        assert!(updated.ends_with("after\neof\n"), "{updated}");
+        assert!(updated.contains("fn multiline()"));
+
+        let multiline = projection
+            .text
+            .replacen("before", "before\n  $s = 'first\nsecond';", 1);
+        let ProjectedCommit::NewDocText(updated) = commit(&projection, &multiline, doc) else {
+            panic!("string multilinha deveria ser aceita")
+        };
+        assert!(
+            updated.starts_with("before\n  $s = 'first\nsecond';"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("fn multiline() {\n  $s = 'first\nsecond';"),
+            "{updated}"
+        );
+        assert!(updated.ends_with("after\n"));
     }
 
     #[test]

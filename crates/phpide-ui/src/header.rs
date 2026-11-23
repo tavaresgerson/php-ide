@@ -64,7 +64,8 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             ui.close_menu();
         }
         if ui.button("Fechar aba\tCtrl+F4").clicked() {
-            app.ws.close_active();
+            // Same path as Ctrl+F4: a dirty buffer asks before closing.
+            app.request_close_active();
             ui.close_menu();
         }
         ui.separator();
@@ -84,6 +85,9 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         ui.separator();
         ui.label(egui::RichText::new("Ver").weak().small());
         for tw in ToolWindow::ALL {
+            if !tw.is_available() {
+                continue;
+            }
             let mut vis = app.tw.is_visible(tw);
             let text = format!(
                 "{} Tool Window: {}\t{}",

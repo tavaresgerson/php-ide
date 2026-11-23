@@ -1,173 +1,233 @@
-//! Edição transacional — `T-DB-006-01/02/03/04/05`.
-//!
-//! - [`PendingChanges`]: células editadas na grade antes de aplicar
-//!   (mudanças pendentes + Revert — DB-006-01);
-//! - [`preview_dml`]: UPDATE gerado para confirmação (Preview DML — 006-03);
-//! - transações via `DbSession::{begin,commit,rollback}` (006-04);
-//! - erros parciais/concorrência: `update_row` exige exatamente 1 linha
-//!   afetada; desvio vira erro de conflito (006-05).
-
 use phpide_core::{Component, ErrorKind, IdeError};
 
-use crate::contracts::DbSession;
+use crate::contracts::{ColumnUpdate, DbSession, DriverKind, RowUpdate};
 use crate::value::Value;
 
-/// Uma célula editada: chave da linha + coluna + valor antigo/novo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellChange {
     pub table: String,
-    /// Colunas da chave primária com valores (identificam a linha).
     pub key: Vec<(String, Value)>,
     pub column: String,
     pub old: Value,
     pub new: Value,
 }
 
-/// Conjunto de mudanças pendentes da grade (DB-006-01).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PendingChanges {
     pub changes: Vec<CellChange>,
 }
 
 impl PendingChanges {
-    pub fn push(&mut self, c: CellChange) {
-        // Substitui edição anterior na mesma célula.
-        self.changes
-            .retain(|x| !(x.table == c.table && x.key == c.key && x.column == c.column));
-        self.changes.push(c);
+    pub fn push(&mut self, change: CellChange) {
+        if let Some(existing) = self.changes.iter_mut().find(|current| {
+            current.table == change.table
+                && current.key == change.key
+                && current.column == change.column
+        }) {
+            existing.new = change.new;
+        } else {
+            self.changes.push(change);
+        }
     }
 
     pub fn revert(&mut self, table: &str) {
-        self.changes.retain(|c| c.table != table);
+        self.changes.retain(|change| change.table != table);
     }
 
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
 
-    /// Agrupa por linha (chave) para aplicar um UPDATE por linha editada.
-    #[allow(clippy::type_complexity)]
-    pub fn by_row(&self) -> Vec<(&str, &[(String, Value)], Vec<(&str, &Value)>)> {
-        let mut out: Vec<(&str, &[(String, Value)], Vec<(&str, &Value)>)> = Vec::new();
-        for c in &self.changes {
-            match out
+    pub fn by_row(&self) -> Vec<RowUpdate> {
+        let mut rows: Vec<RowUpdate> = Vec::new();
+        for change in &self.changes {
+            let column = ColumnUpdate {
+                column: change.column.clone(),
+                old: change.old.clone(),
+                new: change.new.clone(),
+            };
+            if let Some(row) = rows
                 .iter_mut()
-                .find(|(t, k, _)| *t == c.table && *k == c.key.as_slice())
+                .find(|row| row.table == change.table && row.key == change.key)
             {
-                Some((_, _, cols)) => cols.push((c.column.as_str(), &c.new)),
-                None => out.push((c.table.as_str(), &c.key, vec![(c.column.as_str(), &c.new)])),
+                row.changes.push(column);
+            } else {
+                rows.push(RowUpdate {
+                    table: change.table.clone(),
+                    key: change.key.clone(),
+                    changes: vec![column],
+                });
             }
         }
-        out
+        rows
     }
 }
 
-/// Preview DML (DB-006-03): mostra exatamente o que será executado, com
-/// WHERE pela chave e concorrência (old na condição quando não nulo).
-pub fn preview_dml(changes: &PendingChanges, kind: crate::contracts::DriverKind) -> String {
+fn condition(kind: DriverKind, column: &str, value: &Value) -> String {
+    let column = crate::grid::quote_ident(kind, column);
+    if value.is_null() {
+        format!("{column} IS NULL")
+    } else {
+        format!("{column} = {}", literal(value))
+    }
+}
+
+pub fn preview_dml(changes: &PendingChanges, kind: DriverKind) -> String {
     let mut out = String::new();
-    for (table, key, cols) in changes.by_row() {
-        let sets = cols
+    for row in changes.by_row() {
+        let sets = row
+            .changes
             .iter()
-            .map(|(c, v)| format!("{} = {}", crate::grid::quote_ident(kind, c), literal(v)))
+            .map(|change| {
+                format!(
+                    "{} = {}",
+                    crate::grid::quote_ident(kind, &change.column),
+                    literal(&change.new)
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
-        let conds = key
+        let conditions = row
+            .key
             .iter()
-            .map(|(c, v)| format!("{} = {}", crate::grid::quote_ident(kind, c), literal(v)))
+            .map(|(column, value)| condition(kind, column, value))
+            .chain(
+                row.changes
+                    .iter()
+                    .map(|change| condition(kind, &change.column, &change.old)),
+            )
             .collect::<Vec<_>>()
             .join(" AND ");
         out.push_str(&format!(
-            "UPDATE {} SET {sets} WHERE {conds};\n",
-            crate::grid::quote_ident(kind, table)
+            "UPDATE {} SET {sets} WHERE {conditions};\n",
+            crate::grid::quote_ident(kind, &row.table)
         ));
     }
     out
 }
 
-fn literal(v: &Value) -> String {
-    match v {
+fn literal(value: &Value) -> String {
+    match value {
         Value::Null => "NULL".into(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Bytes(b) => format!(
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Bytes(value) => format!(
             "X'{}'",
-            b.iter().map(|x| format!("{x:02X}")).collect::<String>()
+            value
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<String>()
         ),
         other => format!("'{}'", other.display().replace('\'', "''")),
     }
 }
 
-/// Aplica as mudanças pendentes (DB-006-02). Em transação ativa, falhas
-/// podem ser revertidas pelo chamador com rollback (006-04/05). Cada UPDATE
-/// exige exatamente 1 linha afetada — desvio = conflito de concorrência.
+fn conflict(table: &str, affected: u64) -> IdeError {
+    IdeError::new(
+        Component::Db,
+        "db.edit",
+        ErrorKind::Other,
+        format!("conflito em {table}: {affected} linha(s) afetada(s), esperado exatamente 1"),
+        "a linha mudou no banco ou a chave não é única; recarregue a grade antes de editar",
+    )
+}
+
 pub fn apply(session: &mut dyn DbSession, changes: &PendingChanges) -> Result<usize, IdeError> {
-    let mut applied = 0;
-    for (table, key, cols) in changes.by_row() {
-        let owned: Vec<(String, Value)> = cols
-            .iter()
-            .map(|(c, v)| (c.to_string(), (*v).clone()))
-            .collect();
-        let affected = session.update_row(table, key, &owned)?;
-        if affected == 0 {
-            return Err(IdeError::new(
-                Component::Core,
-                "db.edit",
-                ErrorKind::Other,
-                format!("conflito em {table}: nenhuma linha afetada"),
-                "a linha mudou no banco — recarregue a grade (Revert e tente de novo)",
-            ));
-        }
-        applied += 1;
+    let started_transaction = !session.in_transaction();
+    if started_transaction {
+        session.begin()?;
     }
-    Ok(applied)
+    let mut applied = 0;
+    let result = (|| {
+        for row in changes.by_row() {
+            let affected = session.update_row(&row)?;
+            if affected != 1 {
+                return Err(conflict(&row.table, affected));
+            }
+            applied += 1;
+        }
+        Ok(applied)
+    })();
+    match result {
+        Ok(applied) => {
+            if started_transaction {
+                if let Err(error) = session.commit() {
+                    let rollback = session.rollback();
+                    return Err(error.with_detail(format!(
+                        "commit falhou; rollback executado: {}",
+                        rollback.is_ok()
+                    )));
+                }
+            }
+            Ok(applied)
+        }
+        Err(error) => {
+            if started_transaction {
+                match session.rollback() {
+                    Ok(()) => Err(error.with_detail(format!(
+                        "lote revertido após {applied} update(s); nenhuma mudança do lote persistiu"
+                    ))),
+                    Err(rollback) => Err(error.with_detail(format!(
+                        "falha parcial após {applied} update(s); rollback também falhou: {}",
+                        rollback.log_line()
+                    ))),
+                }
+            } else {
+                Err(error.with_detail(format!(
+                    "falha após {applied} update(s) na transação ativa; execute Rollback para descartar o lote"
+                )))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn change(col: &str, old: Value, new: Value) -> CellChange {
+    fn change(column: &str, old: Value, new: Value) -> CellChange {
         CellChange {
             table: "users".into(),
             key: vec![("id".into(), Value::Int(1))],
-            column: col.into(),
+            column: column.into(),
             old,
             new,
         }
     }
 
     #[test]
-    fn pending_groups_reverts_and_previews() {
-        let mut p = PendingChanges::default();
-        p.push(change(
+    fn pending_preserves_original_old_and_previews_optimistic_condition() {
+        let mut pending = PendingChanges::default();
+        pending.push(change(
             "name",
-            Value::Text("a".into()),
-            Value::Text("b".into()),
+            Value::Text("ana".into()),
+            Value::Text("bia".into()),
         ));
-        p.push(change("age", Value::Int(1), Value::Int(2)));
-        // Re-edição da mesma célula substitui (1 mudança, não 2).
-        p.push(change(
+        pending.push(change(
             "name",
-            Value::Text("b".into()),
-            Value::Text("c".into()),
+            Value::Text("bia".into()),
+            Value::Text("carla".into()),
         ));
-        assert_eq!(p.changes.len(), 2);
-        assert_eq!(p.by_row().len(), 1, "mesma linha agrupada");
-        let dml = preview_dml(&p, crate::contracts::DriverKind::Sqlite);
-        assert!(dml.contains("UPDATE \"users\" SET"), "{dml}");
-        assert!(dml.contains("\"name\" = 'c'"), "último valor vence: {dml}");
-        assert!(dml.contains("WHERE \"id\" = 1"), "chave no WHERE: {dml}");
-        p.revert("users");
-        assert!(p.is_empty(), "Revert limpa as pendentes");
+        pending.push(change("age", Value::Null, Value::Int(2)));
+        let rows = pending.by_row();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].changes.len(), 2);
+        assert_eq!(rows[0].changes[0].old, Value::Text("ana".into()));
+        let dml = preview_dml(&pending, DriverKind::Sqlite);
+        assert!(
+            dml.contains("\"id\" = 1 AND \"name\" = 'ana' AND \"age\" IS NULL"),
+            "{dml}"
+        );
+        assert!(dml.contains("\"name\" = 'carla'"));
     }
 
     #[test]
-    fn preview_quotes_strings() {
-        let mut p = PendingChanges::default();
-        p.push(change("n", Value::Null, Value::Text("o'p".into())));
-        let dml = preview_dml(&p, crate::contracts::DriverKind::MySql);
-        assert!(dml.contains("`n` = 'o''p'"), "escape de quote: {dml}");
+    fn preview_quotes_mysql_identifiers_and_values() {
+        let mut pending = PendingChanges::default();
+        pending.push(change("n`ame", Value::Null, Value::Text("o'p".into())));
+        let dml = preview_dml(&pending, DriverKind::MySql);
+        assert!(dml.contains("`n``ame` = 'o''p'"), "{dml}");
+        assert!(dml.contains("`n``ame` IS NULL"));
     }
 }

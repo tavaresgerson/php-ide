@@ -6,7 +6,10 @@
 //! Esc fecha (enviando `$/cancelRequest`); o aceite aplica `textEdit`
 //! (range UTF-16) ou `insertText`, com fallback para o rótulo.
 
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+
+use crate::routing::LspOrigin;
 
 use phpide_lsp::{CompletionItem, LspClient};
 use serde_json::Value;
@@ -21,6 +24,8 @@ pub struct CompletionState {
     /// Revisão do documento no disparo — resposta de outra revisão é
     /// descartada (T-PHP-001-04: resultado atrasado não se aplica).
     pub request_revision: u64,
+    pub request_path: Option<PathBuf>,
+    pub origin: LspOrigin,
     base: Vec<CompletionItem>,
     /// Itens crus (JSON) para textEdit/documentação no aceite.
     raw: Vec<Value>,
@@ -38,6 +43,8 @@ impl CompletionState {
             query: String::new(),
             word_start: 0,
             request_revision: 0,
+            request_path: None,
+            origin: LspOrigin::Php,
             base: Vec::new(),
             raw: Vec::new(),
             selected: 0,
@@ -55,6 +62,7 @@ impl CompletionState {
         &mut self,
         lsp: &LspClient,
         path: &std::path::Path,
+        origin: LspOrigin,
         line0: usize,
         col0: usize,
         word_start: usize,
@@ -71,6 +79,8 @@ impl CompletionState {
         self.open = true;
         self.just_opened = true;
         self.request_revision = revision;
+        self.request_path = Some(path.to_path_buf());
+        self.origin = origin;
         let (id, rx) = lsp.completion_with_id(path, line0, col0);
         self.request_id = Some(id);
         self.rx = Some(rx);
@@ -85,8 +95,8 @@ impl CompletionState {
 
     /// Consome a resposta do servidor (por frame). `revision` é a revisão
     /// atual do documento: divergindo, a resposta é descartada.
-    pub fn poll(&mut self, lsp: &LspClient, revision: u64) {
-        if revision != self.request_revision {
+    pub fn poll(&mut self, lsp: &LspClient, path: Option<&Path>, revision: u64) {
+        if revision != self.request_revision || path != self.request_path.as_deref() {
             // Texto mudou desde o disparo: sugestões obsoletas.
             if self.rx.is_some() {
                 self.cancel_request(lsp);
@@ -128,10 +138,17 @@ impl CompletionState {
 
     pub fn close(&mut self, lsp: &LspClient) {
         self.cancel_request(lsp);
+        self.close_without_client();
+    }
+
+    pub fn close_without_client(&mut self) {
+        self.request_id = None;
+        self.rx = None;
         self.open = false;
         self.base.clear();
         self.raw.clear();
         self.query.clear();
+        self.request_path = None;
     }
 }
 

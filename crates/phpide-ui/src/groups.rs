@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 
+use eframe::egui;
+
 /// Identificador estável de buffer (path ou id interno).
 pub type BufferId = String;
 
@@ -123,6 +125,26 @@ impl EditorGroups {
         find(&self.root)
     }
 
+    pub fn root_split(&self) -> Option<(Axis, [f32; 2])> {
+        match &self.root {
+            GroupNode::Split { axis, sizes, .. } if sizes.len() == 2 => {
+                Some((*axis, [sizes[0], sizes[1]]))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn resize_root(&mut self, first_fraction: f32) {
+        let first = if first_fraction.is_finite() {
+            first_fraction.clamp(0.1, 0.9)
+        } else {
+            0.5
+        };
+        if let GroupNode::Split { sizes, .. } = &mut self.root {
+            *sizes = vec![first, 1.0 - first];
+        }
+    }
+
     /// Divide a folha da raiz no eixo (Split Right = Horizontal,
     /// Split Down = Vertical): a vista ativa move para o novo grupo.
     pub fn split_root(&mut self, axis: Axis) {
@@ -205,6 +227,35 @@ impl EditorGroups {
         let mut out = Vec::new();
         leaves(&self.root, &mut out);
         out
+    }
+}
+
+pub fn split_rect(rect: egui::Rect, axis: Axis, sizes: [f32; 2]) -> [egui::Rect; 2] {
+    let gap = 6.0;
+    let first = sizes[0].clamp(0.1, 0.9);
+    match axis {
+        Axis::Horizontal => {
+            let width = (rect.width() - gap).max(0.0);
+            let x = rect.left() + width * first + gap;
+            [
+                egui::Rect::from_min_max(
+                    rect.min,
+                    egui::pos2(rect.left() + width * first, rect.bottom()),
+                ),
+                egui::Rect::from_min_max(egui::pos2(x, rect.top()), rect.max),
+            ]
+        }
+        Axis::Vertical => {
+            let height = (rect.height() - gap).max(0.0);
+            let y = rect.top() + height * first + gap;
+            [
+                egui::Rect::from_min_max(
+                    rect.min,
+                    egui::pos2(rect.right(), rect.top() + height * first),
+                ),
+                egui::Rect::from_min_max(egui::pos2(rect.left(), y), rect.max),
+            ]
+        }
     }
 }
 
@@ -295,6 +346,27 @@ mod tests {
         let leaves = g.leaf_buffers();
         assert_eq!(leaves[0], vec!["x.php", "y.php"]);
         assert_eq!(leaves[1], vec!["x.php"], "segundo grupo intocado");
+    }
+
+    #[test]
+    fn split_rect_uses_axis_and_resizable_fraction() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(106.0, 206.0));
+        let horizontal = split_rect(rect, Axis::Horizontal, [0.25, 0.75]);
+        assert_eq!(horizontal[0].width(), 25.0);
+        assert_eq!(horizontal[1].width(), 75.0);
+        assert_eq!(horizontal[0].top(), horizontal[1].top());
+        let vertical = split_rect(rect, Axis::Vertical, [0.25, 0.75]);
+        assert_eq!(vertical[0].height(), 50.0);
+        assert_eq!(vertical[1].height(), 150.0);
+        assert_eq!(vertical[0].left(), vertical[1].left());
+
+        let mut groups = EditorGroups::default();
+        groups.open("a".into());
+        groups.split_root(Axis::Horizontal);
+        groups.resize_root(0.7);
+        assert_eq!(groups.root_split().unwrap().1, [0.7, 1.0 - 0.7]);
+        groups.resize_root(0.0);
+        assert_eq!(groups.root_split().unwrap().1[0], 0.1);
     }
 
     #[test]
