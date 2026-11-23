@@ -3,9 +3,13 @@
 //! from VCS, folder browser, settings import and New Project with a
 //! composer.json skeleton.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use eframe::egui;
+use phpide_core::jobs::{JobContext, JobHandle, JobOutcome};
+use phpide_core::{Component, ErrorKind, IdeError};
 
 use crate::themes::ThemeId;
 use crate::PhpIdeApp;
@@ -19,6 +23,9 @@ enum Tab {
     RemoteDevelopment,
 }
 
+/// Sub-folders of a directory: `(path, looks like a project)`.
+type Folders = Vec<(PathBuf, bool)>;
+
 pub struct WelcomeState {
     tab: Tab,
     /// Diretório atual do browser embutido.
@@ -29,6 +36,13 @@ pub struct WelcomeState {
     vcs_url: String,
     import_path: String,
     err: String,
+    /// Sub-folders of `browser_dir`: `(path, looks like a project)`.
+    listing: Option<(PathBuf, Folders)>,
+    listing_job: Option<(PathBuf, JobHandle<Folders>)>,
+    /// Whether each recent project still exists, in settings order.
+    recent_exists: Option<(Vec<String>, Vec<bool>)>,
+    recent_job: Option<(Vec<String>, JobHandle<Vec<bool>>)>,
+    clone_job: Option<(String, JobHandle<PathBuf>)>,
 }
 
 impl WelcomeState {
@@ -42,6 +56,11 @@ impl WelcomeState {
             vcs_url: String::new(),
             import_path: String::new(),
             err: String::new(),
+            listing: None,
+            listing_job: None,
+            recent_exists: None,
+            recent_job: None,
+            clone_job: None,
         }
     }
 }
@@ -52,9 +71,77 @@ impl Default for WelcomeState {
     }
 }
 
-pub fn welcome_screen(app: &mut PhpIdeApp, ctx: &egui::Context) {
+/// Starts and collects the Welcome screen's background work: folder
+/// listing, recent-project checks and `git clone`.
+fn poll_jobs(app: &mut PhpIdeApp, ctx: &egui::Context) -> Option<PathBuf> {
+    let state = &mut app.welcome;
+    let dir = state.browser_dir.clone();
+    let listing_current = matches!(&state.listing, Some((d, _)) if d == &dir);
+    let listing_pending = matches!(&state.listing_job, Some((d, _)) if d == &dir);
+    if !listing_current && !listing_pending {
+        let target = dir.clone();
+        let ctx = ctx.clone();
+        let job = app.jobs.spawn(move |_| {
+            let folders = list_folders(&target);
+            ctx.request_repaint();
+            Ok(folders)
+        });
+        state.listing_job = Some((dir, job));
+    }
+    if let Some((dir, job)) = &mut state.listing_job {
+        if let Some(outcome) = job.poll() {
+            if let JobOutcome::Ok(folders) = outcome {
+                state.listing = Some((dir.clone(), folders));
+            }
+            state.listing_job = None;
+        }
+    }
+
+    let recents = app.settings.recent_projects.clone();
+    let recent_current = matches!(&state.recent_exists, Some((r, _)) if r == &recents);
+    let recent_pending = matches!(&state.recent_job, Some((r, _)) if r == &recents);
+    if !recent_current && !recent_pending {
+        let paths = recents.clone();
+        let ctx = ctx.clone();
+        let job = app.jobs.spawn(move |_| {
+            let exists = paths.iter().map(|p| Path::new(p).is_dir()).collect();
+            ctx.request_repaint();
+            Ok(exists)
+        });
+        state.recent_job = Some((recents, job));
+    }
+    if let Some((paths, job)) = &mut state.recent_job {
+        if let Some(outcome) = job.poll() {
+            if let JobOutcome::Ok(exists) = outcome {
+                state.recent_exists = Some((paths.clone(), exists));
+            }
+            state.recent_job = None;
+        }
+    }
+
+    let mut cloned = None;
+    if let Some((_, job)) = &mut state.clone_job {
+        if let Some(outcome) = job.poll() {
+            match outcome {
+                JobOutcome::Ok(target) => cloned = Some(target),
+                JobOutcome::Err(error) => state.err = error.message,
+                JobOutcome::Cancelled => state.err = "clone cancelled".to_string(),
+            }
+            state.clone_job = None;
+        }
+    }
+    cloned
+}
+
+pub fn welcome_screen(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    if let Some(target) = poll_jobs(app, &ctx) {
+        app.request_load_project(target, &ctx);
+        app.welcome_open = false;
+        return;
+    }
     let mut close = false;
-    egui::CentralPanel::default().show(ctx, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         let avail = ui.available_size();
         let w = avail.x.min(860.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -142,11 +229,31 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
             ui.add_space(8.0);
             ui.label("Get from VCS — Git repository URL:");
             ui.text_edit_singleline(&mut app.welcome.vcs_url);
-            if ui.button("Get from VCS").clicked() {
-                match clone_from_vcs(&app.welcome.vcs_url, PathBuf::from(&app.welcome.path_input)) {
+            if let Some((url, _)) = &app.welcome.clone_job {
+                let url = url.clone();
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Cloning {url}…"));
+                    if ui.button("Cancel").clicked() {
+                        if let Some((_, job)) = &app.welcome.clone_job {
+                            job.cancel();
+                        }
+                    }
+                });
+            } else if ui.button("Get from VCS").clicked() {
+                let base = PathBuf::from(&app.welcome.path_input);
+                match clone_target(&app.welcome.vcs_url, &base) {
                     Ok(target) => {
-                        app.request_load_project(target, ui.ctx());
-                        *close = true;
+                        let url = app.welcome.vcs_url.trim().to_string();
+                        let job_url = url.clone();
+                        let ctx = ui.ctx().clone();
+                        let job = app.jobs.spawn(move |job| {
+                            let result = run_clone(job, &job_url, &target);
+                            ctx.request_repaint();
+                            result
+                        });
+                        app.welcome.err.clear();
+                        app.welcome.clone_job = Some((url, job));
                     }
                     Err(error) => app.welcome.err = error,
                 }
@@ -159,8 +266,18 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
             if recents.is_empty() {
                 ui.label(egui::RichText::new("No recent projects.").weak());
             }
-            for p in &recents {
-                let exists = std::path::Path::new(p).is_dir();
+            let exists_flags = app
+                .welcome
+                .recent_exists
+                .as_ref()
+                .filter(|(paths, _)| paths == &recents)
+                .map(|(_, flags)| flags.clone());
+            for (i, p) in recents.iter().enumerate() {
+                // Until the check finishes, assume the folder exists.
+                let exists = exists_flags
+                    .as_ref()
+                    .and_then(|flags| flags.get(i).copied())
+                    .unwrap_or(true);
                 let label = if exists {
                     p.clone()
                 } else {
@@ -197,20 +314,15 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
             egui::ScrollArea::vertical()
                 .max_height(260.0)
                 .show(ui, |ui| {
-                    let mut entries: Vec<PathBuf> = Vec::new();
-                    if let Ok(rd) = std::fs::read_dir(&app.welcome.browser_dir) {
-                        for e in rd.flatten() {
-                            let path = e.path();
-                            if path.is_dir() {
-                                entries.push(path);
-                            }
+                    let entries = match &app.welcome.listing {
+                        Some((dir, folders)) if dir == &app.welcome.browser_dir => folders.clone(),
+                        _ => {
+                            ui.spinner();
+                            Vec::new()
                         }
-                    }
-                    entries.sort();
-                    for path in entries {
+                    };
+                    for (path, is_project) in entries {
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let is_project =
-                            path.join("composer.json").exists() || (path.join(".git")).exists();
                         let label = if is_project {
                             format!("[PHP] {name}/")
                         } else {
@@ -334,7 +446,8 @@ fn import_settings(source: &str) -> Result<(), String> {
         .map_err(|error| format!("could not import settings: {error}"))
 }
 
-fn clone_from_vcs(url: &str, base: PathBuf) -> Result<PathBuf, String> {
+/// Destination folder for cloning `url` into `base`.
+fn clone_target(url: &str, base: &Path) -> Result<PathBuf, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("enter the repository URL".to_string());
@@ -352,16 +465,67 @@ fn clone_from_vcs(url: &str, base: PathBuf) -> Result<PathBuf, String> {
     if target.exists() {
         return Err(format!("folder already exists: {}", target.display()));
     }
-    let status = std::process::Command::new("git")
-        .args(["clone", "--", url])
-        .arg(&target)
-        .status()
-        .map_err(|error| format!("could not run git: {error}"))?;
-    if status.success() {
-        Ok(target)
-    } else {
-        Err(format!("git clone failed with {status}"))
+    Ok(target)
+}
+
+/// Runs `git clone` in a background job; cancelling the job kills git.
+fn run_clone(job: &JobContext, url: &str, target: &Path) -> Result<PathBuf, IdeError> {
+    let error = |kind, message: String| {
+        IdeError::new(
+            Component::Git,
+            "clone",
+            kind,
+            message,
+            "check the URL and your access to the repository",
+        )
+    };
+    let mut child = Command::new("git")
+        .args(["clone", "--quiet", "--", url])
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| error(ErrorKind::SpawnFailed, format!("could not run git: {e}")))?;
+    loop {
+        if job.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(target);
+            return Err(error(ErrorKind::Cancelled, "clone cancelled".to_string()));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(target.to_path_buf()),
+            Ok(Some(status)) => {
+                return Err(error(
+                    ErrorKind::Other,
+                    format!("git clone failed with {status}"),
+                ))
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(error(ErrorKind::Other, format!("git clone failed: {e}"))),
+        }
     }
+}
+
+/// Sub-folders of `dir`, sorted, each flagged when it looks like a project.
+fn list_folders(dir: &Path) -> Folders {
+    let mut folders: Folders = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|path| path.is_dir())
+                .map(|path| {
+                    let is_project =
+                        path.join("composer.json").exists() || path.join(".git").exists();
+                    (path, is_project)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    folders.sort();
+    folders
 }
 
 /// Creates a minimal PHP project skeleton (New Project).

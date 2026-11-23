@@ -147,7 +147,7 @@ pub fn paint_fold_chevrons(
             action.toggle = Some(idx);
         }
         resp.on_hover_text(format!(
-            "{} {} — clique para {}",
+            "{} {} — click to {}",
             r.kind,
             r.start_line0 + 1,
             if is_folded { "expandir" } else { "dobrar" }
@@ -251,7 +251,7 @@ pub fn paint_inlay_hints(
                 .unwrap_or(0.0)
             + 10.0;
         painter.text(
-            egui::pos2(x, galley_pos.y + row.rect.center().y),
+            egui::pos2(x, galley_pos.y + row.rect().center().y),
             egui::Align2::LEFT_CENTER,
             hint.label.clone(),
             font.clone(),

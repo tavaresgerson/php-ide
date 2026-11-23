@@ -225,7 +225,7 @@ impl Buffer {
         let path = self
             .path
             .clone()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "buffer sem caminho"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no path"))?;
         fsutil::write_atomic(&path, self.document.text().as_bytes())?;
         self.dirty = false;
         Ok(())
@@ -240,7 +240,7 @@ impl Buffer {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "untitled".to_string());
             IdeError::from_io(Component::Core, "save", &what, &e)
-                .with_detail("edição preservada na memória; buffer continua sujo")
+                .with_detail("your edits are kept in memory and the file stays modified")
         })
     }
 
@@ -267,8 +267,12 @@ pub struct FileEntry {
 /// Pastas ignoradas na varredura (dependências e metadados, não código do usuário).
 const SKIP_DIRS: [&str; 6] = [".git", ".idea", "target", "node_modules", "vendor", "build"];
 
+/// Safety net against pathological trees; symlinked folders are not
+/// followed, so loops cannot happen through links.
+const MAX_SCAN_DEPTH: usize = 64;
+
 fn scan_into(root: &Path, dir: &Path, depth: usize, out: &mut Vec<FileEntry>) {
-    if depth > 6 {
+    if depth > MAX_SCAN_DEPTH {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
@@ -279,7 +283,9 @@ fn scan_into(root: &Path, dir: &Path, depth: usize, out: &mut Vec<FileEntry>) {
     for item in items {
         let path = item.path();
         let name = item.file_name().to_string_lossy().into_owned();
-        let is_dir = path.is_dir();
+        // file_type() does not follow symlinks: a linked folder is listed
+        // but not descended into.
+        let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_dir && (SKIP_DIRS.contains(&name.as_str()) || name.starts_with('.')) {
             continue;
         }
@@ -413,7 +419,7 @@ impl Workspace {
                 self.touch_recent(path);
                 self.message.clear();
             }
-            Err(e) => self.message = format!("falha ao abrir {}: {e}", path.display()),
+            Err(e) => self.message = format!("could not open {}: {e}", path.display()),
         }
     }
 
@@ -714,6 +720,26 @@ mod tests {
     }
 
     #[test]
+    fn reload_from_disk_only_replaces_changed_content() {
+        let dir = std::env::temp_dir().join(format!("phpide-reload-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.php");
+        fs::write(&file, "<?php echo 1;").unwrap();
+        let mut buf = Buffer::open(&file).unwrap();
+        let revision = buf.document.revision();
+        assert!(
+            !buf.reload_from_disk().unwrap(),
+            "same content is not a reload"
+        );
+        assert_eq!(buf.document.revision(), revision);
+        fs::write(&file, "<?php echo 2;").unwrap();
+        assert!(buf.reload_from_disk().unwrap());
+        assert_eq!(buf.document.text(), "<?php echo 2;");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn nav_history_back_and_forward() {
         let dir = std::env::temp_dir().join(format!("phpide-nav-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -898,7 +924,13 @@ impl Buffer {
         let Some(path) = self.path.clone() else {
             return Ok(false);
         };
-        self.document = Document::open(&path)?;
+        let on_disk = Document::open(&path)?;
+        // Same content: keep the document (and its revision) untouched, so
+        // diagnostics, markers and the cursor stay valid.
+        if on_disk.rope == self.document.rope {
+            return Ok(false);
+        }
+        self.document = on_disk;
         Ok(true)
     }
 }
@@ -1024,7 +1056,7 @@ impl Workspace {
                 match buf.reload_from_disk() {
                     Ok(true) => reloaded.push(path),
                     Ok(false) => {} // sujo: mantém edição local
-                    Err(e) => self.message = format!("falha ao recarregar {}: {e}", path.display()),
+                    Err(e) => self.message = format!("could not reload {}: {e}", path.display()),
                 }
             }
         }

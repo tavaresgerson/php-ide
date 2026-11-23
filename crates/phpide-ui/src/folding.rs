@@ -152,7 +152,7 @@ pub fn project(doc_text: &str, visuals: &FoldVisuals) -> FoldProjection {
                     .map(|l| l.trim().chars().take(60).collect::<String>())
                     .unwrap_or_default();
                 out.push_str(&format!(
-                    "{FOLD_MARKER} ⋮ {} … ({} linhas)\n",
+                    "{FOLD_MARKER} ⋮ {} … ({} lines)\n",
                     sig,
                     end - start
                 ));

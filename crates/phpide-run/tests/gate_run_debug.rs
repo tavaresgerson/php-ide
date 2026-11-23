@@ -62,6 +62,16 @@ use phpide_run::phpunit::{build_command as phpunit_build, TeamCityParser};
 use phpide_run::session::SessionState;
 use phpide_run::RunManager;
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/phpunit-sample");
 
 fn php() -> Option<String> {
@@ -148,7 +158,7 @@ fn wait_session(m: &mut RunManager, id: u64, live_want: bool, timeout: Duration)
 #[test]
 fn gate_executa_debuga_e_testa_php_real() {
     let Some(php) = php() else {
-        eprintln!("GATE SKIP: php não disponível");
+        skip("php not available");
         return;
     };
 
@@ -327,7 +337,7 @@ fn gate_executa_debuga_e_testa_php_real() {
 
     // 3) TESTAR — PHPUnit real no fixture (T-RUN-002-03 / RUN-TST-001).
     let Some(phar) = phpunit() else {
-        eprintln!("GATE: phpunit ausente — etapa de testes pulada");
+        skip("phpunit not found; the PHPUnit step was not verified");
         return;
     };
     let root = Path::new(FIXTURE);
@@ -379,7 +389,7 @@ fn gate_executa_debuga_e_testa_php_real() {
 #[test]
 fn gate_stop_confiavel_mata_processo_php_real_e_fecha_socket() {
     let Some(php) = php() else {
-        eprintln!("GATE SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let port = free_port();
@@ -469,7 +479,7 @@ fn gate_stop_confiavel_mata_processo_php_real_e_fecha_socket() {
 #[test]
 fn gate_detach_confiavel_com_php_real_vivo() {
     let Some(php) = php() else {
-        eprintln!("GATE SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let port = free_port();
@@ -537,17 +547,18 @@ fn gate_detach_confiavel_com_php_real_vivo() {
 #[test]
 fn gate_debug_sessao_completa_xdebug_real() {
     let Some(php) = php() else {
-        eprintln!("GATE SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let Some(so) = xdebug_so() else {
-        eprintln!("GATE SKIP: extensão Xdebug não encontrada (PHPIDE_XDEBUG_SO)");
+        skip("Xdebug extension not found (PHPIDE_XDEBUG_SO)");
         return;
     };
     if !xdebug_real_disponivel(&php, &so) {
-        eprintln!("GATE SKIP: xdebug.so não carrega neste php (ABI divergente)");
+        skip("xdebug.so does not load in this php (ABI mismatch)");
         return;
     }
+    eprintln!("GATE USING: php={php} xdebug={}", so.display());
 
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("gate_x.php");
@@ -745,17 +756,18 @@ fn gate_debug_sessao_completa_xdebug_real() {
 #[test]
 fn gate_detach_xdebug_real_deixa_php_completar() {
     let Some(php) = php() else {
-        eprintln!("GATE SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let Some(so) = xdebug_so() else {
-        eprintln!("GATE SKIP: extensão Xdebug não encontrada (PHPIDE_XDEBUG_SO)");
+        skip("Xdebug extension not found (PHPIDE_XDEBUG_SO)");
         return;
     };
     if !xdebug_real_disponivel(&php, &so) {
-        eprintln!("GATE SKIP: xdebug.so não carrega neste php (ABI divergente)");
+        skip("xdebug.so does not load in this php (ABI mismatch)");
         return;
     }
+    eprintln!("GATE USING: php={php} xdebug={}", so.display());
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("gate_detach.php");
     std::fs::write(&script, "<?php\nusleep(400000);\necho \"pos-detach\\n\";\n").unwrap();
@@ -827,17 +839,18 @@ fn gate_detach_xdebug_real_deixa_php_completar() {
 #[test]
 fn gate_stop_xdebug_real_termina_php_e_libera_porta() {
     let Some(php) = php() else {
-        eprintln!("GATE SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let Some(so) = xdebug_so() else {
-        eprintln!("GATE SKIP: extensão Xdebug não encontrada (PHPIDE_XDEBUG_SO)");
+        skip("Xdebug extension not found (PHPIDE_XDEBUG_SO)");
         return;
     };
     if !xdebug_real_disponivel(&php, &so) {
-        eprintln!("GATE SKIP: xdebug.so não carrega neste php (ABI divergente)");
+        skip("xdebug.so does not load in this php (ABI mismatch)");
         return;
     }
+    eprintln!("GATE USING: php={php} xdebug={}", so.display());
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("gate_stop.php");
     std::fs::write(&script, "<?php\nsleep(120);\n").unwrap();

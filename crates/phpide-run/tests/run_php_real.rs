@@ -15,6 +15,16 @@ use phpide_run::config::{RunConfig, RunKind};
 use phpide_run::session::SessionState;
 use phpide_run::{build_command, BuildContext, RunManager};
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 fn php() -> Option<String> {
     let php = std::env::var("PHPIDE_PHP").unwrap_or_else(|_| "php".into());
     let ok = Command::new(&php)
@@ -60,7 +70,7 @@ fn wait_finished(m: &mut RunManager, id: u64) {
 #[test]
 fn php_script_runs_with_cwd_env_args_and_stderr() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -102,7 +112,7 @@ fn php_script_runs_with_cwd_env_args_and_stderr() {
 #[test]
 fn stop_kills_long_running_php() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -131,7 +141,7 @@ fn stop_kills_long_running_php() {
 #[test]
 fn rerun_reexecutes_with_same_spec() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -160,7 +170,7 @@ fn rerun_reexecutes_with_same_spec() {
 #[test]
 fn invalid_config_is_actionable_error_not_spawn() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -194,7 +204,7 @@ impl LogSink for SharedLog {
 #[test]
 fn env_secret_never_appears_in_session_logs() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -234,7 +244,7 @@ fn env_secret_never_appears_in_session_logs() {
 #[test]
 fn allow_multiple_instances_runs_concurrent_sessions() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let dir = tempfile::tempdir().unwrap();

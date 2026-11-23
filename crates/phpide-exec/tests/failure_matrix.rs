@@ -78,7 +78,7 @@ fn incompatible_version_reports_minimum() {
         "mínimo na mensagem: {}",
         e.message
     );
-    assert!(e.action.contains("atualize"), "ação: {}", e.action);
+    assert!(e.action.contains("update"), "action: {}", e.action);
 }
 
 #[test]

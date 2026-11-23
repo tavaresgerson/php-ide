@@ -17,6 +17,16 @@ use phpide_run::phpunit::{
 use phpide_run::session::SessionState;
 use phpide_run::{BuildContext, RunManager};
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/phpunit-sample");
 
 fn php() -> Option<String> {
@@ -134,11 +144,11 @@ fn consolidates_config_and_bootstrap_from_project() {
 #[test]
 fn full_suite_tree_has_durations_failures_and_locations() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let Some(phar) = phpunit() else {
-        eprintln!("SKIP: phpunit.phar não encontrado");
+        skip("phpunit.phar not found");
         return;
     };
     let root = Path::new(FIXTURE);
@@ -177,11 +187,11 @@ fn full_suite_tree_has_durations_failures_and_locations() {
 #[test]
 fn scopes_class_method_and_dataset_run_only_matching_tests() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let Some(phar) = phpunit() else {
-        eprintln!("SKIP: phpunit.phar não encontrado");
+        skip("phpunit.phar not found");
         return;
     };
     let root = Path::new(FIXTURE);
@@ -255,15 +265,15 @@ fn scopes_class_method_and_dataset_run_only_matching_tests() {
 #[test]
 fn coverage_real_com_xdebug_por_arquivo_e_linha() {
     let Some(php) = php() else {
-        eprintln!("SKIP: php não disponível");
+        skip("php not available");
         return;
     };
     let Some(phar) = phpunit() else {
-        eprintln!("SKIP: phpunit.phar não encontrado");
+        skip("phpunit.phar not found");
         return;
     };
     let Some(so) = xdebug_so() else {
-        eprintln!("SKIP: extensão Xdebug não encontrada (PHPIDE_XDEBUG_SO)");
+        skip("Xdebug extension not found (PHPIDE_XDEBUG_SO)");
         return;
     };
     let dir = tempfile::tempdir().unwrap();

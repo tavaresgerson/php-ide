@@ -96,14 +96,13 @@ pub fn discover(root: &Path) -> Result<Option<ComposerInfo>, ComposerError> {
         return Ok(None);
     };
     let json: Value = serde_json::from_str(&text).map_err(|e| ComposerError {
-        message: format!("composer.json inválido: {e}"),
-        action: "corrija a sintaxe do composer.json para reativar a descoberta do projeto"
-            .to_string(),
+        message: format!("invalid composer.json: {e}"),
+        action: "fix the composer.json syntax to re-enable project detection".to_string(),
     })?;
     if !json.is_object() {
         return Err(ComposerError {
-            message: "composer.json não é um objeto JSON".to_string(),
-            action: "corrija a estrutura do composer.json".to_string(),
+            message: "composer.json is not a JSON object".to_string(),
+            action: "fix the structure of composer.json".to_string(),
         });
     }
 
@@ -126,9 +125,8 @@ pub fn discover(root: &Path) -> Result<Option<ComposerInfo>, ComposerError> {
 
     let mut warnings = Vec::new();
     if !vendor_present {
-        warnings.push(
-            "vendor/ ausente — execute `composer install` para indexar dependências".to_string(),
-        );
+        warnings
+            .push("vendor/ is missing — run `composer install` to index dependencies".to_string());
     }
 
     Ok(Some(ComposerInfo {
@@ -180,7 +178,7 @@ mod tests {
         let dir = scratch("invalid");
         fs::write(dir.join("composer.json"), "{ quebrado").unwrap();
         let err = discover(&dir).unwrap_err();
-        assert!(err.message.contains("inválido"));
+        assert!(err.message.contains("invalid"));
         assert!(err.action.contains("composer.json"));
     }
 

@@ -91,7 +91,7 @@ impl RunSession {
             Err(e) => (
                 None,
                 SessionState::Failed,
-                Some(format!("{} — ação: {}", e.message, e.action)),
+                Some(format!("{} — action: {}", e.message, e.action)),
             ),
         };
         // Falha de spawn aparece no output da aba (mensagem acionável).
@@ -182,7 +182,7 @@ impl RunSession {
         if self.output.len() > MAX_OUTPUT {
             self.output.clear();
             self.truncated = true;
-            self.output.push_str("[saída truncada]\n");
+            self.output.push_str("[output truncated]\n");
         }
         if is_err {
             self.output.push_str("[stderr] ");
@@ -209,7 +209,7 @@ impl RunSession {
         if let Some(child) = &self.child {
             child.stop();
             self.stop_requested = true;
-            self.push_line_status("[parado pelo usuário]");
+            self.push_line_status("[stopped by user]");
         }
     }
 

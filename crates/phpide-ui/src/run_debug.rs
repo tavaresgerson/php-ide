@@ -181,7 +181,7 @@ impl RunDebugState {
         interpreter_options: Vec<String>,
     ) -> Result<(), String> {
         if self.status.is_active() {
-            return Err("já existe uma sessão de debug ativa".to_string());
+            return Err("a debug session is already active".to_string());
         }
         let port = Self::debug_port();
         let config = RunConfig::new(
@@ -221,7 +221,7 @@ impl RunDebugState {
             PathMappings::new(root.to_path_buf()),
             self.bp_store.clone(),
         )
-        .map_err(|e| format!("falha ao abrir o listener DBGp: {e}"))?;
+        .map_err(|e| format!("could not listen for Xdebug connections: {e}"))?;
         self.engine = Some(engine);
         self.status = DebugStatus::Listening;
         let id = self.manager.start(config, built.spec, None);
@@ -310,11 +310,11 @@ impl RunDebugState {
                         Ok(Some(v)) => {
                             let value = v
                                 .value
-                                .unwrap_or_else(|| format!("<{} vazio>", v.type_name));
+                                .unwrap_or_else(|| format!("<empty {}>", v.type_name));
                             format!("{expression} = {value}  ({})", v.type_name)
                         }
-                        Ok(None) => format!("{expression} = <indisponível neste frame>"),
-                        Err(e) => format!("{expression}: erro — {e}"),
+                        Ok(None) => format!("{expression} = <unavailable in this frame>"),
+                        Err(e) => format!("{expression}: error — {e}"),
                     };
                 }
                 EngineEvent::WatchValues(values) => {
@@ -324,9 +324,9 @@ impl RunDebugState {
                             Ok(Some(var)) => var
                                 .value
                                 .clone()
-                                .unwrap_or_else(|| format!("<{} vazio>", var.type_name)),
-                            Ok(None) => "<indisponível>".to_string(),
-                            Err(e) => format!("erro: {e}"),
+                                .unwrap_or_else(|| format!("<empty {}>", var.type_name)),
+                            Ok(None) => "<unavailable>".to_string(),
+                            Err(e) => format!("error: {e}"),
                         })
                         .collect();
                 }
@@ -437,7 +437,7 @@ impl RunDebugState {
     /// Devolve erro acionável para a status bar (NFR-005).
     pub fn start_config(&mut self, root: &Path, ctx: &BuildContext) -> Result<SessionId, String> {
         let Some(config) = self.configs.get(self.selected_config).cloned() else {
-            return Err("nenhuma run configuration selecionada".to_string());
+            return Err("no run configuration selected".to_string());
         };
         let built = build_command(&config, root, ctx)
             .map_err(|e| format!("{} — {}", e.message, e.action))?;

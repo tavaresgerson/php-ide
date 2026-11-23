@@ -870,21 +870,13 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         columns[1].horizontal(|ui| {
             if ui.button("Executar statement/seleção").clicked() || execute_shortcut {
                 let selection = output.cursor_range.map(|range| {
-                    let start = range
-                        .primary
-                        .ccursor
-                        .index
-                        .min(range.secondary.ccursor.index);
-                    let end = range
-                        .primary
-                        .ccursor
-                        .index
-                        .max(range.secondary.ccursor.index);
+                    let start = range.primary.index.0.min(range.secondary.index.0);
+                    let end = range.primary.index.0.max(range.secondary.index.0);
                     (start, end)
                 });
                 let cursor = output
                     .cursor_range
-                    .map(|range| range.primary.ccursor.index)
+                    .map(|range| range.primary.index.0)
                     .unwrap_or(0);
                 let sql = sql_for_execution(&state.sql, selection, cursor);
                 state.execute(sql);

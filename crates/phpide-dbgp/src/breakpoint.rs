@@ -243,7 +243,7 @@ impl BreakpointStore {
                         });
                     } else {
                         let message = error_message(&xml)
-                            .unwrap_or_else(|| "breakpoint recusado pelo backend".to_string());
+                            .unwrap_or_else(|| "breakpoint rejected by the debugger".to_string());
                         if let Some(bp) = self.get_mut(local_id) {
                             bp.status = BreakpointStatus::Invalid(message.clone());
                         }

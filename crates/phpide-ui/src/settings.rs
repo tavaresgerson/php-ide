@@ -23,6 +23,11 @@ pub fn config_dir() -> PathBuf {
             return PathBuf::from(x).join("phpide");
         }
     }
+    // Tests must never touch the developer's real settings (recent
+    // projects used to fill up with temporary folders).
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("phpide-test-config-{}", std::process::id()));
+    }
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_default()

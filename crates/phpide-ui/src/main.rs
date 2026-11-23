@@ -24,12 +24,14 @@ mod intelligence;
 mod lens;
 mod palette;
 mod plugins;
+mod project_tree;
 mod routing;
 mod run_debug;
 mod run_panels;
 mod scheme;
 mod scope;
 mod search;
+mod services;
 mod settings;
 mod settings_dialog;
 mod statusbar;
@@ -38,11 +40,12 @@ mod tabs;
 mod themes;
 mod tool_panels;
 mod toolwindows;
-mod vcs;
+#[cfg(test)]
+mod ui_tests;
 mod welcome;
 mod workspace_edit;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -138,7 +141,6 @@ type GitMarkerCache = (PathBuf, u64, Vec<(u32, bool)>);
 struct PhpIdeApp {
     ws: Workspace,
     db: database::DatabaseState,
-    collapsed: HashSet<PathBuf>,
     selected: Option<PathBuf>,
     cursor_char: usize,
     palette: PaletteState,
@@ -211,8 +213,9 @@ struct PhpIdeApp {
     pub goto_line_open: bool,
     goto_line_input: String,
     pub debug_listen: bool,
-    git_branch_cache: Option<String>,
-    git_refreshed: Instant,
+    git: services::git::GitService,
+    files: services::files::ProjectFiles,
+    rss_cache: Option<(Instant, u64)>,
     /// Detecção de Shift×2 (Search Everywhere).
     shift_was_down: bool,
     last_shift_press: Option<Instant>,
@@ -284,12 +287,8 @@ impl PhpIdeApp {
                 None
             },
             db,
-            ws: if has_project {
-                Workspace::open(root.clone())
-            } else {
-                Workspace::unscanned(root.clone())
-            },
-            collapsed: HashSet::new(),
+            // The file index is built in the background by `files`.
+            ws: Workspace::unscanned(root.clone()),
             selected: None,
             cursor_char: 0,
             palette: PaletteState::new(),
@@ -336,8 +335,9 @@ impl PhpIdeApp {
             goto_line_open: false,
             goto_line_input: String::new(),
             debug_listen: false,
-            git_branch_cache: None,
-            git_refreshed: Instant::now() - Duration::from_secs(60),
+            git: services::git::GitService::new(root.clone()),
+            files: services::files::ProjectFiles::new(root.clone()),
+            rss_cache: None,
             shift_was_down: false,
             last_shift_press: None,
             zoom_on_ctrl_wheel: false,
@@ -375,14 +375,14 @@ impl PhpIdeApp {
         }
         if std::env::var_os("PHPIDE_SMOKE_PROJECT_CLOSE").is_some() {
             if let Some(buffer) = app.ws.active_buffer_mut() {
-                buffer.insert(0, "// alteração de teste\n");
+                buffer.insert(0, "// test edit\n");
             }
             app.pending_close = Some(PendingClose::Project(root.join("other")));
         }
         if std::env::var_os("PHPIDE_SMOKE_SAVE_FAILURE").is_some() {
             let active = app.ws.active;
             if let Some(buffer) = app.ws.buffers.get_mut(active) {
-                buffer.insert(0, "// edição que deve ser preservada\n");
+                buffer.insert(0, "// edit that must be kept\n");
                 if let Some(path) = buffer.path.clone() {
                     let _ = std::fs::remove_file(&path);
                     let _ = std::fs::create_dir(&path);
@@ -472,19 +472,18 @@ impl PhpIdeApp {
         self.last_outline_key = None;
         self.syntax = None;
         self.db.reset_project(&root);
-        self.ws = Workspace::open(root.clone());
+        self.ws = Workspace::unscanned(root.clone());
+        self.files = services::files::ProjectFiles::new(root.clone());
+        self.git = services::git::GitService::new(root.clone());
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.refresh_composer(false);
-        self.collapsed.clear();
         self.selected = None;
-        self.git_branch_cache = None;
-        self.git_refreshed = Instant::now() - Duration::from_secs(60);
         self.welcome_open = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
             "PHP IDE — {}",
             root.display()
         )));
-        self.ws.message = format!("projeto aberto: {}", root.display());
+        self.ws.message = format!("opened project: {}", root.display());
     }
 
     pub fn persist_settings(&mut self) {
@@ -514,7 +513,7 @@ impl PhpIdeApp {
                 if let Some(info) = info {
                     if from_watcher {
                         self.ws.message = format!(
-                            "composer.json atualizado: {} (PHP {})",
+                            "composer.json updated: {} (PHP {})",
                             info.name.as_deref().unwrap_or("projeto"),
                             info.php_level.as_deref().unwrap_or("?")
                         );
@@ -523,7 +522,7 @@ impl PhpIdeApp {
                     if !info.vendor_present && (had_vendor != Some(false) || from_watcher) {
                         self.composer_warned = true;
                         self.ws.message = format!(
-                            "vendor/ ausente em {} — execute `composer install`",
+                            "vendor/ is missing in {} — run `composer install`",
                             self.ws.root.display()
                         );
                         self.logger.warn(
@@ -539,7 +538,7 @@ impl PhpIdeApp {
                 self.composer = None;
                 if from_watcher || !self.composer_warned {
                     self.composer_warned = true;
-                    self.ws.message = format!("{} — ação: {}", e.message, e.action);
+                    self.ws.message = format!("{} — action: {}", e.message, e.action);
                     self.logger.error(
                         Component::Php,
                         &Correlation::session(self.session),
@@ -575,9 +574,9 @@ impl PhpIdeApp {
         self.lsp_init = lsp_init;
         self.lsp_name = lsp_name;
         self.ws.message = if self.lsp.is_some() {
-            format!("reiniciando LSP: {}", self.lsp_name)
+            format!("restarting the language server: {}", self.lsp_name)
         } else {
-            "nenhum servidor LSP disponível para reiniciar".to_string()
+            "no language server to restart".to_string()
         };
     }
 
@@ -587,15 +586,15 @@ impl PhpIdeApp {
             return;
         };
         let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path0) else {
-            self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
+            self.ws.message = "no language server for this file".to_string();
             return;
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
-            self.ws.message = "LSP ainda não está pronto".to_string();
+            self.ws.message = "the language server is not ready yet".to_string();
             return;
         }
         if !lsp.capabilities().references_provider {
-            self.ws.message = "servidor não suporta references".to_string();
+            self.ws.message = "the language server does not support find usages".to_string();
             return;
         }
         let Some(buf) = self.ws.active_buffer() else {
@@ -615,7 +614,7 @@ impl PhpIdeApp {
             },
             lsp.references(&path, line, col),
         );
-        self.ws.message = "buscando usos...".to_string();
+        self.ws.message = "finding usages...".to_string();
     }
 
     /// Frontend (FE-001-01/02): inicializa servidores FE, sincroniza buffers
@@ -705,7 +704,7 @@ impl PhpIdeApp {
             }
         }
         if locs.is_empty() {
-            self.ws.message = "nenhum uso encontrado".to_string();
+            self.ws.message = "no usages found".to_string();
             return;
         }
         let mut hits = Vec::new();
@@ -737,10 +736,10 @@ impl PhpIdeApp {
         }
         let count = hits.len();
         self.search.results = hits;
-        self.search.status = format!("{count} usos (Find Usages)");
+        self.search.status = format!("{count} usages (Find Usages)");
         self.search.query.clear();
         self.tw.set_visible(ToolWindow::Find, true);
-        self.ws.message = format!("{count} usos encontrados");
+        self.ws.message = format!("{count} usages found");
     }
 
     /// Go to Symbol (T-PHP-004-02): dispara workspace/symbol quando a
@@ -768,24 +767,28 @@ impl PhpIdeApp {
         self.pending_symbols = Some(lsp.workspace_symbol(&query));
     }
 
-    pub fn git_branch(&mut self) -> String {
-        if self.git_refreshed.elapsed() > Duration::from_secs(2) {
-            self.git_branch_cache = vcs::current_branch(&self.ws.root);
-            self.git_refreshed = Instant::now();
-        }
-        self.git_branch_cache
-            .clone()
-            .unwrap_or_else(|| "?".to_string())
+    pub fn git_branch(&self) -> String {
+        self.git.branch_label()
     }
 
     pub fn git_refresh(&mut self) {
         self.git_markers = None;
-        self.git_branch_cache = vcs::current_branch(&self.ws.root);
-        self.git_refreshed = Instant::now();
+        self.git.refresh();
     }
 
-    /// RSS do processo em MB (widget de memória da status bar).
-    pub fn rss_mb(&self) -> u64 {
+    /// Process RSS in MB for the status bar, read at most every 2 seconds.
+    pub fn rss_mb(&mut self) -> u64 {
+        if let Some((at, mb)) = self.rss_cache {
+            if at.elapsed() < Duration::from_secs(2) {
+                return mb;
+            }
+        }
+        let mb = Self::read_rss_mb();
+        self.rss_cache = Some((Instant::now(), mb));
+        mb
+    }
+
+    fn read_rss_mb() -> u64 {
         std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|s| {
@@ -805,7 +808,7 @@ impl PhpIdeApp {
     pub fn goto_problem(&mut self, dir: i32) {
         let diags: Vec<phpide_core::Diagnostic> = self.ws.current_diagnostics().cloned().collect();
         if diags.is_empty() {
-            self.ws.message = "nenhum problema detectado".to_string();
+            self.ws.message = "no problems found".to_string();
             return;
         }
         let cur_line = self
@@ -832,10 +835,6 @@ impl PhpIdeApp {
             self.exec.stop();
         }
         self.rd.stop();
-    }
-
-    fn has_collapsed_ancestor(&self, path: &Path) -> bool {
-        path.ancestors().any(|a| self.collapsed.contains(a))
     }
 
     /// Reduz a edição "texto inteiro" do TextEdit a uma operação mínima na rope.
@@ -875,7 +874,7 @@ impl PhpIdeApp {
                     buf.pinned = !buf.pinned;
                 }
             }
-            PaletteCommand::RefreshTree => self.ws.refresh_files(),
+            PaletteCommand::RefreshTree => self.files.refresh(&self.jobs, ctx),
             PaletteCommand::ToggleTheme => {
                 let next = if self.theme.is_dark() {
                     ThemeId::IslandsLight
@@ -896,12 +895,12 @@ impl PhpIdeApp {
             PaletteCommand::HideAllToolWindows => self.tw.toggle_hide_all(),
             PaletteCommand::NavigateBack => {
                 if !self.ws.navigate_back() {
-                    self.ws.message = "sem histórico de navegação".to_string();
+                    self.ws.message = "no navigation history".to_string();
                 }
             }
             PaletteCommand::NavigateForward => {
                 if !self.ws.navigate_forward() {
-                    self.ws.message = "sem histórico de navegação".to_string();
+                    self.ws.message = "no navigation history".to_string();
                 }
             }
             PaletteCommand::NextProblem => self.goto_problem(1),
@@ -950,8 +949,8 @@ impl PhpIdeApp {
                     Ok(Some(label)) => self.ws.message = format!("undone: {label}"),
                     Ok(None) => {
                         self.ws.message = match self.refactor_undo.top_label() {
-                            Some(next) => format!("nenhuma refatoração desfeita (próxima: {next})"),
-                            None => "nenhuma refatoração para desfazer".to_string(),
+                            Some(next) => format!("no refactoring undone (next: {next})"),
+                            None => "no refactoring to undo".to_string(),
                         };
                     }
                     Err(error) => self.ws.message = error.to_string(),
@@ -1012,8 +1011,7 @@ impl PhpIdeApp {
             return false;
         };
         if buf.readonly {
-            self.ws.message =
-                "arquivo em modo somente leitura (destrave na status bar)".to_string();
+            self.ws.message = "the file is read-only (unlock it in the status bar)".to_string();
             return false;
         }
         let path = buf.path.clone();
@@ -1098,17 +1096,17 @@ fn start_lsp(root: &Path) -> (Option<LspClient>, Option<mpsc::Receiver<Value>>, 
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             match LspClient::spawn(&cmd, &refs, root) {
                 Ok((client, rx)) => {
-                    eprintln!("[lsp] servidor: {cmd} {}", args.join(" "));
+                    eprintln!("[lsp] server: {cmd} {}", args.join(" "));
                     (Some(client), Some(rx), cmd)
                 }
                 Err(e) => {
-                    eprintln!("[lsp] falha ao iniciar: {e}");
+                    eprintln!("[lsp] could not start: {e}");
                     (None, None, String::new())
                 }
             }
         }
         None => {
-            eprintln!("[lsp] nenhum servidor encontrado (intelephense/phpactor)");
+            eprintln!("[lsp] no server found (intelephense/phpactor)");
             (None, None, String::new())
         }
     }
@@ -1118,10 +1116,16 @@ fn start_watcher(root: &Path) -> Option<(notify::RecommendedWatcher, mpsc::Recei
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
-            let relevant = event
-                .paths
-                .iter()
-                .any(|p| p.is_dir() || phpide_php::Php::is_php_file(p));
+            // Reading a file is not a change (and the IDE's own reads would
+            // otherwise trigger endless reloads); Git's metadata is not
+            // project content.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
+            let relevant = event.paths.iter().any(|p| {
+                !p.components().any(|c| c.as_os_str() == ".git")
+                    && (p.is_dir() || phpide_php::Php::is_php_file(p))
+            });
             if relevant {
                 let _ = tx.send(());
             }
@@ -1136,7 +1140,7 @@ impl eframe::App for PhpIdeApp {
     /// Encerramento da IDE: cancela workers, para processos e encerra o
     /// LSP (NFR-001: "O encerramento da IDE deve terminar processos-filhos
     /// gerenciados por ela").
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         let report = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
         self.exec.stop_if_running();
@@ -1157,7 +1161,8 @@ impl eframe::App for PhpIdeApp {
         );
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         // Screenshot do próprio app para documentação (README): com
         // PHPIDE_SCREENSHOT_TO=<arquivo.ppm> definido, pede o frame N
         // (PHPIDE_SCREENSHOT_AFTER, default 8) ao egui e grava PPM (RGBA→RGB;
@@ -1171,6 +1176,10 @@ impl eframe::App for PhpIdeApp {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8);
+            if n < after {
+                // Keep frames coming even when nothing animates.
+                ctx.request_repaint();
+            }
             if n == after {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 // O frame do screenshot só é produzido num redraw seguinte.
@@ -1191,7 +1200,7 @@ impl eframe::App for PhpIdeApp {
                     ppm.extend_from_slice(&[px.r(), px.g(), px.b()]);
                 }
                 if std::fs::write(&path, &ppm).is_ok() {
-                    eprintln!("screenshot gravado: {path} ({w}x{h})");
+                    eprintln!("screenshot saved: {path} ({w}x{h})");
                 }
                 std::process::exit(0);
             }
@@ -1206,7 +1215,10 @@ impl eframe::App for PhpIdeApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }
-        self.poll_watcher();
+        self.poll_watcher(ctx);
+        if !self.welcome_open {
+            self.poll_project_services(ctx);
+        }
         self.detect_double_shift(ctx);
         if !self.palette.open && !self.settings_dialog.open {
             self.handle_shortcuts(ctx);
@@ -1260,7 +1272,7 @@ impl eframe::App for PhpIdeApp {
 
         ctx.set_zoom_factor(self.zoom);
         let compact = self.settings.compact_mode;
-        ctx.style_mut(|style| {
+        ctx.global_style_mut(|style| {
             style.spacing.item_spacing = if compact {
                 egui::vec2(5.0, 3.0)
             } else {
@@ -1274,7 +1286,7 @@ impl eframe::App for PhpIdeApp {
         });
 
         if self.welcome_open {
-            welcome::welcome_screen(self, ctx);
+            welcome::welcome_screen(self, ui);
             self.dirty_close_modal(ctx);
             if self.watcher.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(150));
@@ -1282,39 +1294,39 @@ impl eframe::App for PhpIdeApp {
             return;
         }
 
-        header::header(self, ctx);
-        tabs::tab_strip(self, ctx);
-        statusbar::navigation_bar_top(self, ctx);
-        // Painéis bottom são registrados da borda para dentro: status, barra e conteúdo.
-        statusbar::status_bar(self, ctx);
-        self.tw.bottom_bar(ctx, compact);
+        header::header(self, ui);
+        tabs::tab_strip(self, ui);
+        statusbar::navigation_bar_top(self, ui);
+        // Bottom panels are laid out from the window edge inwards: status, bar, content.
+        statusbar::status_bar(self, ui);
+        self.tw.bottom_bar(ui, compact);
 
-        self.tw.bar(ctx, toolwindows::Anchor::Left, compact);
+        self.tw.bar(ui, toolwindows::Anchor::Left, compact);
         if self.tw.is_visible(ToolWindow::Project) {
-            self.file_tree(ctx);
+            self.file_tree(ui);
         }
         for tw in [ToolWindow::Bookmarks, ToolWindow::Services] {
             if self.tw.is_visible(tw) {
-                tool_panels::show(self, ctx, tw);
+                tool_panels::show(self, ui, tw);
             }
         }
 
-        self.tw.bar(ctx, toolwindows::Anchor::Right, compact);
+        self.tw.bar(ui, toolwindows::Anchor::Right, compact);
         if self.tw.is_visible(ToolWindow::Structure) {
-            self.outline_panel(ctx);
+            self.outline_panel(ui);
         }
         if self.tw.is_visible(ToolWindow::RemoteHost) {
-            tool_panels::show(self, ctx, ToolWindow::RemoteHost);
+            tool_panels::show(self, ui, ToolWindow::RemoteHost);
         }
 
         if self.tw.is_visible(ToolWindow::Find) {
-            self.search_panel(ctx);
+            self.search_panel(ui);
         }
         if self.tw.is_visible(ToolWindow::Problems) {
-            self.problems_panel(ctx);
+            self.problems_panel(ui);
         }
         if self.tw.is_visible(ToolWindow::Run) || self.tw.is_visible(ToolWindow::Debug) {
-            self.exec_panel(ctx);
+            self.exec_panel(ui);
         }
         for tw in [
             ToolWindow::VersionControl,
@@ -1324,10 +1336,10 @@ impl eframe::App for PhpIdeApp {
             ToolWindow::Notifications,
         ] {
             if self.tw.is_visible(tw) {
-                tool_panels::show(self, ctx, tw);
+                tool_panels::show(self, ui, tw);
             }
         }
-        self.editor(ctx);
+        self.editor(ui);
         self.dirty_close_modal(ctx);
 
         if self.watcher.is_some() {
@@ -1338,7 +1350,7 @@ impl eframe::App for PhpIdeApp {
 }
 
 impl PhpIdeApp {
-    fn poll_watcher(&mut self) {
+    fn poll_watcher(&mut self, ctx: &egui::Context) {
         if let Some((_, rx)) = &self.watcher {
             let mut any = false;
             while rx.try_recv().is_ok() {
@@ -1351,7 +1363,7 @@ impl PhpIdeApp {
         if let Some(since) = self.change_pending_since {
             if since.elapsed() > Duration::from_millis(300) {
                 self.change_pending_since = None;
-                self.ws.refresh_files();
+                self.files.refresh(&self.jobs, ctx);
                 // Mudança externa no composer.json → re-descoberta
                 // (T-PHP-030-03: alteração externa solicita reload).
                 let composer_file = self.ws.root.join("composer.json");
@@ -1370,10 +1382,60 @@ impl PhpIdeApp {
                     .collect();
                 let reloaded = self.ws.reload_clean_buffers(&changed);
                 if !reloaded.is_empty() {
-                    self.ws.message =
-                        format!("{} arquivo(s) recarregados do disco", reloaded.len());
+                    self.ws.message = format!("{} file(s) reloaded from disk", reloaded.len());
                 }
             }
+        }
+    }
+
+    /// Stores a finished `git blame` and derives the "code author" lenses
+    /// of the active file from it.
+    fn apply_blame(&mut self, reply: services::git::BlameReply) {
+        let key = reply.path.to_string_lossy().into_owned();
+        self.blame
+            .load(&key, reply.text_hash, reply.entries.clone());
+        self.blame_revision = Some((reply.path.clone(), reply.revision));
+        let active = self.ws.active_buffer().and_then(|b| b.path.clone());
+        if active.as_deref() != Some(reply.path.as_path()) {
+            return;
+        }
+        let Some((_, cache)) = &self.syntax else {
+            return;
+        };
+        let Some(buf) = self.ws.active_buffer() else {
+            return;
+        };
+        let Some(blocks) = cache.get(&buf.document) else {
+            return;
+        };
+        let entries = reply.entries;
+        for b in blocks.iter().filter(|b| {
+            matches!(
+                b.kind.as_str(),
+                "class_declaration" | "method_declaration" | "function_declaration"
+            )
+        }) {
+            self.code_vision
+                .set_code_author(b.start_line0, b.start_line0, b.end_line0, |line| {
+                    entries
+                        .iter()
+                        .find(|e| line >= e.final_start as usize && line <= e.final_end() as usize)
+                        .map(|e| (e.author.as_str(), e.timestamp))
+                });
+        }
+    }
+
+    /// Results of the file index and Git jobs.
+    fn poll_project_services(&mut self, ctx: &egui::Context) {
+        if let Some(index) = self.files.poll(&self.jobs, ctx) {
+            self.ws.files = index;
+        }
+        let events = self.git.poll(&self.jobs, ctx);
+        if let Some(reply) = events.markers {
+            self.git_markers = Some((reply.path, reply.revision, reply.markers));
+        }
+        if let Some(reply) = events.blame {
+            self.apply_blame(reply);
         }
     }
 
@@ -1416,15 +1478,10 @@ impl PhpIdeApp {
         if !self.zoom_on_ctrl_wheel {
             return;
         }
-        let scroll = ctx.input(|i| {
-            if i.modifiers.ctrl {
-                i.raw_scroll_delta.y
-            } else {
-                0.0
-            }
-        });
-        if scroll.abs() > 0.0 {
-            self.set_zoom(self.zoom * (1.0 + scroll * 0.001));
+        // egui turns Ctrl+wheel into a zoom delta (1.0 = no change).
+        let delta = ctx.input(|i| i.zoom_delta());
+        if (delta - 1.0).abs() > f32::EPSILON {
+            self.set_zoom(self.zoom * delta);
         }
     }
 
@@ -1519,10 +1576,10 @@ impl PhpIdeApp {
                 self.request_close_active();
             }
             if i.consume_key(alt, Key::ArrowLeft) && !self.ws.navigate_back() {
-                self.ws.message = "sem histórico de navegação".to_string();
+                self.ws.message = "no navigation history".to_string();
             }
             if i.consume_key(alt, Key::ArrowRight) && !self.ws.navigate_forward() {
-                self.ws.message = "sem histórico de navegação".to_string();
+                self.ws.message = "no navigation history".to_string();
             }
             if i.consume_key(alt, Key::Enter) {
                 // Placeholder de intention actions: abre o quick-fix do problema na linha.
@@ -1675,76 +1732,19 @@ impl PhpIdeApp {
         }
     }
 
-    fn file_tree(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("tree")
-            .resizable(true)
-            .default_width(220.0)
-            .show(ctx, |ui| {
-                tool_window_header(self, ui, ToolWindow::Project);
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let entries: Vec<phpide_core::FileEntry> = self
-                        .ws
-                        .files
-                        .iter()
-                        .filter(|e| {
-                            !self.has_collapsed_ancestor(e.path.parent().unwrap_or(&e.path))
-                        })
-                        .cloned()
-                        .collect();
-                    for entry in entries {
-                        let indent = 14.0 * entry.depth as f32;
-                        ui.horizontal(|ui| {
-                            ui.add_space(indent);
-                            let name = entry
-                                .path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| entry.path.display().to_string());
-                            let label = if entry.is_dir {
-                                if self.collapsed.contains(&entry.path) {
-                                    format!("> {name}/")
-                                } else {
-                                    format!("v {name}/")
-                                }
-                            } else {
-                                name
-                            };
-                            let is_php = phpide_php::Php::is_php_file(&entry.path);
-                            let text = if is_php {
-                                egui::RichText::new(label).color(egui::Color32::LIGHT_BLUE)
-                            } else {
-                                egui::RichText::new(label)
-                            };
-                            let resp = ui.selectable_label(
-                                self.selected.as_deref() == Some(entry.path.as_path()),
-                                text,
-                            );
-                            if resp.clicked() {
-                                self.selected = Some(entry.path.clone());
-                                if entry.is_dir {
-                                    if !self.collapsed.insert(entry.path.clone()) {
-                                        self.collapsed.remove(&entry.path);
-                                    }
-                                } else {
-                                    self.ws.open_file(&entry.path);
-                                }
-                            }
-                        });
-                    }
-                });
-            });
+    fn file_tree(&mut self, ui: &mut egui::Ui) {
+        project_tree::show(self, ui);
     }
 
-    fn search_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("search")
+    fn search_panel(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("search")
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 tool_window_header(self, ui, ToolWindow::Find);
                 ui.separator();
                 ui.horizontal(|ui| {
                     let edit = egui::TextEdit::singleline(&mut self.search.query)
-                        .hint_text("texto (Enter para buscar)")
+                        .hint_text("text (Enter to search)")
                         .desired_width(280.0)
                         .show(ui);
                     if edit.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1758,7 +1758,7 @@ impl PhpIdeApp {
                         self.search.start(files, &self.jobs);
                     }
                     ui.checkbox(&mut self.search.case_sensitive, "Aa");
-                    if ui.button("Buscar").clicked() {
+                    if ui.button("Search").clicked() {
                         let files: Vec<PathBuf> = self
                             .ws
                             .files
@@ -1798,7 +1798,7 @@ impl PhpIdeApp {
             });
     }
 
-    fn problems_panel(&mut self, ctx: &egui::Context) {
+    fn problems_panel(&mut self, ui: &mut egui::Ui) {
         // Escopo (T-PHP-002-02): projeto inteiro ou só o arquivo ativo.
         let active_path = self.ws.active_buffer().and_then(|b| b.path.clone());
         let mut diags: Vec<phpide_core::Diagnostic> =
@@ -1813,22 +1813,22 @@ impl PhpIdeApp {
             let refs: Vec<&phpide_core::Diagnostic> = diags.iter().collect();
             intelligence::problems_by_source(&refs)
         };
-        egui::TopBottomPanel::bottom("problems")
+        egui::Panel::bottom("problems")
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 tool_window_header(self, ui, ToolWindow::Problems);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label(format!("{} problemas", diags.len()));
+                    ui.label(format!("{} problems", diags.len()));
                     ui.separator();
                     let scope_label = if self.problems_scope == 0 {
-                        "Escopo: Projeto"
+                        "Scope: Project"
                     } else {
-                        "Escopo: Arquivo"
+                        "Scope: File"
                     };
                     if ui
                         .button(scope_label)
-                        .on_hover_text("Alternar projeto/arquivo")
+                        .on_hover_text("Toggle project/file")
                         .clicked()
                     {
                         self.problems_scope = 1 - self.problems_scope;
@@ -1843,7 +1843,7 @@ impl PhpIdeApp {
                 });
                 ui.separator();
                 if diags.is_empty() {
-                    ui.label("Sem problemas.");
+                    ui.label("No problems.");
                 } else {
                     egui::ScrollArea::vertical()
                         .max_height(200.0)
@@ -1889,12 +1889,12 @@ impl PhpIdeApp {
     /// Painéis Run e Debug (Estágio 8): a janela Run mostra as sessões
     /// (process list) e a Debug mostra a toolbar/inspeção DBGp. As duas são
     /// independentes — podem estar abertas ao mesmo tempo.
-    fn exec_panel(&mut self, ctx: &egui::Context) {
+    fn exec_panel(&mut self, ui: &mut egui::Ui) {
         if self.tw.is_visible(ToolWindow::Run) {
-            run_panels::run_panel(self, ctx);
+            run_panels::run_panel(self, ui);
         }
         if self.tw.is_visible(ToolWindow::Debug) {
-            run_panels::debug_panel(self, ctx);
+            run_panels::debug_panel(self, ui);
         }
     }
 
@@ -1940,34 +1940,34 @@ impl PhpIdeApp {
                     .map(|b| b.name())
                     .unwrap_or_else(|| "aba".to_string());
                 (
-                    "Fechar aba".to_string(),
-                    format!("\"{name}\" tem alterações não salvas."),
+                    "Close Tab".to_string(),
+                    format!("\"{name}\" has unsaved changes."),
                 )
             }
             PendingClose::Others(_) => (
-                "Fechar outras abas".to_string(),
-                "Outras abas têm alterações não salvas.".to_string(),
+                "Close Other Tabs".to_string(),
+                "Other tabs have unsaved changes.".to_string(),
             ),
             PendingClose::Project(path) => (
-                "Trocar de projeto".to_string(),
+                "Switch Project".to_string(),
                 format!(
-                    "Há alterações não salvas.\nAbrir \"{}\" mesmo assim?",
+                    "There are unsaved changes.\nOpen \"{}\" anyway?",
                     path.display()
                 ),
             ),
             PendingClose::Exit => (
-                "Sair da IDE".to_string(),
-                "Há alterações não salvas. Sair mesmo assim?".to_string(),
+                "Quit PHP IDE".to_string(),
+                "There are unsaved changes. Quit anyway?".to_string(),
             ),
         };
         let mut action: Option<&'static str> = None;
         egui::Modal::new(egui::Id::new("dirty-close"))
             .area(
                 egui::Modal::default_area(egui::Id::new("dirty-close"))
-                    .fixed_pos(ctx.screen_rect().center() - egui::vec2(220.0, 60.0)),
+                    .fixed_pos(ctx.content_rect().center() - egui::vec2(220.0, 60.0)),
             )
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(&ctx.global_style())
                     .shadow(egui::epaint::Shadow::default())
                     .inner_margin(egui::Margin::same(12)),
             )
@@ -1977,9 +1977,9 @@ impl PhpIdeApp {
                 ui.label(body);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let save_response = ui.button("Salvar");
-                    let discard_response = ui.button("Não Salvar");
-                    let cancel_response = ui.button("Cancelar");
+                    let save_response = ui.button("Save");
+                    let discard_response = ui.button("Don't Save");
+                    let cancel_response = ui.button("Cancel");
                     #[cfg(test)]
                     DIRTY_BUTTON_RECTS.with(|rects| {
                         rects.set(Some([
@@ -2044,7 +2044,7 @@ impl PhpIdeApp {
             .movable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(&ctx.global_style())
                     .shadow(egui::epaint::Shadow::default())
                     .inner_margin(egui::Margin::same(10)),
             )
@@ -2052,7 +2052,7 @@ impl PhpIdeApp {
                 ui.label(egui::RichText::new("Go to Line").strong().small());
                 ui.add_space(4.0);
                 let edit = egui::TextEdit::singleline(&mut self.goto_line_input)
-                    .hint_text("número da linha")
+                    .hint_text("line number")
                     .desired_width(180.0)
                     .show(ui);
                 edit.response.request_focus();
@@ -2122,23 +2122,23 @@ impl PhpIdeApp {
                             enabled.push("semanticTokens");
                         }
                         self.ws.message = format!(
-                            "LSP conectado: {} ({})",
+                            "language server connected: {} ({})",
                             self.lsp_name,
                             if enabled.is_empty() {
-                                "sem recursos extras".to_string()
+                                "no extra features".to_string()
                             } else {
                                 enabled.join(", ")
                             }
                         );
                     } else {
                         *lsp.shared.status.lock().unwrap() =
-                            LspStatus::Failed(format!("initialize rejeitado: {result}"));
+                            LspStatus::Failed(format!("initialize rejected: {result}"));
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.lsp_init = None;
                     *lsp.shared.status.lock().unwrap() =
-                        LspStatus::Failed("sem resposta do initialize".into());
+                        LspStatus::Failed("no response to initialize".into());
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -2149,7 +2149,7 @@ impl PhpIdeApp {
             if !self.lsp_crash_notified {
                 self.lsp_crash_notified = true;
                 self.ws.message = format!(
-                    "LSP caiu ({reason}) — edição e diagnósticos locais seguem disponíveis; reinicie em Find Action (Ctrl+Shift+A > 'Restart Language Server')"
+                    "The language server stopped ({reason}). Editing and local diagnostics still work; restart it from Find Action (Ctrl+Shift+A > 'Restart Language Server')."
                 );
                 self.logger.error(
                     Component::Lsp,
@@ -2492,7 +2492,7 @@ impl PhpIdeApp {
                             hints: parsed,
                             status: result
                                 .is_null()
-                                .then(|| "servidor sem inlay hints".to_string()),
+                                .then(|| "the language server has no inlay hints".to_string()),
                         });
                         self.hints_path = Some(key.path);
                     }
@@ -2602,11 +2602,11 @@ impl PhpIdeApp {
             return;
         };
         let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path0) else {
-            self.ws.message = "sem servidor de linguagem para este arquivo".to_string();
+            self.ws.message = "no language server for this file".to_string();
             return;
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
-            self.ws.message = "LSP ainda não está pronto".to_string();
+            self.ws.message = "the language server is not ready yet".to_string();
             return;
         }
         let caps = lsp.capabilities();
@@ -2617,7 +2617,7 @@ impl PhpIdeApp {
             _ => false,
         };
         if !supported {
-            self.ws.message = format!("servidor não suporta {what}");
+            self.ws.message = format!("the language server does not support {what}");
             return;
         }
         let Some(buf) = self.ws.active_buffer() else {
@@ -2659,11 +2659,11 @@ impl PhpIdeApp {
         });
     }
 
-    fn outline_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("outline")
+    fn outline_panel(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::right("outline")
             .resizable(true)
-            .default_width(210.0)
-            .show(ctx, |ui| {
+            .default_size(210.0)
+            .show(ui, |ui| {
                 tool_window_header(self, ui, ToolWindow::Structure);
                 ui.separator();
                 if self.ws.outline.is_empty() {
@@ -2695,9 +2695,9 @@ impl PhpIdeApp {
         match &self.lsp {
             None => "LSP: off".to_string(),
             Some(lsp) => match lsp.status() {
-                LspStatus::Starting => "LSP: conectando...".to_string(),
+                LspStatus::Starting => "LSP: starting...".to_string(),
                 LspStatus::Running(name) => format!("LSP: {name}"),
-                LspStatus::Failed(e) => format!("LSP: falhou ({e})"),
+                LspStatus::Failed(e) => format!("LSP: failed ({e})"),
             },
         }
     }
@@ -2709,13 +2709,13 @@ impl PhpIdeApp {
         let Some(path) = buf.path.clone() else { return };
         let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path) else {
             self.ws.message = format!(
-                "nenhum Language Server para {:?}",
+                "no language server for {:?}",
                 path.extension().and_then(|e| e.to_str()).unwrap_or("?")
             );
             return;
         };
         if !matches!(lsp.status(), LspStatus::Running(_)) {
-            self.ws.message = "LSP ainda não está pronto".to_string();
+            self.ws.message = "the language server is not ready yet".to_string();
             return;
         }
         let cursor = self.cursor_char.min(buf.document.len_chars());
@@ -2754,7 +2754,7 @@ impl PhpIdeApp {
             .movable(false)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -56.0))
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(&ctx.global_style())
                     .shadow(egui::epaint::Shadow::default())
                     .inner_margin(egui::Margin::same(8)),
             )
@@ -2792,7 +2792,7 @@ impl PhpIdeApp {
                 if self.completion.loading() {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("consultando servidor...");
+                        ui.label("asking the language server...");
                     });
                 }
                 egui::ScrollArea::vertical()
@@ -2893,7 +2893,7 @@ impl PhpIdeApp {
                 let mut store = WsStore(&mut self.ws);
                 match workspace_edit::apply(&mut store, &extra, &label, &mut self.refactor_undo) {
                     Ok((files, edits, _)) if files > 0 => {
-                        self.ws.message = format!("{label} ({edits} editos, undo coeso)");
+                        self.ws.message = format!("{label} ({edits} edits, undone as one step)");
                     }
                     Ok(_) => {}
                     Err(error) => self.ws.message = error.to_string(),
@@ -2902,14 +2902,10 @@ impl PhpIdeApp {
         }
         let id = egui::Id::new(("editor", self.ws.active));
         let mut st = TextEditState::load(ctx, id).unwrap_or_default();
-        let cc = egui::text::CCursor {
-            index: self.cursor_char,
-            prefer_next_row: true,
-        };
-        st.cursor.set_char_range(Some(egui::text::CCursorRange {
-            primary: cc,
-            secondary: cc,
-        }));
+        let mut cc = egui::text::CCursor::new(self.cursor_char);
+        cc.prefer_next_row = true;
+        st.cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(cc)));
         st.store(ctx, id);
         self.close_completion();
     }
@@ -2992,7 +2988,7 @@ impl PhpIdeApp {
                     buf.request_cursor(line0, 0);
                 }
             }
-            None => self.ws.message = "sem bloco estrutural nesta linha".to_string(),
+            None => self.ws.message = "no code block on this line".to_string(),
         }
     }
 
@@ -3003,11 +2999,11 @@ impl PhpIdeApp {
     fn palette_extras(&self) -> Vec<(String, String)> {
         let mut v = vec![
             (
-                "Executar: Rodar arquivo atual (Ctrl+R)".to_string(),
+                "Run: Run Current File (Ctrl+R)".to_string(),
                 "php:run".to_string(),
             ),
             (
-                "Executar: Debug arquivo atual (Ctrl+D)".to_string(),
+                "Run: Debug Current File (Ctrl+D)".to_string(),
                 "debug:run".to_string(),
             ),
         ];
@@ -3021,7 +3017,7 @@ impl PhpIdeApp {
         }
         if self.ws.root.join("vendor/bin/phpunit").exists() {
             v.push((
-                "Testes: PHPUnit (vendor/bin/phpunit)".to_string(),
+                "Tests: PHPUnit (vendor/bin/phpunit)".to_string(),
                 "phpunit".to_string(),
             ));
         }
@@ -3060,7 +3056,7 @@ impl PhpIdeApp {
                 } else if let Some(plugin_id) = id.strip_prefix("plugin:") {
                     self.run_manifest_plugin(plugin_id);
                 } else {
-                    self.ws.message = format!("comando desconhecido: {id}");
+                    self.ws.message = format!("unknown command: {id}");
                 }
             }
         }
@@ -3072,7 +3068,7 @@ impl PhpIdeApp {
     fn run_current_php(&mut self) {
         self.save_active();
         let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
-            self.ws.message = "salve o arquivo antes de executar".to_string();
+            self.ws.message = "save the file before running it".to_string();
             return;
         };
         // NFR-003-01: PHP por configuração (env/settings) antes do PATH;
@@ -3136,7 +3132,7 @@ impl PhpIdeApp {
             return;
         };
         let added = self.rd.toggle_breakpoint(path, line);
-        let action = if added { "adicionado" } else { "removido" };
+        let action = if added { "added" } else { "removed" };
         let total = self.rd.bp_store.lock().unwrap().breakpoints.len();
         self.ws.message = format!("breakpoint {action} (Ln {line}) — total {total}");
     }
@@ -3153,10 +3149,10 @@ impl PhpIdeApp {
             .0;
         let entries = self.bookmarks.entry(path.clone()).or_default();
         let action = if entries.remove(&line) {
-            "removido"
+            "removed"
         } else {
             entries.insert(line);
-            "adicionado"
+            "added"
         };
         if entries.is_empty() {
             self.bookmarks.remove(&path);
@@ -3170,12 +3166,12 @@ impl PhpIdeApp {
     /// socket via engine).
     fn debug_run(&mut self) {
         if self.rd.status.is_active() {
-            self.ws.message = "já há uma sessão de debug ativa".to_string();
+            self.ws.message = "a debug session is already active".to_string();
             return;
         }
         self.save_active();
         let Some(path) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
-            self.ws.message = "salve o arquivo antes de debugar".to_string();
+            self.ws.message = "save the file before debugging it".to_string();
             return;
         };
         let php = match exec::resolve_php(&self.settings) {
@@ -3189,7 +3185,7 @@ impl PhpIdeApp {
             Ok(()) => {
                 self.tw.set_visible(ToolWindow::Debug, true);
                 self.ws.message = format!(
-                    "debug: aguardando Xdebug em 127.0.0.1:{} (IDE key phpide)",
+                    "debug: waiting for Xdebug on 127.0.0.1:{} (IDE key phpide)",
                     run_debug::RunDebugState::debug_port()
                 );
             }
@@ -3231,7 +3227,7 @@ impl PhpIdeApp {
             .find(|p| p.id == wanted)
             .or_else(|| self.plugins.iter().find(|p| p.id == id))
         else {
-            self.ws.message = format!("plugin não encontrado: {id}");
+            self.ws.message = format!("plugin not found: {id}");
             return;
         };
         let (label, cmd, args) = (p.label.clone(), p.command.clone(), p.args.clone());
@@ -3346,7 +3342,7 @@ impl PhpIdeApp {
         let Some(first_row) = output.galley.rows.first() else {
             return;
         };
-        let row_height = first_row.rect.height();
+        let row_height = first_row.rect().height();
         let viewport = ui.clip_rect();
         let geom = editor_view::EditorGeometry {
             galley_pos: output.galley_pos,
@@ -3545,42 +3541,9 @@ impl PhpIdeApp {
             let needs_load =
                 !buffer_dirty && self.blame.is_stale(&path.to_string_lossy(), saved_hash);
             if needs_load {
-                if let Ok(entries) = phpide_vcs::blame(&self.ws.root, &path) {
-                    self.blame
-                        .load(&path.to_string_lossy(), saved_hash, entries.clone());
-                    self.blame_revision = Some((path.clone(), rev));
-                    // Code author (UI-ED-005-06) agregado do blame real.
-                    if let Some((_, cache)) = &self.syntax {
-                        if let Some(buf) = self.ws.active_buffer() {
-                            if let Some(blocks) = cache.get(&buf.document) {
-                                for b in blocks.iter().filter(|b| {
-                                    matches!(
-                                        b.kind.as_str(),
-                                        "class_declaration"
-                                            | "method_declaration"
-                                            | "function_declaration"
-                                    )
-                                }) {
-                                    let entry_vec = entries.clone();
-                                    self.code_vision.set_code_author(
-                                        b.start_line0,
-                                        b.start_line0,
-                                        b.end_line0,
-                                        |line| {
-                                            entry_vec
-                                                .iter()
-                                                .find(|e| {
-                                                    line >= e.final_start as usize
-                                                        && line <= e.final_end() as usize
-                                                })
-                                                .map(|e| (e.author.as_str(), e.timestamp))
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                let ctx = ui.ctx().clone();
+                self.git
+                    .request_blame(&self.jobs, &ctx, &path, saved_hash, rev);
             }
             let stale = buffer_dirty
                 || !matches!(&self.blame_revision, Some((p, r)) if p == &path && *r == rev);
@@ -3631,16 +3594,12 @@ impl PhpIdeApp {
                 buffer_dirty,
             );
         if !git_fresh && !buffer_dirty {
-            let markers = phpide_vcs::markers_for_file(&self.ws.root, &path)
-                .map(|m| {
-                    m.iter()
-                        .map(|(&l, kind)| (l, *kind == phpide_vcs::LineMarker::Added))
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.git_markers = Some((path.clone(), rev, markers));
+            let ctx = ui.ctx().clone();
+            self.git.request_markers(&self.jobs, &ctx, &path, rev);
         }
-        let git_stale = !git_fresh
+        // Markers only go stale through unsaved edits; while a refresh after
+        // save is in flight nothing is shown instead of outdated lines.
+        let git_stale = buffer_dirty
             && self
                 .git_markers
                 .as_ref()
@@ -3665,7 +3624,7 @@ impl PhpIdeApp {
             ui.painter().text(
                 egui::pos2(viewport.right() - 150.0, viewport.top() + 4.0),
                 egui::Align2::LEFT_TOP,
-                "Git: atualize ao salvar",
+                "Git: save to refresh",
                 egui::FontId::proportional(10.0),
                 ui.visuals().weak_text_color(),
             );
@@ -3721,7 +3680,8 @@ impl PhpIdeApp {
         }
     }
 
-    fn editor(&mut self, ctx: &egui::Context) {
+    fn editor(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         let mut want_completion = false;
         // Hook de demonstração/teste: rola o editor para uma linha no startup
         // (permite capturar sticky lines/gutter sem simulação de input).
@@ -3737,12 +3697,12 @@ impl PhpIdeApp {
             let g = geometry::Geometry::new(row, 600.0, usize::MAX);
             g.line_to_content_y(line0 as usize)
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             self.breadcrumbs(ui);
             let active = self.ws.active;
             if self.ws.active_buffer().is_none() {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Nenhum arquivo aberto.");
+                    ui.label("No file open.");
                 });
                 return;
             }
@@ -3766,14 +3726,10 @@ impl PhpIdeApp {
                     .unwrap_or(0);
                 let id = egui::Id::new(("editor", active));
                 let mut st = TextEditState::load(ui.ctx(), id).unwrap_or_default();
-                let cc = egui::text::CCursor {
-                    index: char_at,
-                    prefer_next_row: true,
-                };
-                st.cursor.set_char_range(Some(egui::text::CCursorRange {
-                    primary: cc,
-                    secondary: cc,
-                }));
+                let mut cc = egui::text::CCursor::new(char_at);
+                cc.prefer_next_row = true;
+                st.cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(cc)));
                 st.store(ui.ctx(), id);
                 self.cursor_char = char_at;
             }
@@ -3830,13 +3786,13 @@ impl PhpIdeApp {
                 .as_ref()
                 .filter(|(p, r, _, _)| active_path_matches(&self.ws, p, *r))
                 .map(|(_, _, _, spans)| spans.clone());
-            let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
-                let mut job = PhpLanguage.highlight(text, ui.style());
+            let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                let mut job = PhpLanguage.highlight(text.as_str(), ui.style());
                 if let Some(spans) = &semantic_spans {
                     apply_semantic_colors(&mut job, spans);
                 }
                 job.wrap.max_width = wrap_width;
-                ui.ctx().fonts(|fonts| fonts.layout_job(job))
+                ui.ctx().fonts_mut(|fonts| fonts.layout_job(job))
             };
             // O gutter é pintado por cima do viewport; o texto ganha um
             // recuo à esquerda para nunca ficar sob ele.
@@ -3864,7 +3820,7 @@ impl PhpIdeApp {
             let output = scroll.inner;
 
             if let Some(cursor) = output.cursor_range {
-                self.cursor_char = cursor.primary.ccursor.index;
+                self.cursor_char = cursor.primary.index.0;
             }
             // Caret em região dobrada revela a dobra (UI-ED-002-03): o texto
             // projetado some; o caret volta a enxergar a região.
@@ -3992,10 +3948,10 @@ impl PhpIdeApp {
             }
             if let Some((axis, sizes)) = split_layout {
                 let panels = groups::split_rect(ui.available_rect_before_wrap(), axis, sizes);
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panels[0]), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(panels[0]), |ui| {
                     primary_pane!(ui)
                 });
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panels[1]), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(panels[1]), |ui| {
                     secondary_pane!(ui)
                 });
             } else {
@@ -4171,14 +4127,15 @@ fn semantic_color(token_type: &str) -> Option<egui::Color32> {
 fn apply_semantic_colors(job: &mut egui::text::LayoutJob, spans: &[(usize, usize, String)]) {
     let mut span_idx = 0usize;
     for section in &mut job.sections {
-        while span_idx < spans.len() && spans[span_idx].1 <= section.byte_range.start {
+        let section_start = section.byte_range.start.0;
+        while span_idx < spans.len() && spans[span_idx].1 <= section_start {
             span_idx += 1;
         }
         if span_idx >= spans.len() {
             break;
         }
         let (s, e, ty) = &spans[span_idx];
-        if section.byte_range.start >= *s && section.byte_range.start < *e {
+        if section_start >= *s && section_start < *e {
             if let Some(color) = semantic_color(ty) {
                 section.format.color = color;
             }
@@ -4200,11 +4157,11 @@ fn tool_window_header(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
                 ui.separator();
                 if ui.button("Hide\tShift+Esc").clicked() {
                     app.tw.set_visible(tw, false);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Hide All Tool Windows\tCtrl+Shift+F12").clicked() {
                     app.tw.toggle_hide_all();
-                    ui.close_menu();
+                    ui.close();
                 }
             })
             .response
@@ -4858,7 +4815,6 @@ mod gate_fe {
 mod gate_tests {
     // Gate do recorte UI-ED-000 e verificação do modo offline.
     use crate::DIRTY_BUTTON_RECTS;
-    use eframe::App as _;
 
     /// Modo offline (sem LSP): highlight sintático e diagnósticos estruturais
     /// locais continuam funcionais — são a degradação prevista pelo NFR
@@ -4952,10 +4908,14 @@ mod gate_tests {
             )),
             ..Default::default()
         };
-        let _ = context.run(input, |ctx| app.update(ctx, &mut frame));
-        let _ = context.run(eframe::egui::RawInput::default(), |ctx| {
-            app.update(ctx, &mut frame)
-        });
+        context
+            .run_ui(input, |ui| eframe::App::ui(&mut app, ui, &mut frame))
+            .drop_without_applying_deltas();
+        context
+            .run_ui(eframe::egui::RawInput::default(), |ui| {
+                eframe::App::ui(&mut app, ui, &mut frame)
+            })
+            .drop_without_applying_deltas();
         let index = match action {
             "save" => 0,
             "discard" => 1,
@@ -4981,7 +4941,9 @@ mod gate_tests {
             ],
             ..Default::default()
         };
-        let _ = context.run(press, |ctx| app.update(ctx, &mut frame));
+        context
+            .run_ui(press, |ui| eframe::App::ui(&mut app, ui, &mut frame))
+            .drop_without_applying_deltas();
         let release = eframe::egui::RawInput {
             screen_rect: Some(eframe::egui::Rect::from_min_size(
                 eframe::egui::pos2(0.0, 0.0),
@@ -4995,28 +4957,30 @@ mod gate_tests {
             }],
             ..Default::default()
         };
-        let _ = context.run(release, |ctx| app.update(ctx, &mut frame));
+        context
+            .run_ui(release, |ui| eframe::App::ui(&mut app, ui, &mut frame))
+            .drop_without_applying_deltas();
         (app, dir, file)
     }
 
     #[test]
     fn project_close_buttons_are_clickable_and_cancel_keeps_current_project() {
         let (app, _, _) = click_pending_close_button("cancel");
-        assert!(app.pending_close.is_none(), "Cancelar não foi roteado");
+        assert!(app.pending_close.is_none(), "Cancel was not routed");
         assert!(!app.ws.root.ends_with("other"));
     }
 
     #[test]
     fn project_close_discard_switches_project_without_saving() {
         let (app, _, _) = click_pending_close_button("discard");
-        assert!(app.pending_close.is_none(), "Não Salvar não foi roteado");
+        assert!(app.pending_close.is_none(), "Don't Save was not routed");
         assert!(app.ws.root.ends_with("other"));
     }
 
     #[test]
     fn project_close_save_persists_and_switches_project() {
         let (app, _dir, file) = click_pending_close_button("save");
-        assert!(app.pending_close.is_none(), "Salvar não foi roteado");
+        assert!(app.pending_close.is_none(), "Save was not routed");
         assert!(app.ws.root.ends_with("other"));
         let text = std::fs::read_to_string(file).unwrap();
         assert!(text.contains("// alteração"));

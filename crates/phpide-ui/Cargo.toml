@@ -6,7 +6,7 @@ license.workspace = true
 description = "Interface gráfica (egui/eframe) do phpide"
 
 [dependencies]
-eframe = "0.31"
+eframe = "0.36"
 notify = "7"
 serde_json = "1"
 libc = "0.2"
@@ -30,6 +30,7 @@ experimental = []
 
 [dev-dependencies]
 tempfile = "3"
+egui_kittest = { version = "0.36", features = ["eframe"] }
 
 [[bench]]
 name = "search_large"

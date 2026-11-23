@@ -15,9 +15,9 @@ fn tmp_name(path: &Path) -> io::Result<std::path::PathBuf> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "caminho sem nome de arquivo")
-    })?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
     Ok(dir.join(format!(".{}.phpide-tmp", name.to_string_lossy())))
 }
 

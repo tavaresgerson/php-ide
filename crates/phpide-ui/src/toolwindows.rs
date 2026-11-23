@@ -204,7 +204,7 @@ impl ToolWindows {
         }
     }
 
-    pub fn bar(&mut self, ctx: &egui::Context, side: Anchor, compact: bool) {
+    pub fn bar(&mut self, ui: &mut egui::Ui, side: Anchor, compact: bool) {
         if !ToolWindow::ALL.iter().any(|&tw| tw.anchor() == side) || side == Anchor::Bottom {
             return;
         }
@@ -213,47 +213,45 @@ impl ToolWindows {
         } else {
             "tw-bar-right"
         };
-        egui::SidePanel::new(
-            if side == Anchor::Left {
-                egui::panel::Side::Left
-            } else {
-                egui::panel::Side::Right
-            },
-            id,
-        )
-        .resizable(false)
-        .exact_width(if compact { 26.0 } else { 32.0 })
-        .show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(if compact { 2.0 } else { 5.0 });
-                for tw in ToolWindow::ALL {
-                    if tw.anchor() != side || !tw.is_available() {
-                        continue;
-                    }
-                    let selected = self.is_visible(tw);
-                    let response = ui.selectable_label(selected, tw.icon());
-                    if response.clicked() {
-                        self.toggle(tw);
-                    }
-                    response.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
-                }
-                ui.menu_button("...", |ui| {
-                    ui.label(egui::RichText::new("More tool windows").weak().small());
+        let panel = if side == Anchor::Left {
+            egui::Panel::left(id)
+        } else {
+            egui::Panel::right(id)
+        };
+        panel
+            .resizable(false)
+            .exact_size(if compact { 26.0 } else { 32.0 })
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(if compact { 2.0 } else { 5.0 });
                     for tw in ToolWindow::ALL {
-                        if !tw.is_available() {
+                        if tw.anchor() != side || !tw.is_available() {
                             continue;
                         }
-                        let mut visible = self.is_visible(tw);
-                        if ui.checkbox(&mut visible, tw.title()).changed() {
-                            self.set_visible(tw, visible);
+                        let selected = self.is_visible(tw);
+                        let response = ui.selectable_label(selected, tw.icon());
+                        if response.clicked() {
+                            self.toggle(tw);
                         }
+                        response.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
                     }
+                    ui.menu_button("...", |ui| {
+                        ui.label(egui::RichText::new("More tool windows").weak().small());
+                        for tw in ToolWindow::ALL {
+                            if !tw.is_available() {
+                                continue;
+                            }
+                            let mut visible = self.is_visible(tw);
+                            if ui.checkbox(&mut visible, tw.title()).changed() {
+                                self.set_visible(tw, visible);
+                            }
+                        }
+                    });
                 });
             });
-        });
     }
 
-    pub fn bottom_bar(&mut self, ctx: &egui::Context, compact: bool) {
+    pub fn bottom_bar(&mut self, ui: &mut egui::Ui, compact: bool) {
         const PRIMARY: [ToolWindow; 5] = [
             ToolWindow::Find,
             ToolWindow::Run,
@@ -261,9 +259,9 @@ impl ToolWindows {
             ToolWindow::Problems,
             ToolWindow::Terminal,
         ];
-        egui::TopBottomPanel::bottom("tw-bar-bottom")
-            .exact_height(if compact { 24.0 } else { 30.0 })
-            .show(ctx, |ui| {
+        egui::Panel::bottom("tw-bar-bottom")
+            .exact_size(if compact { 24.0 } else { 30.0 })
+            .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     for tw in PRIMARY {
                         let selected = self.is_visible(tw);

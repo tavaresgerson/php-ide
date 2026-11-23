@@ -18,7 +18,7 @@ pub fn scheme_popup(app: &mut PhpIdeApp, ctx: &egui::Context) {
         .movable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .frame(
-            egui::Frame::window(&ctx.style())
+            egui::Frame::window(&ctx.global_style())
                 .shadow(egui::epaint::Shadow::default())
                 .inner_margin(egui::Margin::same(10)),
         )

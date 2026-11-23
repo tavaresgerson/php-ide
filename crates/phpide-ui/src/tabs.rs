@@ -6,8 +6,8 @@ use eframe::egui;
 
 use crate::PhpIdeApp;
 
-pub fn tab_strip(app: &mut PhpIdeApp, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+pub fn tab_strip(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    egui::Panel::top("tabs").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             let count = app.ws.buffers.len();
             let active = app.ws.active;
@@ -41,18 +41,18 @@ pub fn tab_strip(app: &mut PhpIdeApp, ctx: &egui::Context) {
                 resp.context_menu(|ui| {
                     if ui.button("Close\tCtrl+F4").clicked() {
                         close = Some(i);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Close Others").clicked() {
                         close_others = Some(i);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .button(if pinned { "Unpin Tab" } else { "Pin Tab" })
                         .clicked()
                     {
                         pin_toggle = Some(i);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }

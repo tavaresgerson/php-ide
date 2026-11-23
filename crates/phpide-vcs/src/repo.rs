@@ -48,8 +48,8 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output
                 Component::Git,
                 "git",
                 ErrorKind::NotFound,
-                "não foi possível executar o git",
-                "instale o Git (https://git-scm.com) e tente de novo",
+                "could not run git",
+                "install Git (https://git-scm.com) and try again",
             )
             .with_detail(e.to_string())
         })
@@ -61,8 +61,8 @@ pub(crate) fn git_error(op: &str, out: &std::process::Output) -> IdeError {
         Component::Git,
         op.to_string(),
         ErrorKind::Io,
-        format!("git falhou em '{op}' (exit {})", out.status),
-        "verifique o estado do repositório e tente de novo",
+        format!("git failed on '{op}' (exit {})", out.status),
+        "check the repository state and try again",
     )
     .with_detail(String::from_utf8_lossy(&out.stderr).into_owned())
 }
@@ -97,14 +97,14 @@ pub fn worktree_root(root: &Path) -> Option<PathBuf> {
 /// - HEAD desanexada: `RepoState::Detached` com sha curto.
 pub fn detect(root: &Path) -> Result<RepoState, IdeError> {
     let inside = run_git(root, &["rev-parse", "--is-inside-work-tree"])
-        .map_err(|e| e.with_detail("git indisponível na detecção de repositório".to_string()))?;
+        .map_err(|e| e.with_detail("git is not available to detect the repository".to_string()))?;
     if !inside.status.success() {
         return Err(IdeError::new(
             Component::Git,
             "detect",
             ErrorKind::InvalidInput,
-            "diretório não pertence a um repositório git",
-            "abra a pasta raiz de um repositório ou inicialize um com git init",
+            "the folder is not inside a Git repository",
+            "open the root of a repository or create one with git init",
         )
         .with_detail(String::from_utf8_lossy(&inside.stderr).into_owned()));
     }
@@ -114,8 +114,8 @@ pub fn detect(root: &Path) -> Result<RepoState, IdeError> {
             Component::Git,
             "detect",
             ErrorKind::InvalidInput,
-            "repositório bare não tem working tree",
-            "abra o worktree correspondente a este repositório",
+            "a bare repository has no working tree",
+            "open a worktree of this repository",
         ));
     }
     let wt = worktree_root(root).ok_or_else(|| {
@@ -123,8 +123,8 @@ pub fn detect(root: &Path) -> Result<RepoState, IdeError> {
             Component::Git,
             "detect",
             ErrorKind::InvalidInput,
-            "worktree não resolvido",
-            "verifique se o diretório não foi movido nem corrompido",
+            "could not resolve the worktree",
+            "check that the folder was not moved or damaged",
         )
     })?;
     // Branch: vazia = detached HEAD.
@@ -164,8 +164,8 @@ pub fn detect(root: &Path) -> Result<RepoState, IdeError> {
         Component::Git,
         "detect",
         ErrorKind::InvalidInput,
-        "HEAD não resolve para branch nem commit",
-        "faça um commit inicial (git commit) para estabilizar o repositório",
+        "HEAD does not point to a branch or commit",
+        "make an initial commit (git commit)",
     ))
 }
 

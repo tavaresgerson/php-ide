@@ -179,14 +179,14 @@ impl RunConfig {
         if self.name.trim().is_empty() {
             issues.push(ValidationIssue::error(
                 "name",
-                "o nome da configuração é obrigatório",
+                "the configuration name is required",
             ));
         }
         if let Some(cwd) = &self.cwd {
             if !cwd.is_dir() {
                 issues.push(ValidationIssue::warning(
                     "cwd",
-                    format!("working directory não existe: {}", cwd.display()),
+                    format!("working directory does not exist: {}", cwd.display()),
                 ));
             }
         }
@@ -194,7 +194,7 @@ impl RunConfig {
             if k.trim().is_empty() {
                 issues.push(ValidationIssue::error(
                     "env",
-                    "variável de ambiente com nome vazio",
+                    "environment variable with an empty name",
                 ));
             }
         }
@@ -203,7 +203,7 @@ impl RunConfig {
                 if file.as_os_str().is_empty() {
                     issues.push(ValidationIssue::error(
                         "php_script.file",
-                        "informe o arquivo PHP",
+                        "choose the PHP file",
                     ));
                 } else {
                     let abs = if file.is_absolute() {
@@ -214,12 +214,12 @@ impl RunConfig {
                     if !abs.exists() {
                         issues.push(ValidationIssue::error(
                             "php_script.file",
-                            format!("arquivo não encontrado: {}", abs.display()),
+                            format!("file not found: {}", abs.display()),
                         ));
                     } else if abs.extension().is_some_and(|e| e != "php") {
                         issues.push(ValidationIssue::warning(
                             "php_script.file",
-                            "a extensão não é .php",
+                            "the file extension is not .php",
                         ));
                     }
                 }
@@ -228,12 +228,12 @@ impl RunConfig {
                 if script.trim().is_empty() {
                     issues.push(ValidationIssue::error(
                         "composer_script.script",
-                        "informe o nome do script",
+                        "enter the script name",
                     ));
                 } else if !root.join("composer.json").exists() {
                     issues.push(ValidationIssue::warning(
                         "composer_script.script",
-                        "projeto sem composer.json — verifique o diretório de trabalho",
+                        "no composer.json in the project — check the working directory",
                     ));
                 }
             }
@@ -247,14 +247,14 @@ impl RunConfig {
                     if !abs.is_dir() {
                         issues.push(ValidationIssue::error(
                             "php_unit.scope.path",
-                            format!("diretório de testes não encontrado: {}", abs.display()),
+                            format!("test directory not found: {}", abs.display()),
                         ));
                     }
                 }
                 TestScope::Class { class, .. } if class.trim().is_empty() => {
                     issues.push(ValidationIssue::error(
                         "php_unit.scope.class",
-                        "informe a classe de teste",
+                        "enter the test class",
                     ));
                 }
                 TestScope::Method { class, method } => {
@@ -262,7 +262,7 @@ impl RunConfig {
                     if empty {
                         issues.push(ValidationIssue::error(
                             "php_unit.scope.method",
-                            "classe e método são obrigatórios",
+                            "class and method are required",
                         ));
                     }
                 }
@@ -277,7 +277,7 @@ impl RunConfig {
                     if empty {
                         issues.push(ValidationIssue::error(
                             "php_unit.scope.data_set",
-                            "classe, método e data set são obrigatórios",
+                            "class, method and data set are required",
                         ));
                     }
                 }
@@ -322,8 +322,8 @@ pub fn parse_run_config(json: &str) -> Result<RunConfig, IdeError> {
             Component::Core,
             "parse_run_config",
             ErrorKind::InvalidConfig,
-            "arquivo de run configuration inválido",
-            "corrija o JSON ou restaure o arquivo de configuração",
+            "invalid run configuration file",
+            "fix the JSON or restore the configuration file",
         )
         .with_detail(e.to_string())
     })?;
@@ -335,8 +335,8 @@ pub fn parse_run_config(json: &str) -> Result<RunConfig, IdeError> {
                     Component::Core,
                     "parse_run_config",
                     ErrorKind::InvalidConfig,
-                    "campos de run configuration incompatíveis",
-                    "verifique o arquivo de configuração",
+                    "incompatible run configuration fields",
+                    "check the configuration file",
                 )
                 .with_detail(e.to_string())
             })
@@ -346,8 +346,8 @@ pub fn parse_run_config(json: &str) -> Result<RunConfig, IdeError> {
             Component::Core,
             "parse_run_config",
             ErrorKind::InvalidConfig,
-            "run configuration sem versão",
-            "adicione \"version\": 1 ao arquivo",
+            "run configuration has no version",
+            "add \"version\": 1 to the file",
         )),
     }
 }
@@ -363,8 +363,8 @@ fn migrate(_value: serde_json::Value, from: u64) -> Result<RunConfig, IdeError> 
         Component::Core,
         "migrate_run_config",
         ErrorKind::InvalidConfig,
-        format!("versão de run configuration não suportada: {from}"),
-        "atualize a IDE ou recrie a configuração",
+        format!("unsupported run configuration version: {from}"),
+        "update PHP IDE or create the configuration again",
     )
     .with_detail(format!(
         "version={from}, suportada<={RUN_CONFIG_FORMAT_VERSION}"

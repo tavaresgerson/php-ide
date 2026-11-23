@@ -87,13 +87,13 @@ run fmt "cargo fmt --check" cargo fmt --all -- --check
 run clippy "clippy (default features)" cargo clippy --workspace --all-targets -- -D warnings
 run clippy-experimental "clippy (--features experimental)" \
     cargo clippy --workspace --all-targets --features phpide-ui/experimental -- -D warnings
-run test "cargo test --workspace" cargo test --workspace -- --test-threads=1
+run test "cargo test --workspace" cargo test --workspace -- --test-threads=1 --nocapture
 run test-experimental "cargo test phpide-ui --features experimental" \
-    cargo test -p phpide-ui --features experimental -- --test-threads=1
+    cargo test -p phpide-ui --features experimental -- --test-threads=1 --nocapture
 run gate-composer "gate: Composer + intelephense" \
-    cargo test -p phpide-php --test composer_flow -- --test-threads=1
+    cargo test -p phpide-php --test composer_flow -- --test-threads=1 --nocapture
 run gate-run-debug "gate: run/debug/PHPUnit" \
-    cargo test -p phpide-run --test gate_run_debug -- --test-threads=1
+    cargo test -p phpide-run --test gate_run_debug -- --test-threads=1 --nocapture
 
 if [ "$QUICK" -eq 0 ]; then
     run build-release "cargo build --release" cargo build --release -p phpide-ui
@@ -116,6 +116,21 @@ fi
     for id in test test-experimental gate-composer gate-run-debug; do
         [ -f "$OUT/$id.log" ] && echo "- \`$id\`: $(test_totals "$OUT/$id.log")"
     done
+    echo
+    echo "### Not verified (integration skipped: tool missing)"
+    echo
+    echo "A skipped integration passes as \"ok\" in cargo test but proves nothing."
+    echo "Set PHPIDE_REQUIRE_INTEGRATIONS=1 to turn these into failures."
+    echo
+    echo '```'
+    grep -h -o 'GATE SKIP: .*' "$OUT"/test*.log "$OUT"/gate-*.log 2>/dev/null | sed 's/GATE SKIP: //' | sort | uniq -c || true
+    echo '```'
+    echo
+    echo "### Tools used by the gates"
+    echo
+    echo '```'
+    grep -h -o 'GATE USING: .*' "$OUT"/test*.log "$OUT"/gate-*.log 2>/dev/null | sed 's/GATE USING: //' | sort -u || true
+    echo '```'
     echo
     echo "### Failing tests"
     echo

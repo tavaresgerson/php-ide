@@ -28,10 +28,10 @@ impl SaveReport {
     pub fn summary(&self) -> String {
         let failed = self.failed().count();
         if failed == 0 {
-            format!("{} buffer(s) salvo(s)", self.outcomes.len())
+            format!("{} file(s) saved", self.outcomes.len())
         } else {
             format!(
-                "{failed} buffer(s) não puderam ser salvos; fechamento cancelado e edições preservadas"
+                "{failed} file(s) could not be saved; closing was cancelled and your edits are kept"
             )
         }
     }

@@ -40,8 +40,8 @@ pub fn resolve_phpunit(root: &Path) -> Result<PathBuf, IdeError> {
                 Component::Exec,
                 "resolve_phpunit",
                 ErrorKind::NotFound,
-                format!("PHPUNIT configurado não existe: {explicit}"),
-                "corrija a variável PHPIDE_PHPUNIT",
+                format!("configured PHPUnit does not exist: {explicit}"),
+                "fix the PHPIDE_PHPUNIT variable",
             ));
         }
     }
@@ -59,8 +59,8 @@ pub fn resolve_phpunit(root: &Path) -> Result<PathBuf, IdeError> {
             Component::Exec,
             "resolve_phpunit",
             ErrorKind::NotFound,
-            "PHPUnit não encontrado",
-            "instale com `composer require --dev phpunit/phpunit` ou baixe o phpunit.phar para a raiz do projeto",
+            "PHPUnit not found",
+            "install it with `composer require --dev phpunit/phpunit` or put phpunit.phar in the project root",
         )),
     }
 }
@@ -204,7 +204,7 @@ pub fn build_command(
         coverage,
     } = &config.kind
     else {
-        unreachable!("build_command de PHPUnit chamado com kind errado");
+        unreachable!("PHPUnit build_command called with the wrong kind");
     };
     // Contexto vence a detecção (NFR-003-01: configuração explícita primeiro).
     let runner = match &ctx.phpunit {

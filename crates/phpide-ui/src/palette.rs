@@ -126,62 +126,59 @@ enum PaletteActionKind {
 
 /// Comandos estáticos da IDE, com prefixo de categoria estilo JetBrains.
 const COMMANDS: &[(&str, PaletteCommand)] = &[
-    ("Arquivo: Salvar", PaletteCommand::Save),
-    ("Arquivo: Novo arquivo", PaletteCommand::NewFile),
-    ("Arquivo: Fechar aba", PaletteCommand::CloseTab),
-    ("Arquivo: Fechar outras abas", PaletteCommand::CloseOthers),
-    ("Arquivo: Fixar/despinar aba", PaletteCommand::PinTab),
-    ("Arquivo: Recarregar árvore", PaletteCommand::RefreshTree),
-    ("Ver: Toggle Theme", PaletteCommand::ToggleTheme),
-    ("Ver: Zoom in", PaletteCommand::ZoomIn),
-    ("Ver: Zoom out", PaletteCommand::ZoomOut),
-    ("Ver: Zoom reset", PaletteCommand::ZoomReset),
-    ("Ver: Project Tool Window", PaletteCommand::ToggleProject),
-    ("Ver: Find Tool Window", PaletteCommand::ToggleFind),
-    ("Ver: Run Tool Window", PaletteCommand::ToggleRun),
-    ("Ver: Debug Tool Window", PaletteCommand::ToggleDebug),
-    ("Ver: Problems Tool Window", PaletteCommand::ToggleProblems),
+    ("File: Save", PaletteCommand::Save),
+    ("File: New File", PaletteCommand::NewFile),
+    ("File: Close Tab", PaletteCommand::CloseTab),
+    ("File: Close Other Tabs", PaletteCommand::CloseOthers),
+    ("File: Pin/Unpin Tab", PaletteCommand::PinTab),
+    ("File: Reload Project Tree", PaletteCommand::RefreshTree),
+    ("View: Toggle Theme", PaletteCommand::ToggleTheme),
+    ("View: Zoom in", PaletteCommand::ZoomIn),
+    ("View: Zoom out", PaletteCommand::ZoomOut),
+    ("View: Zoom reset", PaletteCommand::ZoomReset),
+    ("View: Project Tool Window", PaletteCommand::ToggleProject),
+    ("View: Find Tool Window", PaletteCommand::ToggleFind),
+    ("View: Run Tool Window", PaletteCommand::ToggleRun),
+    ("View: Debug Tool Window", PaletteCommand::ToggleDebug),
+    ("View: Problems Tool Window", PaletteCommand::ToggleProblems),
     (
-        "Ver: Structure Tool Window",
+        "View: Structure Tool Window",
         PaletteCommand::ToggleStructure,
     ),
     (
-        "Ver: Hide All Tool Windows",
+        "View: Hide All Tool Windows",
         PaletteCommand::HideAllToolWindows,
     ),
-    ("Navegar: Back", PaletteCommand::NavigateBack),
-    ("Navegar: Forward", PaletteCommand::NavigateForward),
-    ("Navegar: Ir para definição", PaletteCommand::GotoDefinition),
+    ("Navigate: Back", PaletteCommand::NavigateBack),
+    ("Navigate: Forward", PaletteCommand::NavigateForward),
+    ("Navigate: Go to Definition", PaletteCommand::GotoDefinition),
     (
-        "Navegar: Ir para implementação",
+        "Navigate: Go to Implementation",
         PaletteCommand::GotoImplementation,
     ),
     (
-        "Navegar: Ir para declaração de tipo",
+        "Navigate: Go to Type Declaration",
         PaletteCommand::GotoTypeDeclaration,
     ),
-    ("Navegar: Ir para símbolo", PaletteCommand::GotoSymbol),
-    ("Navegar: Find Usages", PaletteCommand::FindUsages),
+    ("Navigate: Go to Symbol", PaletteCommand::GotoSymbol),
+    ("Navigate: Find Usages", PaletteCommand::FindUsages),
     ("Window: Split Right", PaletteCommand::SplitRight),
     (
-        "Refactor: Undo última refatoração",
+        "Refactor: Undo Last Refactoring",
         PaletteCommand::UndoRefactor,
     ),
     ("Window: Split Down", PaletteCommand::SplitDown),
     ("Git: Toggle Blame Gutter", PaletteCommand::ToggleBlame),
     ("Editor: Toggle Folding", PaletteCommand::ToggleFolding),
-    ("Navegar: Ir para linha", PaletteCommand::GotoLine),
-    ("Navegar: Próximo problema", PaletteCommand::NextProblem),
-    ("Navegar: Problema anterior", PaletteCommand::PrevProblem),
-    ("LSP: Reiniciar Language Server", PaletteCommand::RestartLsp),
-    ("Executar: Rodar arquivo atual", PaletteCommand::RunCurrent),
-    (
-        "Executar: Debug arquivo atual",
-        PaletteCommand::DebugCurrent,
-    ),
-    ("Ajuda: Welcome Screen", PaletteCommand::OpenWelcome),
-    ("Ajuda: Quick Switch Scheme", PaletteCommand::OpenScheme),
-    ("Arquivo: Settings", PaletteCommand::OpenSettings),
+    ("Navigate: Go to Line", PaletteCommand::GotoLine),
+    ("Navigate: Next Problem", PaletteCommand::NextProblem),
+    ("Navigate: Previous Problem", PaletteCommand::PrevProblem),
+    ("LSP: Restart Language Server", PaletteCommand::RestartLsp),
+    ("Run: Run Current File", PaletteCommand::RunCurrent),
+    ("Run: Debug Current File", PaletteCommand::DebugCurrent),
+    ("Help: Welcome Screen", PaletteCommand::OpenWelcome),
+    ("Help: Quick Switch Scheme", PaletteCommand::OpenScheme),
+    ("File: Settings", PaletteCommand::OpenSettings),
 ];
 
 /// Fuzzy match por subsequência: retorna pontuação maior = melhor.
@@ -370,7 +367,7 @@ pub fn show(
         .movable(false)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 40.0))
         .frame(
-            egui::Frame::window(&ctx.style())
+            egui::Frame::window(&ctx.global_style())
                 .shadow(egui::epaint::Shadow::default())
                 .inner_margin(egui::Margin::same(8)),
         )
@@ -382,7 +379,7 @@ pub fn show(
                     .weak(),
             );
             let edit = egui::TextEdit::singleline(&mut state.query)
-                .hint_text("Digite para buscar ( > = ações )")
+                .hint_text("Type to search (> for actions)")
                 .desired_width(460.0)
                 .show(ui);
             if state.just_opened {

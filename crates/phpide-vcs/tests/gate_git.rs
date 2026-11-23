@@ -21,6 +21,16 @@ use phpide_vcs::{
     LineMarker, LogFilter, RepoState,
 };
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 fn git_ok() -> bool {
     Command::new("git")
         .arg("--version")
@@ -41,7 +51,7 @@ fn git(root: &Path, args: &[&str]) -> std::process::Output {
 #[test]
 fn gate_git_diff_stage_commit_markers_blame() {
     if !git_ok() {
-        eprintln!("GATE SKIP: git indisponível");
+        skip("git not available");
         return;
     }
 

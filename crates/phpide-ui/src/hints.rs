@@ -184,7 +184,7 @@ impl CodeVision {
         }
         if let Some(who) = latest_author {
             let label = if authors.len() > 1 {
-                format!("{who} +{} autores", authors.len() - 1)
+                format!("{who} +{} authors", authors.len() - 1)
             } else {
                 who.to_string()
             };
@@ -291,7 +291,7 @@ mod tests {
             _ => None,
         };
         cv.set_code_author(5, 10, 12, blame);
-        assert_eq!(cv.lenses[&5], vec!["Ana +1 autores"]);
+        assert_eq!(cv.lenses[&5], vec!["Ana +1 authors"]);
         // Blame vazio (sem provedor/git): sem lens — ausência não é sucesso.
         let mut cv2 = CodeVision::default();
         cv2.set_code_author(1, 0, 3, |_| None::<(&str, i64)>);

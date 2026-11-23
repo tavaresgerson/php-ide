@@ -10,6 +10,16 @@ use std::time::{Duration, Instant};
 use phpide_lsp::{detect_server, LspClient, LspStatus};
 use serde_json::Value;
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -64,7 +74,7 @@ fn wait_for<T>(timeout: Duration, mut poll: impl FnMut() -> Option<T>) -> Option
 fn composer_project_full_flow_with_real_lsp() {
     let ws_root = workspace_root();
     let Some((cmd, args)): Option<(String, Vec<String>)> = detect_server(&ws_root) else {
-        eprintln!("[skip] nenhum servidor LSP encontrado");
+        skip("no language server found");
         return;
     };
     let root = scratch();
@@ -80,7 +90,7 @@ fn composer_project_full_flow_with_real_lsp() {
     // 2. Sobe o servidor real.
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let Ok((lsp, init_rx)) = LspClient::spawn(&cmd, &refs, &root) else {
-        eprintln!("[skip] falha ao iniciar {cmd}");
+        skip(&format!("could not start {cmd}"));
         std::fs::remove_dir_all(&root).ok();
         return;
     };

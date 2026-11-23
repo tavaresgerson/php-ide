@@ -43,25 +43,46 @@ Size: S (days) · M (1–2 weeks) · L (3+ weeks).
 - [x] `scripts/baseline.sh` runs every gate and benchmark and writes a report.
 - [x] `editor_pipeline` benchmark measures the real per-frame editor cost.
 - [x] New documentation set (this file, ARCHITECTURE, CONTRIBUTING, README).
-- [ ] Run `scripts/baseline.sh` and record the results below.
+- [x] Run `scripts/baseline.sh` and record the results below.
 - [ ] Screenshots of every screen at 1280×800 and 1920×1080 ("before").
 - [ ] Remove the old documents (`REQUISITOS.md`, `docs/TAREFAS.md`, …).
 
 **Done when:** baseline recorded, old docs removed, frozen surfaces invisible.
 
-### Phase 1 — Application foundation (M)
+### Phase 1 — Application foundation (M) — in progress
 
-1. Upgrade egui/eframe and fix breakages.
-2. Translate every remaining UI string to English.
-3. Split `PhpIdeApp`: `AppState` (data), `services/` (LSP, Git, exec,
-   watcher — each owns its async state), `ui/` (rendering only).
-4. Single command registry (id, label, shortcut, enablement) feeding the
-   menu, palette, keymap and context menus.
-5. Background tasks on `JobSystem` for Git (branch, markers, blame), tree
-   scan and `git clone`, with stale results discarded.
-6. Lazy project tree (reads a folder when expanded), no silent depth limit,
-   `vendor/` visible but collapsed, configurable exclusions.
-7. UI interaction tests with `egui_kittest` (real clicks, snapshots).
+- [x] egui/eframe 0.31 → 0.36 (new `App::ui` entry point, unified `Panel`,
+      menus). The default renderer is now wgpu.
+- [x] Every UI string in English, including errors from the other crates
+      (frozen Database code excepted).
+- [ ] Single command registry (id, label, shortcut, enablement) feeding the
+      menu, palette, keymap and context menus.
+- [ ] Split `PhpIdeApp`: `AppState` (data), `services/` (I/O owners),
+      `ui/` (rendering only); `main.rs` under 800 lines.
+      Started: `services/git.rs`, `services/files.rs`, `project_tree.rs`.
+- [x] Git off the UI thread (`services/git.rs`): branch, line markers and
+      blame run as jobs. Before, the header and status bar each ran
+      `git rev-parse` on **every frame**. A test now fails if render code
+      calls Git or scans folders directly.
+- [x] Lazy project tree (`services/files.rs`, `project_tree.rs`): folders are
+      read when expanded, only visible rows are laid out, no depth limit
+      (was a silent 6), `vendor/` visible and collapsed. The search index is
+      built in the background ("Indexing…" in the status bar).
+- [x] Welcome: `git clone` runs in the background with Cancel; folder
+      listing and recent-project checks no longer hit the disk every frame.
+- [x] File watcher: access events (reads) no longer count as changes — they
+      caused a reload loop every 300 ms — and reloading skips files whose
+      content did not change.
+- [x] UI tests no longer write to the user's real settings file.
+- [x] Interaction tests with `egui_kittest` (`src/ui_tests.rs`): tree
+      expand/open, close-with-unsaved-changes from the menu, no frozen
+      status items, Welcome start does no project work.
+- [x] Integration gates report skips: a missing tool prints `GATE SKIP`
+      (counted as "not verified" by `scripts/baseline.sh`), and
+      `PHPIDE_REQUIRE_INTEGRATIONS=1` turns skips into failures.
+
+Still synchronous on the UI thread, accepted for now: opening and saving a
+file, reading `composer.json` after it changes, the usages preview.
 
 **Done when:** no `git`/filesystem/process call on the UI thread, `main.rs`
 under 800 lines, menus and shortcuts come from the registry.
@@ -158,4 +179,33 @@ Docker/Remote.
 
 ## Baseline results
 
-_To be filled with the output of `scripts/baseline.sh`._
+Run `20261123-185315` (Linux 7.0, rustc 1.99.1, release profile for benches).
+
+**Gates:** fmt ok; clippy ok after gating two test-only routing helpers
+behind `experimental`; 376 workspace tests passed (102 in `phpide-ui` with
+`--features experimental`); Composer + intelephense gate passed; run/debug
+gate passed (6 tests). The machine has no Xdebug loaded in the system PHP and
+no `phpunit` on `PATH`, so Phase 1 must make the run/debug gates report which
+binaries they used instead of a plain "ok".
+
+**Editor pipeline** (`cargo bench -p phpide-ui --bench editor_pipeline`,
+median; frame budget at 60 fps is 16.6 ms):
+
+| Step | 2k lines | 10k lines | 54k lines |
+|---|---:|---:|---:|
+| rope → String | 0.00 ms | 0.02 ms | 0.16 ms |
+| clone + compare | 0.00 ms | 0.01 ms | 0.13 ms |
+| syntect highlight, whole file | **67.7 ms** | **338.8 ms** | **1716.6 ms** |
+| layout, cache miss (after edit) | 5.7 ms | 28.3 ms | 165.0 ms |
+| layout, cache hit (idle frame) | 1.4 ms | 7.8 ms | 38.7 ms |
+| tree-sitter folding (per edit) | 12.5 ms | 67.2 ms | 340.5 ms |
+| **Frame without edit** | **69 ms (~14 fps)** | **347 ms (~3 fps)** | **1.76 s** |
+| **Frame after a keystroke** | **86 ms** | **434 ms** | **2.22 s** |
+
+Every repaint (typing, mouse move, hover) pays the full syntect cost, so even
+a 2k-line file misses the frame budget four times over. Copying the rope and
+comparing strings is negligible; the cost is highlighting and laying out the
+whole file. Phase 3 targets: highlight and lay out only the visible lines,
+reparse incrementally, and stay under 16.6 ms per frame at 54k lines.
+
+Release binary: 28 MB.

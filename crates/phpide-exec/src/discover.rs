@@ -166,8 +166,8 @@ pub fn discover(req: &ToolRequest) -> Result<ToolInfo, IdeError> {
                 Component::Exec,
                 "discover",
                 ErrorKind::NotFound,
-                format!("{} não encontrado em {}", req.label, explicit.display()),
-                format!("ajuste o caminho de {} em Settings", req.label),
+                format!("{} not found at {}", req.label, explicit.display()),
+                format!("fix the path of {} in Settings", req.label),
             )
             .with_detail(format!("caminho configurado: {}", explicit.display())));
         }
@@ -177,11 +177,11 @@ pub fn discover(req: &ToolRequest) -> Result<ToolInfo, IdeError> {
                 "discover",
                 ErrorKind::PermissionDenied,
                 format!(
-                    "{} configurado sem permissão de execução: {}",
+                    "{} is configured but not executable: {}",
                     req.label,
                     explicit.display()
                 ),
-                "chmod +x no arquivo ou escolha outro interpretador em Settings",
+                "run chmod +x on the file or choose another interpreter in Settings",
             ));
         }
         return finish(
@@ -206,18 +206,18 @@ pub fn discover(req: &ToolRequest) -> Result<ToolInfo, IdeError> {
                     "discover",
                     ErrorKind::PermissionDenied,
                     format!(
-                        "{} existe em {} sem permissão de execução",
+                        "{} exists at {} but is not executable",
                         req.label,
                         candidate.display()
                     ),
-                    "ajuste as permissões (chmod +x) ou configure outro caminho em Settings",
+                    "fix the permissions (chmod +x) or set another path in Settings",
                 ));
             }
         }
     }
     let Some(found) = which_in_path(req.name) else {
         return Err(IdeError::not_found(Component::Exec, "discover", req.name)
-            .with_detail(format!("{} não está no PATH nem configurado", req.label)));
+            .with_detail(format!("{} is not on PATH and not configured", req.label)));
     };
     finish(
         ToolInfo {
@@ -244,13 +244,10 @@ fn finish(mut info: ToolInfo, req: &ToolRequest) -> Result<ToolInfo, IdeError> {
                 "discover",
                 ErrorKind::IncompatibleVersion,
                 format!(
-                    "{} {}.{} é incompatível (mínimo {}.{})",
+                    "{} {}.{} is not supported (minimum {}.{})",
                     req.label, major, minor, want_major, want_minor
                 ),
-                format!(
-                    "atualize {} ou configure outro caminho em Settings",
-                    req.label
-                ),
+                format!("update {} or set another path in Settings", req.label),
             )
             .with_detail(format!(
                 "programa: {} | detectado: {}.{}",

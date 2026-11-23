@@ -146,8 +146,8 @@ impl IdeError {
             component,
             short_op(operation),
             ErrorKind::NotFound,
-            format!("{what} não encontrado"),
-            format!("instale {what} ou configure o caminho em Settings"),
+            format!("{what} not found"),
+            format!("install {what} or set its path in Settings"),
         )
     }
 
@@ -157,8 +157,8 @@ impl IdeError {
             component,
             short_op(operation),
             ErrorKind::PermissionDenied,
-            format!("permissão negada em {what}"),
-            "ajuste as permissões (chmod/owner) ou escolha outro caminho",
+            format!("permission denied: {what}"),
+            "fix the permissions (chmod/owner) or choose another path",
         )
     }
 
@@ -167,8 +167,8 @@ impl IdeError {
             component,
             short_op(operation),
             ErrorKind::Timeout,
-            format!("operação excedeu {:?}", limit),
-            "tente novamente; se persistir, verifique a carga do sistema",
+            format!("operation took longer than {:?}", limit),
+            "try again; if it keeps happening, check the system load",
         )
     }
 
@@ -177,8 +177,8 @@ impl IdeError {
             component,
             short_op(operation),
             ErrorKind::Cancelled,
-            "operação cancelada",
-            "repita a operação se ainda for necessária",
+            "operation cancelled",
+            "run it again if you still need it",
         )
     }
 
@@ -193,8 +193,8 @@ impl IdeError {
                 component,
                 short_op(operation),
                 ErrorKind::Io,
-                format!("falha em {what}: {e}"),
-                "verifique o log para detalhes e tente novamente",
+                format!("{what} failed: {e}"),
+                "see the log for details and try again",
             ),
         };
         base.with_detail(format!("io error {what}: {e}"))
@@ -211,8 +211,8 @@ impl IdeError {
                 component,
                 "spawn",
                 ErrorKind::SpawnFailed,
-                format!("falha ao iniciar {what}"),
-                "verifique o comando e as permissões; detalhes no log",
+                format!("could not start {what}"),
+                "check the command and its permissions; details in the log",
             )
             .with_detail(format!("spawn {what}: {e}")),
         }
@@ -226,7 +226,7 @@ impl IdeError {
             .map(|d| format!(" | {d}"))
             .unwrap_or_default();
         format!(
-            "[{}/{}/{}] {} — ação: {}{}",
+            "[{}/{}/{}] {} — action: {}{}",
             self.component,
             self.operation,
             self.kind.as_str(),
@@ -257,7 +257,7 @@ impl fmt::Display for IdeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} ({}/{}) — ação: {}",
+            "{} ({}/{}) — action: {}",
             self.message, self.component, self.operation, self.action
         )
     }
@@ -280,8 +280,8 @@ mod tests {
         let e = IdeError::not_found(Component::Exec, "discover", "php");
         let s = e.to_string();
         assert!(s.contains("(exec/discover)"), "{s}");
-        assert!(s.contains("ação:"), "{s}");
-        assert!(s.contains("php não encontrado"), "{s}");
+        assert!(s.contains("action:"), "{s}");
+        assert!(s.contains("php not found"), "{s}");
     }
 
     #[test]

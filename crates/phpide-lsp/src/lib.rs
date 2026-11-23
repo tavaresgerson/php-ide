@@ -218,11 +218,11 @@ impl LspClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("falha ao iniciar {command}: {e}"))?;
+            .map_err(|e| format!("could not start {command}: {e}"))?;
 
-        let stdin = child.stdin.take().ok_or("sem stdin")?;
-        let stdout = child.stdout.take().ok_or("sem stdout")?;
-        let stderr = child.stderr.take().ok_or("sem stderr")?;
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let stderr = child.stderr.take().ok_or("no stderr")?;
 
         let shared = Arc::new(Shared::default());
         let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Value>>>> =
@@ -268,7 +268,7 @@ impl LspClient {
                 if !stopping.load(Ordering::SeqCst) {
                     if let Ok(mut s) = shared.status.lock() {
                         if !matches!(*s, LspStatus::Failed(_)) {
-                            *s = LspStatus::Failed("servidor encerrou o stdio".to_string());
+                            *s = LspStatus::Failed("the server closed its stdio".to_string());
                         }
                     }
                 }

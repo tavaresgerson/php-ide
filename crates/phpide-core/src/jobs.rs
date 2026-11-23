@@ -238,7 +238,7 @@ impl JobSystem {
                 };
                 let _ = tx.send(outcome);
             })
-            .expect("thread de job");
+            .expect("job thread");
         *join_slot.lock().unwrap() = Some(handle);
         JobHandle {
             id,

@@ -77,7 +77,7 @@ impl std::fmt::Debug for AcceptOutcome {
         match self {
             AcceptOutcome::Accepted(_, init) => f
                 .debug_tuple("Accepted")
-                .field(&format_args!("<sessão>"))
+                .field(&format_args!("<session>"))
                 .field(init)
                 .finish(),
             AcceptOutcome::RejectedKey { got } => {

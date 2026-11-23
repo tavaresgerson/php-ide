@@ -173,10 +173,10 @@ impl SearchState {
             self.job = None;
             self.current = None;
             self.status = format!(
-                "{} arquivos, {} ocorrências{}",
+                "{} files, {} matches{}",
                 searched,
                 self.results.len(),
-                if truncated { " (truncado)" } else { "" }
+                if truncated { " (truncated)" } else { "" }
             );
         }
     }

@@ -44,12 +44,10 @@ impl MigrationChain {
                 Component::Settings,
                 "migrate",
                 ErrorKind::InvalidConfig,
-                format!(
-                    "settings versão {version} é mais novo que o suportado ({SETTINGS_VERSION})"
-                ),
-                "atualize a IDE ou remova a chave settings_version do arquivo",
+                format!("settings version {version} is newer than supported ({SETTINGS_VERSION})"),
+                "update PHP IDE or remove the settings_version key from the file",
             )
-            .with_detail(format!("arquivo em versão {version}")));
+            .with_detail(format!("file is at version {version}")));
         }
         while version < SETTINGS_VERSION {
             let Some(m) = self.migrations.iter().find(|m| m.from == version) else {
@@ -57,8 +55,8 @@ impl MigrationChain {
                     Component::Settings,
                     "migrate",
                     ErrorKind::InvalidConfig,
-                    format!("sem migração da versão {version} para {}", version + 1),
-                    "restaure um backup de settings.json",
+                    format!("no migration from version {version} to {}", version + 1),
+                    "restore a backup of settings.json",
                 ));
             };
             value = (m.apply)(value);
@@ -155,9 +153,9 @@ pub fn load(path: &Path, chain: &MigrationChain) -> LoadReport {
                         Component::Settings,
                         "parse",
                         ErrorKind::InvalidConfig,
-                        "settings.json inválido; configuração padrão em uso",
+                        "invalid settings.json; using default settings",
                         format!(
-                            "corrija ou remova {} (original preservado)",
+                            "fix or remove {} (the original was kept)",
                             preserved.display()
                         ),
                     )
@@ -193,7 +191,7 @@ pub fn save(path: &Path, value: &Value) -> Result<(), IdeError> {
             Component::Settings,
             "serialize",
             ErrorKind::InvalidInput,
-            "configuração não serializável",
+            "settings could not be serialized",
             "verifique o log e tente novamente",
         )
         .with_detail(format!("serde: {e}"))
@@ -274,7 +272,7 @@ mod tests {
         assert!(report.is_recovered());
         let err = report.recovered.unwrap();
         assert_eq!(err.kind, ErrorKind::InvalidConfig);
-        assert!(err.action.contains("preservado"));
+        assert!(err.action.contains("original was kept"));
         assert!(
             report.value.as_object().unwrap().is_empty(),
             "defaults em uso"

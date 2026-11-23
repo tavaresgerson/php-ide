@@ -67,8 +67,8 @@ pub fn build_command(
             Component::Exec,
             "build_command",
             ErrorKind::InvalidConfig,
-            format!("run configuration inválida ({})", config.name),
-            format!("corrija os campos — {summary}"),
+            format!("invalid run configuration ({})", config.name),
+            format!("fix the fields — {summary}"),
         ));
     }
 
@@ -100,8 +100,8 @@ pub fn build_command(
                     Component::Exec,
                     "build_command",
                     ErrorKind::NotFound,
-                    "Composer não configurado",
-                    "instale o Composer ou configure o caminho em Settings",
+                    "Composer is not configured",
+                    "install Composer or set its path in Settings",
                 )
             })?;
             if composer.ends_with(".phar") {

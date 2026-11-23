@@ -104,7 +104,7 @@ fn walk(node: Node, code: &str, report: &mut SyntaxReport) {
         report.errors.push(SyntaxError {
             line0: pos.row,
             col0: pos.column,
-            message: format!("erro de sintaxe perto de `{snippet}`"),
+            message: format!("syntax error near `{snippet}`"),
         });
         // Não desce em filhos de ERROR: só geram ruído.
         return;
@@ -114,7 +114,7 @@ fn walk(node: Node, code: &str, report: &mut SyntaxReport) {
         report.errors.push(SyntaxError {
             line0: pos.row,
             col0: pos.column,
-            message: format!("símbolo faltante: `{}`", node.kind()),
+            message: format!("missing `{}`", node.kind()),
         });
     }
     let mut cursor = node.walk();

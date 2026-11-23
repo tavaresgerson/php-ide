@@ -220,7 +220,7 @@ impl DbgpSession {
     pub fn send(&mut self, cmd: &str, args: &[(&str, &str)]) -> io::Result<ResponseInfo> {
         let xml = self.send_xml(cmd, args)?;
         parse_response(&xml)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resposta DBGp inválida"))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid DBGp response"))
     }
 
     /// Acesso ao socket bruto (interrupção de Detach/Stop da engine).

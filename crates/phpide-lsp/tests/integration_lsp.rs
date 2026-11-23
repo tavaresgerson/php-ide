@@ -8,6 +8,16 @@ use std::time::{Duration, Instant};
 use phpide_lsp::detect_server;
 use phpide_lsp::LspClient;
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -20,7 +30,7 @@ fn workspace_root() -> PathBuf {
 fn server_reports_php_syntax_diagnostics() {
     let ws_root = workspace_root();
     let Some((cmd, args)): Option<(String, Vec<String>)> = detect_server(&ws_root) else {
-        eprintln!("[skip] nenhum servidor LSP encontrado (instale com: npm --prefix third_party install intelephense)");
+        skip("no language server found (install with: npm ci --prefix third_party)");
         return;
     };
     eprintln!("[lsp] usando servidor: {cmd} {}", args.join(" "));

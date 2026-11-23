@@ -179,7 +179,7 @@ impl DbgpSession {
         let Some(info) = crate::proto::parse_response(&xml) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "resposta run inválida",
+                "invalid run response",
             ));
         };
         match info.status.as_str() {
@@ -222,7 +222,7 @@ impl DbgpSession {
                 Some(_) => Ok(None),
                 None => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "resposta property_get inválida",
+                    "invalid property_get response",
                 )),
             }
         } else {
@@ -233,7 +233,7 @@ impl DbgpSession {
                 Some(_) => Ok(None),
                 None => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "resposta eval inválida",
+                    "invalid eval response",
                 )),
             }
         }
@@ -289,7 +289,7 @@ fn stop_reason_from(xml: &str, to_local: &dyn Fn(&str) -> Option<PathBuf>) -> St
             return StopReason::Location { file, line };
         }
     }
-    StopReason::Exception("parada sem localização".to_string())
+    StopReason::Exception("paused without a location".to_string())
 }
 
 /// Base64 para o argumento -e do eval (RFC 4648, sem wraps).

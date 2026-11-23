@@ -89,32 +89,32 @@ impl IconId {
     /// Nome acessível (leitor de tela / tooltip padrão).
     pub const fn accessible_name(self) -> &'static str {
         match self {
-            IconId::Run => "Executar",
-            IconId::Debug => "Depurar",
-            IconId::Stop => "Parar",
-            IconId::Pause => "Pausar",
-            IconId::Settings => "Configurações",
-            IconId::Close => "Fechar",
-            IconId::Warning => "Aviso",
-            IconId::Error => "Erro",
-            IconId::Info => "Informação",
-            IconId::Project => "Projeto",
-            IconId::Folder => "Pasta",
-            IconId::File => "Arquivo",
-            IconId::GitBranch => "Branch do Git",
-            IconId::Search => "Buscar",
+            IconId::Run => "Run",
+            IconId::Debug => "Debug",
+            IconId::Stop => "Stop",
+            IconId::Pause => "Pause",
+            IconId::Settings => "Settings",
+            IconId::Close => "Close",
+            IconId::Warning => "Warning",
+            IconId::Error => "Error",
+            IconId::Info => "Information",
+            IconId::Project => "Project",
+            IconId::Folder => "Folder",
+            IconId::File => "File",
+            IconId::GitBranch => "Git branch",
+            IconId::Search => "Search",
             IconId::Bookmark => "Bookmark",
             IconId::Breakpoint => "Breakpoint",
-            IconId::ChevronRight => "Expandir",
-            IconId::ChevronDown => "Recolher",
-            IconId::SplitRight => "Dividir para a direita",
-            IconId::SplitDown => "Dividir para baixo",
-            IconId::Switcher => "Switcher de abas",
-            IconId::Eye => "Pré-visualizar",
-            IconId::Blame => "Autoria (blame)",
-            IconId::Coverage => "Cobertura",
-            IconId::Hint => "Dica",
-            IconId::Unknown => "Ícone",
+            IconId::ChevronRight => "Expand",
+            IconId::ChevronDown => "Collapse",
+            IconId::SplitRight => "Split right",
+            IconId::SplitDown => "Split down",
+            IconId::Switcher => "Tab switcher",
+            IconId::Eye => "Preview",
+            IconId::Blame => "Blame",
+            IconId::Coverage => "Coverage",
+            IconId::Hint => "Hint",
+            IconId::Unknown => "Icon",
         }
     }
 
@@ -358,6 +358,6 @@ mod tests {
                 id.slug()
             );
         }
-        assert_eq!(IconId::GitBranch.accessible_name(), "Branch do Git");
+        assert_eq!(IconId::GitBranch.accessible_name(), "Git branch");
     }
 }

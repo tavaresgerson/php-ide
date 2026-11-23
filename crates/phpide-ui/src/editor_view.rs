@@ -251,7 +251,7 @@ pub fn paint_gutter(
                     visuals.widgets.hovered.weak_bg_fill.gamma_multiply(0.5),
                 );
                 resp.on_hover_text(format!(
-                    "Ln {line1} — clique: breakpoint (F9)",
+                    "Ln {line1} — click to toggle a breakpoint (F9)",
                     line1 = line0 + 1
                 ));
             }
@@ -342,7 +342,7 @@ pub fn paint_sticky_lines_max(
         if interact.clicked() {
             jump = Some(block.start_line0);
         }
-        interact.on_hover_text("Sticky line — clique para ir à declaração");
+        interact.on_hover_text("Sticky line — click to go to the declaration");
     }
     // Linha separadora inferior da pilha (só quando há sticky ativo).
     let bottom = vp.top() + trail.len() as f32 * geom.row_height;
@@ -454,8 +454,8 @@ pub fn paint_occurrences(
         if found {
             painter.rect_filled(
                 egui::Rect::from_min_size(
-                    egui::pos2(x_min, galley_pos.y + row.rect.top()),
-                    egui::vec2((x_max - x_min).max(2.0), row.rect.height()),
+                    egui::pos2(x_min, galley_pos.y + row.rect().top()),
+                    egui::vec2((x_max - x_min).max(2.0), row.rect().height()),
                 ),
                 egui::CornerRadius::ZERO,
                 color,

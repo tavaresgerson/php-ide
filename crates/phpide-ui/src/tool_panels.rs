@@ -10,29 +10,29 @@ use crate::tool_window_header;
 use crate::toolwindows::{Anchor, ToolWindow};
 use crate::PhpIdeApp;
 
-pub fn show(app: &mut PhpIdeApp, ctx: &egui::Context, tw: ToolWindow) {
+pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
     match tw.anchor() {
         Anchor::Left => {
-            egui::SidePanel::left(format!("tool-window-{}", tw.title()))
+            egui::Panel::left(format!("tool-window-{}", tw.title()))
                 .resizable(true)
-                .default_width(240.0)
-                .show(ctx, |ui| panel(app, ui, tw));
+                .default_size(240.0)
+                .show(ui, |ui| panel(app, ui, tw));
         }
         Anchor::Right => {
-            egui::SidePanel::right(format!("tool-window-{}", tw.title()))
+            egui::Panel::right(format!("tool-window-{}", tw.title()))
                 .resizable(true)
-                .default_width(240.0)
-                .show(ctx, |ui| panel(app, ui, tw));
+                .default_size(240.0)
+                .show(ui, |ui| panel(app, ui, tw));
         }
         Anchor::Bottom => {
-            egui::TopBottomPanel::bottom(format!("tool-window-{}", tw.title()))
+            egui::Panel::bottom(format!("tool-window-{}", tw.title()))
                 .resizable(true)
-                .default_height(if tw == ToolWindow::Database {
+                .default_size(if tw == ToolWindow::Database {
                     360.0
                 } else {
                     190.0
                 })
-                .show(ctx, |ui| panel(app, ui, tw));
+                .show(ui, |ui| panel(app, ui, tw));
         }
     }
 }
@@ -65,7 +65,7 @@ fn bookmarks(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .collect();
     rows.sort();
     if rows.is_empty() {
-        ui.label(egui::RichText::new("Nenhum bookmark. Use F11 no editor.").weak());
+        ui.label(egui::RichText::new("No bookmarks. Press F11 in the editor.").weak());
     }
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (path, line) in rows {
@@ -135,15 +135,13 @@ fn version_control(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.label("Log · Branches · Incoming/Outgoing");
     ui.label(
-        egui::RichText::new(
-            "O histórico e as operações de merge/rebase pertencem ao incremento Git do roadmap.",
-        )
-        .weak(),
+        egui::RichText::new("History, merge and rebase come with the Git phase of the roadmap.")
+            .weak(),
     );
 }
 
 fn commit(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Commit das mudanças já adicionadas ao índice do Git:");
+    ui.label("Commit the changes already staged in Git:");
     ui.text_edit_singleline(&mut app.commit_message);
     if ui
         .add_enabled(
@@ -176,7 +174,7 @@ fn terminal(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.monospace(format!("{} $", app.ws.root.display()));
         let response = egui::TextEdit::singleline(&mut app.terminal_input)
-            .hint_text("comando do shell")
+            .hint_text("shell command")
             .desired_width(420.0)
             .show(ui)
             .response;
@@ -216,7 +214,7 @@ fn database(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 fn notifications(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.label(egui::RichText::new("Event Log").strong());
     ui.label(if app.ws.message.is_empty() {
-        "Nenhuma notificação nova."
+        "No new notifications."
     } else {
         &app.ws.message
     });

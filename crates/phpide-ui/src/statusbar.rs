@@ -10,10 +10,14 @@ use crate::PhpIdeApp;
 const PHP_LEVELS: [&str; 8] = ["5.3", "7.0", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4"];
 const INDENTS: [&str; 4] = ["2 spaces", "4 spaces", "8 spaces", "Tab"];
 
-pub fn status_bar(app: &mut PhpIdeApp, ctx: &egui::Context) {
+pub fn status_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let navigation_bottom = app.settings.navigation_bar == "Bottom";
-    egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+    egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
+            if app.files.indexing() {
+                ui.spinner();
+                ui.weak("Indexing…");
+            }
             let msg = app.ws.message.clone();
             let message = if msg.is_empty() {
                 "Ready".to_string()
@@ -29,7 +33,7 @@ pub fn status_bar(app: &mut PhpIdeApp, ctx: &egui::Context) {
             if !insp.is_empty()
                 && ui
                     .button(insp)
-                    .on_hover_text("Inspections — abrir Problems neste arquivo")
+                    .on_hover_text("Inspections — open Problems for this file")
                     .clicked()
             {
                 app.problems_scope = 1;
@@ -57,11 +61,11 @@ pub fn status_bar(app: &mut PhpIdeApp, ctx: &egui::Context) {
     });
 }
 
-pub fn navigation_bar_top(app: &mut PhpIdeApp, ctx: &egui::Context) {
+pub fn navigation_bar_top(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     if app.settings.navigation_bar != "Top" {
         return;
     }
-    egui::TopBottomPanel::top("navigation-bar-top").show(ctx, |ui| {
+    egui::Panel::top("navigation-bar-top").show(ui, |ui| {
         navigation_bar_contents(app, ui);
     });
 }
@@ -105,12 +109,12 @@ fn php_level_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             {
                 app.settings.php_level = level.to_string();
                 app.persist_settings();
-                ui.close_menu();
+                ui.close();
             }
         }
         ui.separator();
         ui.label(
-            egui::RichText::new("Sincronização com composer.json: módulo Composer")
+            egui::RichText::new("Detected from composer.json when available")
                 .weak()
                 .small(),
         );
@@ -141,7 +145,7 @@ fn line_ending_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let current = app.settings.line_ending.clone();
     if ui
         .button(&current)
-        .on_hover_text("Line endings — alternar LF/CRLF")
+        .on_hover_text("Line endings — switch LF/CRLF")
         .clicked()
     {
         app.settings.line_ending = if current == "LF" { "CRLF" } else { "LF" }.to_string();
@@ -151,7 +155,7 @@ fn line_ending_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 
 fn encoding_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     if ui.button("UTF-8").on_hover_text("Encoding").clicked() {
-        app.ws.message = "Encoding do buffer: UTF-8".to_string();
+        app.ws.message = "File encoding: UTF-8".to_string();
     }
 }
 
@@ -162,7 +166,7 @@ fn indent_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             if ui.selectable_label(option == current, option).clicked() {
                 app.settings.indent = option.to_string();
                 app.persist_settings();
-                ui.close_menu();
+                ui.close();
             }
         }
     })
@@ -171,7 +175,7 @@ fn indent_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn branch_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    if !crate::vcs::is_repo(&app.ws.root) {
+    if !app.git.is_repo() {
         return;
     }
     let branch = app.git_branch();
@@ -216,9 +220,9 @@ fn debug_listen_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     {
         app.debug_listen = !on;
         app.ws.message = if app.debug_listen {
-            "escuta Xdebug ativada"
+            "listening for Xdebug connections"
         } else {
-            "escuta Xdebug desativada"
+            "stopped listening for Xdebug connections"
         }
         .to_string();
     }
@@ -230,11 +234,11 @@ fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         if ui.selectable_label(server == "None", "None").clicked() {
             app.settings.deployment_server = "None".to_string();
             app.persist_settings();
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Deployment...").clicked() {
             app.settings_dialog.open(SettingsPage::Named("Deployment"));
-            ui.close_menu();
+            ui.close();
         }
     })
     .response

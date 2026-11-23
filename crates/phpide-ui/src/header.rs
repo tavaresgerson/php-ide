@@ -5,12 +5,11 @@
 use eframe::egui;
 
 use crate::toolwindows::ToolWindow;
-use crate::vcs;
 use crate::{PaletteMode, PhpIdeApp};
 
 /// Desenha o header unificado. Deve ser chamado antes dos painéis laterais.
-pub fn header(app: &mut PhpIdeApp, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("header").show(ctx, |ui| {
+pub fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    egui::Panel::top("header").show(ui, |ui| {
         ui.horizontal(|ui| {
             main_menu(app, ui);
             ui.separator();
@@ -33,7 +32,7 @@ pub fn header(app: &mut PhpIdeApp, ctx: &egui::Context) {
                     .filter(|d| d.severity == phpide_core::Severity::Warning)
                     .count();
                 let diag_label = if errors + warnings == 0 {
-                    "0 problemas".to_string()
+                    "0 problems".to_string()
                 } else {
                     format!("E {errors} · W {warnings}")
                 };
@@ -54,36 +53,36 @@ pub fn header(app: &mut PhpIdeApp, ctx: &egui::Context) {
 fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.menu_button("Menu", |ui| {
         ui.set_min_width(220.0);
-        ui.label(egui::RichText::new("Arquivo").weak().small());
-        if ui.button("Novo arquivo\tCtrl+N").clicked() {
+        ui.label(egui::RichText::new("File").weak().small());
+        if ui.button("New File\tCtrl+N").clicked() {
             app.ws.new_file();
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Salvar\tCtrl+S").clicked() {
+        if ui.button("Save\tCtrl+S").clicked() {
             app.save_active();
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Fechar aba\tCtrl+F4").clicked() {
+        if ui.button("Close Tab\tCtrl+F4").clicked() {
             // Same path as Ctrl+F4: a dirty buffer asks before closing.
             app.request_close_active();
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
-        ui.label(egui::RichText::new("Editar").weak().small());
-        if ui.button("Desfazer\tCtrl+Z").clicked() {
+        ui.label(egui::RichText::new("Edit").weak().small());
+        if ui.button("Undo\tCtrl+Z").clicked() {
             if let Some(buf) = app.ws.active_buffer_mut() {
                 buf.undo();
             }
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Refazer\tCtrl+Shift+Z").clicked() {
+        if ui.button("Redo\tCtrl+Shift+Z").clicked() {
             if let Some(buf) = app.ws.active_buffer_mut() {
                 buf.redo();
             }
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
-        ui.label(egui::RichText::new("Ver").weak().small());
+        ui.label(egui::RichText::new("View").weak().small());
         for tw in ToolWindow::ALL {
             if !tw.is_available() {
                 continue;
@@ -97,58 +96,58 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             );
             if ui.checkbox(&mut vis, text).clicked() {
                 app.tw.set_visible(tw, vis);
-                ui.close_menu();
+                ui.close();
             }
         }
         if ui.button("Hide All Tool Windows\tCtrl+Shift+F12").clicked() {
             app.tw.toggle_hide_all();
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
-        ui.label(egui::RichText::new("Navegar").weak().small());
-        if ui.button("Ir para definição\tF12").clicked() {
+        ui.label(egui::RichText::new("Navigate").weak().small());
+        if ui.button("Go to Definition\tF12").clicked() {
             app.request_definition();
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Próximo problema\tF2").clicked() {
+        if ui.button("Next Problem\tF2").clicked() {
             app.goto_problem(1);
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Search Everywhere\tShift×2").clicked() {
             app.open_palette(PaletteMode::All);
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Find Action\tCtrl+Shift+A").clicked() {
             app.open_palette(PaletteMode::Actions);
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
-        ui.label(egui::RichText::new("Executar").weak().small());
-        if ui.button("Rodar arquivo atual\tCtrl+R").clicked() {
+        ui.label(egui::RichText::new("Run").weak().small());
+        if ui.button("Run Current File\tCtrl+R").clicked() {
             app.run_current_php();
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Debug arquivo atual\tCtrl+D").clicked() {
+        if ui.button("Debug Current File\tCtrl+D").clicked() {
             app.debug_run();
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
         if ui.button("Quick Switch Scheme\tCtrl+`").clicked() {
             app.scheme_open = true;
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Settings\tCtrl+Alt+S").clicked() {
             app.settings_dialog
                 .open(crate::settings_dialog::SettingsPage::Appearance);
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Welcome Screen").clicked() {
             app.welcome_open = true;
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Tema (Quick Switch)").clicked() {
+        if ui.button("Theme (Quick Switch)").clicked() {
             app.scheme_open = true;
-            ui.close_menu();
+            ui.close();
         }
     })
     .response
@@ -170,44 +169,47 @@ fn project_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 .small(),
         );
         ui.separator();
-        if ui.button("Recarregar árvore de arquivos").clicked() {
-            app.ws.refresh_files();
-            ui.close_menu();
+        if ui.button("Reload Project Tree").clicked() {
+            app.files.refresh(&app.jobs, ui.ctx());
+            ui.close();
         }
-        if ui.button("Voltar à Welcome Screen").clicked() {
+        if ui.button("Reveal Active File").clicked() {
+            if let Some(path) = app.ws.active_buffer().and_then(|b| b.path.clone()) {
+                app.files.reveal(&app.jobs, ui.ctx(), &path);
+                app.selected = Some(path);
+                app.tw.set_visible(ToolWindow::Project, true);
+            }
+            ui.close();
+        }
+        if ui.button("Back to Welcome Screen").clicked() {
             app.welcome_open = true;
-            ui.close_menu();
+            ui.close();
         }
     })
     .response
     .on_hover_text("Project widget");
 }
 
-/// Widget VCS: branch atual com popup de operações (as operações em si vêm no
-/// estágio do Git tool window; aqui são placeholders visuais + refresh).
+/// VCS widget: current branch with a menu of Git actions.
 fn vcs_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    if !vcs::is_repo(&app.ws.root) {
+    if !app.git.is_repo() {
         return;
     }
     let branch = app.git_branch();
     ui.menu_button(format!("Git: {branch}"), |ui| {
         ui.label(egui::RichText::new("Git").weak().small());
-        if ui.button("Atualizar branch").clicked() {
+        if ui.button("Refresh Branch").clicked() {
             app.git_refresh();
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Branches / Log...\tAlt+9").clicked() {
             app.tw.set_visible(ToolWindow::VersionControl, true);
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Commit...\tAlt+0").clicked() {
             app.tw.set_visible(ToolWindow::Commit, true);
-            ui.close_menu();
+            ui.close();
         }
-        ui.add_enabled_ui(false, |ui| {
-            ui.button("Push...\tCtrl+Shift+K")
-                .on_hover_text("Integração Git do roadmap");
-        });
     })
     .response
     .on_hover_text("VCS widget (Git)");
@@ -216,23 +218,18 @@ fn vcs_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 /// Widget Run: ações de execução/depuração do arquivo atual.
 fn run_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.menu_button("▶ Run", |ui| {
-        if ui.button("Rodar arquivo atual\tCtrl+R").clicked() {
+        if ui.button("Run Current File\tCtrl+R").clicked() {
             app.run_current_php();
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Debug arquivo atual\tCtrl+D").clicked() {
+        if ui.button("Debug Current File\tCtrl+D").clicked() {
             app.debug_run();
-            ui.close_menu();
+            ui.close();
         }
-        if ui.button("Parar\tCtrl+F2").clicked() {
+        if ui.button("Stop\tCtrl+F2").clicked() {
             app.stop_execution();
-            ui.close_menu();
+            ui.close();
         }
-        ui.separator();
-        ui.add_enabled_ui(false, |ui| {
-            ui.button("Run Configurations...")
-                .on_hover_text("Estágio 6 (REQUISITOS 3.1)");
-        });
     })
     .response
     .on_hover_text("Run widget");

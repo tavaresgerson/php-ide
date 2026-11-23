@@ -84,7 +84,7 @@ pub fn apply(ctx: &egui::Context, theme: ThemeId) {
         ThemeId::HighContrast => egui::Color32::YELLOW,
         _ => ISLANDS_ACCENT,
     };
-    ctx.style_mut(|style| {
+    ctx.global_style_mut(|style| {
         style.visuals.selection.bg_fill = accent.gamma_multiply(0.45);
         style.visuals.hyperlink_color = accent;
         if theme == ThemeId::HighContrast {

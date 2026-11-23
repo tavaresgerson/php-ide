@@ -61,12 +61,12 @@ pub fn run_with_breakpoints(
     };
     say(
         &tx,
-        format!("[debug] aguardando xdebug em 127.0.0.1:{port} ({wait:?})..."),
+        format!("[debug] waiting for Xdebug on 127.0.0.1:{port} ({wait:?})..."),
     );
     let Some(mut session) = listen(port, wait)? else {
         say(
             &tx,
-            "[debug] tempo esgotado — xdebug não conectou".to_string(),
+            "[debug] timed out — Xdebug did not connect".to_string(),
         );
         let _ = tx.send(DebugMsg::Done);
         return Ok(());
@@ -79,7 +79,7 @@ pub fn run_with_breakpoints(
         match session.send("breakpoint_set", &[("t", "line"), ("f", &uri), ("n", &ln)]) {
             Ok(r) if r.success => say(&tx, format!("[debug] breakpoint {uri}:{ln} ok")),
             Ok(_) => say(&tx, format!("[debug] breakpoint {uri}:{ln} recusado")),
-            Err(e) => say(&tx, format!("[debug] erro no breakpoint: {e}")),
+            Err(e) => say(&tx, format!("[debug] breakpoint error: {e}")),
         }
     }
 
@@ -97,23 +97,23 @@ pub fn run_with_breakpoints(
                             Some(format!("{file}:{line}"))
                         })
                         .unwrap_or_else(|| "?".to_string());
-                    say(&tx, format!("[debug] parado em {frame}"));
+                    say(&tx, format!("[debug] paused at {frame}"));
                 }
                 if let Ok(ctx) = session.send_xml("context_get", &[("c", "0")]) {
                     let names = property_names(&ctx);
                     say(
                         &tx,
-                        format!("[debug] variáveis locais: {}", names.join(", ")),
+                        format!("[debug] local variables: {}", names.join(", ")),
                     );
                 }
             }
         }
-        Err(e) => say(&tx, format!("[debug] erro no run: {e}")),
+        Err(e) => say(&tx, format!("[debug] run error: {e}")),
     }
 
     let _ = session.send("detach", &[]);
     session.close();
-    say(&tx, "[debug] sessão encerrada (detach)".to_string());
+    say(&tx, "[debug] session ended (detach)".to_string());
     let _ = tx.send(DebugMsg::Done);
     Ok(())
 }

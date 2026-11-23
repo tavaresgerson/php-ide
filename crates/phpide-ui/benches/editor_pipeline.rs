@@ -52,14 +52,15 @@ fn layout_in_pass(ctx: &egui::Context, job: &egui::text::LayoutJob, warm: bool) 
     let mut elapsed = Duration::ZERO;
     let passes = if warm { 2 } else { 1 };
     for pass in 0..passes {
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             let t0 = Instant::now();
-            let galley = ctx.fonts(|fonts| fonts.layout_job(job.clone()));
+            let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job.clone()));
             std::hint::black_box(galley.rows.len());
             if pass + 1 == passes {
                 elapsed = t0.elapsed();
             }
-        });
+        })
+        .drop_without_applying_deltas();
     }
     elapsed
 }

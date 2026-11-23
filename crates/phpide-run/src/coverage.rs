@@ -101,8 +101,8 @@ pub fn import_clover(xml: &str) -> Result<CoverageReport, IdeError> {
             Component::Core,
             "import_clover",
             ErrorKind::InvalidInput,
-            "arquivo Clover inválido ou vazio",
-            "gere o relatório com --coverage-clover do PHPUnit",
+            "invalid or empty Clover file",
+            "generate the report with PHPUnit --coverage-clover",
         )
         .with_detail("marcadores <coverage>/<file> ausentes"));
     }
@@ -142,8 +142,8 @@ pub fn import_clover_file(path: &Path) -> Result<CoverageReport, IdeError> {
             Component::Core,
             "import_clover_file",
             ErrorKind::Io,
-            format!("não foi possível ler o relatório: {}", path.display()),
-            "execute os testes com cobertura habilitada",
+            format!("could not read the report: {}", path.display()),
+            "run the tests with coverage enabled",
         )
         .with_detail(e.to_string())
     })?;
@@ -156,7 +156,7 @@ fn malformed() -> IdeError {
         "import_clover",
         ErrorKind::InvalidInput,
         "Clover XML malformado",
-        "regenere o relatório de cobertura",
+        "generate the coverage report again",
     )
 }
 

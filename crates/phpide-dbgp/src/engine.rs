@@ -250,7 +250,7 @@ fn engine_loop(
             }
             AcceptOutcome::RejectedKey { got } => {
                 let _ = events.send(EngineEvent::Error(format!(
-                    "conexão DBGp recusada (IDE key inesperada: {:?})",
+                    "DBGp connection refused (unexpected IDE key: {:?})",
                     got
                 )));
                 continue 'accept;
@@ -359,7 +359,7 @@ fn run_session(
                         .map(|c| format!("{c:?}"))
                         .unwrap_or_else(|_| "nenhum".into());
                     let _ = events.send(EngineEvent::Ended(SessionEnd::ConnectionLost(format!(
-                        "socket do Xdebug fechado no run inicial (fila: {detail})"
+                        "Xdebug socket closed on the first run (queue: {detail})"
                     ))));
                     SessionExit::Done
                 }
@@ -446,7 +446,7 @@ fn run_session(
                                     .unwrap_or_else(|_| "nenhum".into());
                                 let _ =
                                     events.send(EngineEvent::Ended(SessionEnd::ConnectionLost(
-                                        format!("socket do Xdebug fechado ({detail})"),
+                                        format!("Xdebug socket closed ({detail})"),
                                     )));
                             }
                         }

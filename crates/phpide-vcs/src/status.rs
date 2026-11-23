@@ -155,8 +155,8 @@ pub(crate) fn relpath(root: &Path, path: &Path) -> Result<PathBuf, IdeError> {
                 Component::Git,
                 "relpath",
                 ErrorKind::InvalidInput,
-                format!("caminho fora do worktree: {}", abs.display()),
-                "abra um arquivo dentro do projeto atual",
+                format!("path outside the worktree: {}", abs.display()),
+                "open a file inside the current project",
             )
         })
 }

@@ -275,11 +275,9 @@ fn show_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         SettingsPage::EditorFont => editor_font_page(app, ui),
         SettingsPage::PhpLanguageLevel => php_page(app, ui),
         SettingsPage::Named(name) => {
-            ui.label(format!("Configurações de {name}."));
+            ui.label(format!("{name} settings."));
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(
-                "A categoria já está mapeada na árvore oficial. A integração funcional será entregue com o módulo correspondente do roadmap.",
-            ).weak());
+            ui.label(egui::RichText::new("Not available yet.").weak());
         }
     }
 }
@@ -316,14 +314,14 @@ fn appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             });
     });
     ui.label("UI font: Inter");
-    ui.label(egui::RichText::new("New UI é o padrão; os temas afetam a shell e o editor.").weak());
+    ui.label(egui::RichText::new("Themes apply to the window and the editor.").weak());
     if changed {
         app.persist_settings();
     }
 }
 
 fn keymap_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Keymap padrão compatível com PhpStorm. Outros mapas ficam disponíveis para seleção e persistência.");
+    ui.label("Only the default keymap is available for now.");
     let mut changed = false;
     for keymap in [
         "Default",
@@ -347,26 +345,26 @@ fn keymap_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let mut changed = false;
     changed |= ui
-        .checkbox(&mut app.settings.sticky_lines, "Sticky Lines (máx. 5)")
+        .checkbox(&mut app.settings.sticky_lines, "Sticky lines (up to 5)")
         .changed();
     changed |= ui
         .checkbox(&mut app.settings.inlay_hints, "Inlay Hints")
         .changed();
     changed |= ui
-        .checkbox(&mut app.zoom_on_ctrl_wheel, "Zoom com Ctrl+wheel")
+        .checkbox(&mut app.zoom_on_ctrl_wheel, "Zoom with Ctrl+mouse wheel")
         .changed();
     changed |= ui
         .checkbox(&mut app.settings.column_selection, "Column Selection Mode")
         .changed();
     ui.add_space(8.0);
-    ui.label("Breadcrumbs estruturais, highlight de ocorrências, indent guides e separadores PHP seguem as preferências do editor.");
+    ui.label("Breadcrumbs and occurrence highlighting follow these editor settings.");
     if changed {
         app.persist_settings();
     }
 }
 
 fn editor_font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Fonte do editor: Monospace");
+    ui.label("Editor font: monospace");
     ui.horizontal(|ui| {
         ui.label("IDE zoom:");
         let mut zoom = app.zoom;
@@ -377,7 +375,7 @@ fn editor_font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             app.set_zoom(zoom);
         }
     });
-    ui.label("Atalhos: Alt+Shift+. aumenta · Alt+Shift+, reduz · Ctrl+0 restaura");
+    ui.label("Shortcuts: Alt+Shift+. bigger · Alt+Shift+, smaller · Ctrl+0 reset");
 }
 
 fn php_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
@@ -392,10 +390,7 @@ fn php_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             )
             .changed();
     }
-    ui.label(
-        egui::RichText::new("A sincronização com composer.json pertence ao módulo Composer.")
-            .weak(),
-    );
+    ui.label(egui::RichText::new("Detected from composer.json when available.").weak());
     if changed {
         app.persist_settings();
     }

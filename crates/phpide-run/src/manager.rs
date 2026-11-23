@@ -90,7 +90,11 @@ impl RunManager {
                 .find(|s| s.config.id == config.id && s.state.is_live() && !s.is_stopping())
             {
                 let id = existing.id;
-                self.log_info(id, "start", "configuração já em execução — focando sessão");
+                self.log_info(
+                    id,
+                    "start",
+                    "configuration already running — showing its session",
+                );
                 return id;
             }
         }
@@ -132,7 +136,7 @@ impl RunManager {
             session.stop();
             session.poll();
         }
-        self.log_info(id, "rerun", "reexecutando configuração");
+        self.log_info(id, "rerun", "running the configuration again");
         Some(self.start(config, spec, plan))
     }
 

@@ -73,7 +73,7 @@ impl ExecState {
             let mut child = match command.spawn() {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(ExecMsg::Line(format!("falha ao iniciar {cmd}: {e}")));
+                    let _ = tx.send(ExecMsg::Line(format!("could not start {cmd}: {e}")));
                     let _ = tx.send(ExecMsg::Done(-1));
                     return;
                 }
@@ -142,7 +142,7 @@ impl ExecState {
             if let Ok(mut child) = shared.lock() {
                 phpide_exec::kill_process_tree(&mut child, true);
             }
-            self.output.push_str("\n[parado pelo usuário]");
+            self.output.push_str("\n[stopped by user]");
         }
     }
 
@@ -181,7 +181,7 @@ impl ExecState {
     pub fn push_line(&mut self, line: &str) {
         if self.output.len() > 400_000 {
             self.output.clear();
-            self.output.push_str("[saída truncada]\n");
+            self.output.push_str("[output truncated]\n");
         }
         self.output.push_str(line);
         self.output.push('\n');

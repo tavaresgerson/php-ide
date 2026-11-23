@@ -13,6 +13,16 @@ use phpide_vcs::{
     markers_for_file, stage, status, unstage, ChangeKind, LineMarker, LogFilter, RepoState,
 };
 
+/// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
+/// that is a failure; otherwise the skip is printed with a marker that
+/// `scripts/baseline.sh` reports as "not verified".
+fn skip(reason: &str) {
+    if std::env::var_os("PHPIDE_REQUIRE_INTEGRATIONS").is_some() {
+        panic!("integration required but not available: {reason}");
+    }
+    eprintln!("GATE SKIP: {reason}");
+}
+
 fn git_ok() -> bool {
     Command::new("git")
         .arg("--version")
@@ -66,7 +76,7 @@ fn write(root: &Path, rel: &str, content: &str) {
 #[test]
 fn detect_branch_detached_and_invalid() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (_d, root) = temp_repo();
@@ -101,7 +111,7 @@ fn detect_branch_detached_and_invalid() {
 #[test]
 fn status_and_selective_stage_unstage() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (_d, root) = temp_repo();
@@ -146,7 +156,7 @@ fn status_and_selective_stage_unstage() {
 #[test]
 fn diff_worktree_staged_and_head() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (_d, root) = temp_repo();
@@ -189,7 +199,7 @@ fn diff_worktree_staged_and_head() {
 #[test]
 fn commit_empty_message_hook_failure_and_success() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (_d, root) = temp_repo();
@@ -259,7 +269,7 @@ fn commit_empty_message_hook_failure_and_success() {
 #[test]
 fn log_with_files_filters_and_rev_navigation() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (_d, root) = temp_repo();
@@ -319,7 +329,7 @@ fn log_with_files_filters_and_rev_navigation() {
 #[test]
 fn markers_follow_save_stage_commit() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (_d, root) = temp_repo();
@@ -350,7 +360,7 @@ fn markers_follow_save_stage_commit() {
 #[test]
 fn blame_attributes_and_rev_navigation() {
     if !git_ok() {
-        eprintln!("SKIP: git indisponível");
+        skip("git not available");
         return;
     }
     let (dir, root) = temp_repo();

@@ -50,7 +50,7 @@ fn error(kind: ErrorKind, message: impl Into<String>) -> IdeError {
         "workspace_edit",
         kind,
         message,
-        "atualize os documentos e repita a operação; nenhum edito obsoleto foi aplicado intencionalmente",
+        "refresh the documents and retry; no outdated edit was applied",
     )
 }
 
@@ -69,17 +69,15 @@ fn replace_plan(
             }
             let mut failure = error(
                 cause.kind,
-                format!("falha ao aplicar WorkspaceEdit em {}", path.display()),
+                format!("could not apply the workspace edit to {}", path.display()),
             )
             .with_detail(cause.log_line());
             if rollback_errors.is_empty() {
-                failure = failure.with_detail(format!(
-                    "{}; todos os documentos foram restaurados",
-                    cause.log_line()
-                ));
+                failure = failure
+                    .with_detail(format!("{}; all documents were restored", cause.log_line()));
             } else {
                 failure = failure.with_detail(format!(
-                    "{}; sucesso parcial: falhas de rollback em {}",
+                    "{}; partial success: rollback failed for {}",
                     cause.log_line(),
                     rollback_errors.join(" | ")
                 ));
@@ -103,7 +101,7 @@ pub fn apply(
             return Err(error(
                 ErrorKind::InvalidInput,
                 format!(
-                    "documento repetido no WorkspaceEdit: {}",
+                    "document repeated in the workspace edit: {}",
                     doc.path.display()
                 ),
             ));
@@ -114,7 +112,7 @@ pub fn apply(
                 return Err(error(
                     ErrorKind::InvalidInput,
                     format!(
-                        "conflito de versão em {}: servidor {}, local {}",
+                        "version conflict in {}: server {}, local {}",
                         doc.path.display(),
                         expected,
                         actual
@@ -125,7 +123,7 @@ pub fn apply(
                 return Err(error(
                     ErrorKind::InvalidInput,
                     format!(
-                        "versão não verificável para arquivo fechado: {}",
+                        "cannot verify the version of a closed file: {}",
                         doc.path.display()
                     ),
                 ));
@@ -136,7 +134,7 @@ pub fn apply(
             phpide_lsp::edits::apply_to_text(&old_text, edit, &doc.path).ok_or_else(|| {
                 error(
                     ErrorKind::InvalidInput,
-                    format!("range inválido ou sobreposto em {}", doc.path.display()),
+                    format!("invalid or overlapping range in {}", doc.path.display()),
                 )
             })?;
         plan.push((doc.path.clone(), old_text, new_text));
@@ -277,7 +275,7 @@ mod tests {
         let before = mem.files.clone();
         let mut stack = UndoStack::default();
         let err = apply(&mut mem, &two_file_edit(1), "rename", &mut stack).unwrap_err();
-        assert!(err.message.contains("conflito de versão"));
+        assert!(err.message.contains("version conflict"));
         assert_eq!(mem.files, before);
         assert_eq!(stack.depth(), 0);
     }
@@ -300,7 +298,7 @@ mod tests {
         mem.fail_after_mutation = true;
         let mut stack = UndoStack::default();
         let err = apply(&mut mem, &two_file_edit(1), "rename", &mut stack).unwrap_err();
-        assert!(err.detail.unwrap().contains("restaurados"));
+        assert!(err.detail.unwrap().contains("restored"));
         assert_eq!(mem.files, before);
         assert_eq!(stack.depth(), 0);
         assert!(undo_last(&mut mem, &mut stack).unwrap().is_none());
@@ -338,7 +336,7 @@ mod tests {
         assert_eq!(mem.files[Path::new("/a.php")], "a\r\nb");
         mem.fail_next_write = Some(PathBuf::from("/a.php"));
         let err = undo_last(&mut mem, &mut stack).unwrap_err();
-        assert!(err.detail.unwrap().contains("restaurados"));
+        assert!(err.detail.unwrap().contains("restored"));
         assert_eq!(mem.files[Path::new("/a.php")], "a\r\nb");
         assert_eq!(stack.depth(), 1);
     }

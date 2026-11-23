@@ -59,8 +59,8 @@ pub fn commit(root: &Path, message: &str) -> Result<CommitResult, IdeError> {
             Component::Git,
             "commit",
             ErrorKind::InvalidInput,
-            "mensagem de commit vazia",
-            "escreva uma mensagem descrevendo a mudança e tente de novo",
+            "empty commit message",
+            "write a message describing the change and try again",
         ));
     }
     let out = run_git(root, &["commit", "-m", message])?;
@@ -70,7 +70,7 @@ pub fn commit(root: &Path, message: &str) -> Result<CommitResult, IdeError> {
             "commit",
             ErrorKind::Other,
             "git commit recusou o commit",
-            "leia o output do hook/erro, corrija e tente de novo — o staging foi preservado",
+            "read the hook/error output, fix it and try again — your staged changes were kept",
         )
         .with_detail(
             [

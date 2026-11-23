@@ -77,11 +77,11 @@ fn state_icon(state: SessionState) -> &'static str {
 }
 
 /// Tool window Run: lista de processos (sessões) + conteúdo da sessão.
-pub fn run_panel(app: &mut PhpIdeApp, ctx: &egui::Context) {
-    egui::TopBottomPanel::bottom("run-panel")
+pub fn run_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    egui::Panel::bottom("run-panel")
         .resizable(true)
-        .default_height(230.0)
-        .show(ctx, |ui| {
+        .default_size(230.0)
+        .show(ui, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Run").strong());
@@ -95,7 +95,7 @@ pub fn run_panel(app: &mut PhpIdeApp, ctx: &egui::Context) {
                     .count();
                 if live > 0 {
                     ui.label(
-                        egui::RichText::new(format!("{live} em execução"))
+                        egui::RichText::new(format!("{live} running"))
                             .weak()
                             .small(),
                     );
@@ -107,7 +107,7 @@ pub fn run_panel(app: &mut PhpIdeApp, ctx: &egui::Context) {
                     }
                     if ui
                         .button("Clear Finished")
-                        .on_hover_text("Reciclar abas encerradas não pinadas")
+                        .on_hover_text("Close finished tabs that are not pinned")
                         .clicked()
                     {
                         app.rd.manager.reclaim_finished(5);
@@ -180,7 +180,7 @@ fn session_list(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         s.pinned = !pinned;
                     }
                 }
-                if ui.small_button("✕").on_hover_text("Fechar aba").clicked() {
+                if ui.small_button("✕").on_hover_text("Close tab").clicked() {
                     app.rd.manager.stop(id);
                     if app.rd.selected == Some(id) {
                         app.rd.selected = None;
@@ -189,14 +189,14 @@ fn session_list(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             });
         }
         if app.rd.manager.sessions().is_empty() {
-            ui.label(egui::RichText::new("Nenhuma execução. Ctrl+R roda o arquivo atual.").weak());
+            ui.label(egui::RichText::new("Nothing running. Ctrl+R runs the current file.").weak());
         }
     });
 }
 
 fn session_content(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let Some(id) = app.rd.selected else {
-        ui.label(egui::RichText::new("Selecione uma sessão na lista.").weak());
+        ui.label(egui::RichText::new("Select a session in the list.").weak());
         return;
     };
     let Some(session) = app.rd.manager.session(id) else {
@@ -247,7 +247,7 @@ fn test_tree_view(app: &mut PhpIdeApp, ui: &mut egui::Ui, id: SessionId) {
             stats.total, stats.passed, stats.failed, stats.skipped
         ));
         ui.label(
-            egui::RichText::new(format!("duração {:?}", stats.duration))
+            egui::RichText::new(format!("duration {:?}", stats.duration))
                 .weak()
                 .small(),
         );
@@ -308,11 +308,11 @@ fn render_test_node(app: &mut PhpIdeApp, ui: &mut egui::Ui, node: &TestNode) {
 // ---------------------------------------------------------------------------
 
 /// Tool window Debug: toolbar de stepping + inspeção da sessão DBGp.
-pub fn debug_panel(app: &mut PhpIdeApp, ctx: &egui::Context) {
-    egui::TopBottomPanel::bottom("debug-panel")
+pub fn debug_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    egui::Panel::bottom("debug-panel")
         .resizable(true)
-        .default_height(260.0)
-        .show(ctx, |ui| {
+        .default_size(260.0)
+        .show(ui, |ui| {
             debug_toolbar(app, ui);
             ui.separator();
             ui.horizontal(|ui| {
@@ -424,7 +424,7 @@ fn debug_toolbar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 app.rd.last_stop.is_some(),
                 egui::Button::new("Show Execution Point (Alt+F10)"),
             )
-            .on_hover_text("Navega ao ponto de execução parado")
+            .on_hover_text("Go to the paused execution point")
             .clicked()
         {
             show_execution_point(app);
@@ -452,7 +452,7 @@ pub fn show_execution_point(app: &mut PhpIdeApp) {
     if let Some((file, line)) = app.rd.last_stop.clone() {
         app.ws
             .open_file_at(&file, line.saturating_sub(1) as usize, 0);
-        app.ws.message = format!("execução parada em {}:{line}", file.display());
+        app.ws.message = format!("paused at {}:{line}", file.display());
     }
 }
 
@@ -482,7 +482,7 @@ fn frames_and_variables(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 }
             }
             if frames.is_empty() {
-                ui.label(egui::RichText::new("Sem sessão parada.").weak().small());
+                ui.label(egui::RichText::new("No paused session.").weak().small());
             }
         });
     ui.separator();
@@ -508,11 +508,7 @@ fn watches_and_eval(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.label(egui::RichText::new("Watches").strong().small());
     ui.horizontal(|ui| {
         let next_id = app.rd.watches.iter().map(|w| w.id).max().unwrap_or(0) + 1;
-        if ui
-            .small_button("+")
-            .on_hover_text("Adicionar watch")
-            .clicked()
-        {
+        if ui.small_button("+").on_hover_text("Add watch").clicked() {
             app.rd.watches.push(Watch {
                 id: next_id,
                 expression: "$this".to_string(),
@@ -548,7 +544,7 @@ fn watches_and_eval(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 });
             }
             if watches.is_empty() {
-                ui.label(egui::RichText::new("Sem watches.").weak().small());
+                ui.label(egui::RichText::new("No watches.").weak().small());
             }
         });
     ui.separator();
@@ -557,7 +553,7 @@ fn watches_and_eval(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         let mut input = app.rd.eval_input.clone();
         let response = ui.add(
             egui::TextEdit::singleline(&mut input)
-                .hint_text("expressão no frame selecionado")
+                .hint_text("expression in the selected frame")
                 .desired_width(240.0),
         );
         let submit = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -618,7 +614,7 @@ fn breakpoints_list(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         }
         if bps.is_empty() {
             ui.label(
-                egui::RichText::new("F9 no editor ou clique no gutter.")
+                egui::RichText::new("Press F9 in the editor or click the gutter.")
                     .weak()
                     .small(),
             );
