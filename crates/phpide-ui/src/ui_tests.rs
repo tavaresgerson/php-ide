@@ -25,6 +25,8 @@ fn harness(root: &Path, files: Vec<PathBuf>) -> Harness<'static, PhpIdeApp> {
     let root = root.to_path_buf();
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
+        // Frames 1/60 s apart, so two clicks in a row are a double click.
+        .with_step_dt(1.0 / 60.0)
         .build_eframe(move |cc| {
             crate::design::install(&cc.egui_ctx, crate::design::Theme::default());
             let mut app = PhpIdeApp::new(root, false, files);
@@ -272,4 +274,290 @@ fn split_shows_two_panes_of_one_buffer() {
         .dispatch_command(crate::commands::Command::Unsplit, &ctx);
     harness.run_steps(2);
     assert_eq!(harness.query_all_by_label("Editor").count(), 1);
+}
+
+fn tree_rows(h: &Harness<'static, PhpIdeApp>) -> Vec<String> {
+    let app = h.state();
+    let options = crate::project_tree::tree_options(app);
+    app.files
+        .visible_rows(&options)
+        .iter()
+        .map(|r| format!("{}{}", "  ".repeat(r.depth), r.entry.name))
+        .collect()
+}
+
+fn focus_tree(h: &mut Harness<'static, PhpIdeApp>) {
+    h.ctx
+        .memory_mut(|m| m.request_focus(crate::project_tree::tree_id()));
+    h.run_steps(2);
+}
+
+#[test]
+fn project_tree_follows_the_active_file_and_navigates_by_keyboard() {
+    let (_dir, root) = project();
+    let file = root.join("src/App.php");
+    let mut harness = harness(&root, vec![file.clone()]);
+    step_until(&mut harness, "the tree to reveal the open file", |h| {
+        tree_rows(h).contains(&"  App.php".to_string())
+    });
+    assert_eq!(harness.state().tree.selection, vec![file.clone()]);
+
+    // Speed search: typing jumps to the first match; Enter opens it.
+    focus_tree(&mut harness);
+    for c in ["c", "o", "m", "p"] {
+        harness.event(egui::Event::Text(c.into()));
+        harness.run_steps(1);
+    }
+    assert_eq!(harness.state().tree.lead, Some(root.join("composer.json")));
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let app = harness.state();
+    assert_eq!(app.ws.buffers.len(), 2);
+    assert_eq!(
+        app.ws.active_buffer().unwrap().path.as_deref(),
+        Some(root.join("composer.json").as_path())
+    );
+    assert!(
+        !app.ws.active_buffer().unwrap().preview,
+        "Enter opens a permanent tab"
+    );
+    assert!(app.tree.speed.is_none());
+
+    // Arrows: up to `vendor`, Right expands it, Left collapses it.
+    focus_tree(&mut harness);
+    harness.state_mut().tree.select_only(root.join("vendor"));
+    harness.key_press(egui::Key::ArrowRight);
+    step_until(&mut harness, "vendor to expand", |h| {
+        tree_rows(h).contains(&"  acme".to_string())
+    });
+    harness.key_press(egui::Key::ArrowLeft);
+    harness.run_steps(2);
+    assert!(!tree_rows(&harness).contains(&"  acme".to_string()));
+    harness.key_press(egui::Key::ArrowUp);
+    harness.run_steps(1);
+    assert_eq!(
+        harness.state().tree.lead,
+        Some(file),
+        "the row above `vendor` is the last child of the open `src`"
+    );
+}
+
+#[test]
+fn project_tree_creates_renames_and_deletes_files() {
+    let (_dir, root) = project();
+    let mut harness = harness(&root, Vec::new());
+    step_until(&mut harness, "the tree", |h| !tree_rows(h).is_empty());
+    focus_tree(&mut harness);
+    harness.state_mut().tree.select_only(root.join("src"));
+    harness.run_steps(1);
+
+    // Alt+Insert → PHP Class → name → Enter.
+    harness.key_press_modifiers(
+        egui::Modifiers {
+            alt: true,
+            ..Default::default()
+        },
+        egui::Key::Insert,
+    );
+    harness.run_steps(2);
+    harness.get_by_label("PHP Class").click();
+    harness.run_steps(3);
+    for c in "Invoice".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let created = root.join("src/Invoice.php");
+    let source = std::fs::read_to_string(&created).expect("class file created");
+    assert!(source.contains("final class Invoice"), "{source}");
+    assert_eq!(
+        harness.state().ws.active_buffer().unwrap().path.as_deref(),
+        Some(created.as_path()),
+        "the new file opens"
+    );
+
+    // Shift+F6 renames; the open tab follows.
+    focus_tree(&mut harness);
+    harness.state_mut().tree.select_only(created.clone());
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::F6);
+    harness.run_steps(3);
+    // The name without the extension is preselected.
+    for c in "Bill".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let renamed = root.join("src/Bill.php");
+
+    assert!(renamed.exists() && !created.exists());
+    assert_eq!(
+        harness.state().ws.active_buffer().unwrap().path.as_deref(),
+        Some(renamed.as_path())
+    );
+
+    // Delete asks first, then closes the clean tab.
+    focus_tree(&mut harness);
+    harness.state_mut().tree.select_only(renamed.clone());
+    harness.key_press(egui::Key::Delete);
+    harness.run_steps(3);
+    assert!(renamed.exists(), "nothing deleted before confirming");
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    assert!(!renamed.exists());
+    assert!(harness.state().ws.buffers.is_empty());
+}
+
+#[test]
+fn tabs_open_beside_the_active_one_switch_with_alt_arrows_and_reopen() {
+    let (_dir, root) = project();
+    std::fs::write(root.join("src/B.php"), "<?php\n").unwrap();
+    let mut harness = harness(
+        &root,
+        vec![root.join("src/App.php"), root.join("composer.json")],
+    );
+    harness.run_steps(2);
+    let names = |h: &Harness<'static, PhpIdeApp>| -> Vec<String> {
+        h.state().ws.buffers.iter().map(|b| b.name()).collect()
+    };
+    assert_eq!(names(&harness), ["App.php", "composer.json"]);
+
+    let alt = egui::Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    harness.key_press_modifiers(alt, egui::Key::ArrowLeft);
+    harness.run_steps(1);
+    assert_eq!(
+        harness.state().ws.active,
+        0,
+        "Alt+Left selects the previous tab"
+    );
+
+    harness
+        .state_mut()
+        .open_file_tab(&root.join("src/B.php"), false);
+    harness.run_steps(1);
+    assert_eq!(names(&harness), ["App.php", "B.php", "composer.json"]);
+
+    // Ctrl+F4 closes; Ctrl+Shift+T brings it back.
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::F4);
+    harness.run_steps(1);
+    assert_eq!(names(&harness), ["App.php", "composer.json"]);
+    harness.key_press_modifiers(
+        egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        },
+        egui::Key::T,
+    );
+    harness.run_steps(1);
+    assert!(names(&harness).contains(&"B.php".to_string()));
+
+    // A preview tab becomes permanent on double click.
+    harness
+        .state_mut()
+        .open_file_tab(&root.join("vendor/acme/Lib.php"), true);
+    harness.run_steps(2);
+    assert!(harness.state().ws.active_buffer().unwrap().preview);
+    // The tab, not the tree row or the breadcrumb with the same name.
+    let pos = harness
+        .get_all_by_label("Lib.php")
+        .map(|n| n.rect())
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .unwrap()
+        .center();
+    harness.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false, true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+    }
+    assert!(!harness.state().ws.active_buffer().unwrap().preview);
+}
+
+fn home_harness(root: &Path, recents: Vec<String>) -> Harness<'static, PhpIdeApp> {
+    let root = root.to_path_buf();
+    Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_eframe(move |cc| {
+            crate::design::install(&cc.egui_ctx, crate::design::Theme::default());
+            let mut app = PhpIdeApp::new(root, true, Vec::new());
+            app.settings.recent_projects = recents;
+            app
+        })
+}
+
+#[test]
+fn home_filters_removes_and_opens_recent_projects() {
+    let (_dir, root) = project();
+    let other = root.join("vendor/acme");
+    let recents = vec![root.display().to_string(), other.display().to_string()];
+    let mut harness = home_harness(&root, recents);
+    harness.run_steps(3);
+    let root_name = root.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(harness
+        .query_by_label(&format!("Open {root_name}"))
+        .is_some());
+    assert!(harness.query_by_label("Open acme").is_some());
+
+    // The search keeps matching projects only.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .click();
+    harness.run_steps(1);
+    for c in "acme".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(2);
+    assert!(harness
+        .query_by_label(&format!("Open {root_name}"))
+        .is_none());
+    assert!(harness.query_by_label("Open acme").is_some());
+
+    // Remove from the list: the folder stays on disk.
+    harness
+        .get_by_label("Remove acme from Recent Projects")
+        .click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().settings.recent_projects.len(), 1);
+    assert!(other.exists());
+
+    harness.get_by_label("Clear").click();
+    harness.run_steps(2);
+    harness.get_by_label(&format!("Open {root_name}")).click();
+    harness.run_steps(3);
+    let app = harness.state();
+    assert!(app.project_open && !app.welcome_open);
+    assert_eq!(app.ws.root, root);
+}
+
+#[test]
+fn opening_a_second_project_asks_where() {
+    let (_dir, root) = project();
+    let other = root.join("vendor/acme");
+    let mut harness = harness(&root, Vec::new());
+    harness.run_steps(2);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open_project_at(other.clone(), &ctx);
+    harness.run_steps(2);
+    assert!(harness.query_by_label("New Window").is_some());
+    harness.get_by_label("This Window").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().ws.root, other);
+    assert!(harness.state().open_prompt.is_none());
+
+    // Close Project goes back to Home.
+    harness
+        .state_mut()
+        .dispatch_command(crate::commands::Command::CloseProject, &ctx);
+    harness.run_steps(2);
+    let app = harness.state();
+    assert!(app.welcome_open && !app.project_open);
 }

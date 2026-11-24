@@ -41,6 +41,7 @@ pub fn targets(pending: &PendingClose, buffer_count: usize) -> Vec<usize> {
     match pending {
         PendingClose::Tab(index) => vec![*index],
         PendingClose::Others(keep) => (0..buffer_count).filter(|i| i != keep).collect(),
+        PendingClose::All { .. } | PendingClose::Home => (0..buffer_count).collect(),
         PendingClose::Project(_) | PendingClose::Exit => (0..buffer_count).collect(),
     }
 }
@@ -64,6 +65,7 @@ pub fn save_dirty_indices(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloseAction {
     Closed,
+    Home,
     LoadProject(PathBuf),
     Exit,
     Blocked,
@@ -94,6 +96,11 @@ pub fn after_successful_save(
             ws.close_other_tabs(*keep);
             CloseAction::Closed
         }
+        PendingClose::All { keep_pinned } => {
+            ws.close_all_tabs(*keep_pinned);
+            CloseAction::Closed
+        }
+        PendingClose::Home => CloseAction::Home,
         PendingClose::Project(path) => CloseAction::LoadProject(path.clone()),
         PendingClose::Exit => CloseAction::Exit,
     }

@@ -13,10 +13,16 @@ use crate::toolwindows::ToolWindow;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
     // File
+    OpenProject,
+    CloseProject,
     NewFile,
     Save,
     CloseTab,
     CloseOthers,
+    CloseAllTabs,
+    ReopenClosedTab,
+    NextTab,
+    PreviousTab,
     PinTab,
     RefreshTree,
     OpenSettings,
@@ -31,6 +37,7 @@ pub enum Command {
     ToggleToolWindow(ToolWindow),
     HideActiveToolWindow,
     HideAllToolWindows,
+    LastToolWindow,
     ToggleTheme,
     OpenScheme,
     ZoomIn,
@@ -54,6 +61,8 @@ pub enum Command {
     FindUsages,
     NavigateBack,
     NavigateForward,
+    LastEditLocation,
+    SelectIn,
     NextProblem,
     PrevProblem,
     BlockStart,
@@ -176,10 +185,34 @@ use ViewCommand as V;
 
 pub const REGISTRY: &[CommandSpec] = &[
     // File
+    spec(K::OpenProject, C::File, "Open Project…", &[], true),
+    spec(K::CloseProject, C::File, "Close Project", &[], true),
     spec(K::NewFile, C::File, "New File", &[ctrl(Key::N)], true),
     spec(K::Save, C::File, "Save", &[ctrl(Key::S)], true),
     spec(K::CloseTab, C::File, "Close Tab", &[ctrl(Key::F4)], true),
     spec(K::CloseOthers, C::File, "Close Other Tabs", &[], true),
+    spec(K::CloseAllTabs, C::File, "Close All Tabs", &[], true),
+    spec(
+        K::ReopenClosedTab,
+        C::File,
+        "Reopen Closed Tab",
+        &[ctrl_shift(Key::T)],
+        true,
+    ),
+    spec(
+        K::NextTab,
+        C::Navigate,
+        "Select Next Tab",
+        &[alt(Key::ArrowRight)],
+        false,
+    ),
+    spec(
+        K::PreviousTab,
+        C::Navigate,
+        "Select Previous Tab",
+        &[alt(Key::ArrowLeft)],
+        false,
+    ),
     spec(K::PinTab, C::File, "Pin/Unpin Tab", &[], false),
     spec(K::RefreshTree, C::File, "Reload Project Tree", &[], false),
     spec(
@@ -438,6 +471,13 @@ pub const REGISTRY: &[CommandSpec] = &[
         true,
     ),
     spec(
+        K::LastToolWindow,
+        C::View,
+        "Jump to Last Tool Window",
+        &[key(Key::F12)],
+        false,
+    ),
+    spec(
         K::ToggleTheme,
         C::View,
         "Toggle Light/Dark Theme",
@@ -524,7 +564,7 @@ pub const REGISTRY: &[CommandSpec] = &[
         K::GotoDefinition,
         C::Navigate,
         "Go to Definition",
-        &[ctrl(Key::B), key(Key::F12)],
+        &[ctrl(Key::B)],
         true,
     ),
     spec(
@@ -552,14 +592,28 @@ pub const REGISTRY: &[CommandSpec] = &[
         K::NavigateBack,
         C::Navigate,
         "Back",
-        &[alt(Key::ArrowLeft)],
+        &[ctrl_alt(Key::ArrowLeft)],
         true,
     ),
     spec(
         K::NavigateForward,
         C::Navigate,
         "Forward",
-        &[alt(Key::ArrowRight)],
+        &[ctrl_alt(Key::ArrowRight)],
+        true,
+    ),
+    spec(
+        K::LastEditLocation,
+        C::Navigate,
+        "Last Edit Location",
+        &[ctrl_shift(Key::Backspace)],
+        true,
+    ),
+    spec(
+        K::SelectIn,
+        C::Navigate,
+        "Select Opened File in Project View",
+        &[alt(Key::F1)],
         true,
     ),
     spec(
@@ -630,6 +684,13 @@ pub const REGISTRY: &[CommandSpec] = &[
     ),
     spec(K::OpenWelcome, C::Tools, "Welcome Screen", &[], true),
 ];
+
+impl Command {
+    /// Commands that act on the focused text (editor edits, undo, find).
+    pub fn is_text_command(self) -> bool {
+        matches!(self, Command::Editor(_) | Command::Undo | Command::Redo)
+    }
+}
 
 /// The spec of `id`. Every command has one (checked by a test).
 pub fn spec_of(id: Command) -> &'static CommandSpec {
@@ -749,7 +810,12 @@ mod tests {
             resolve(alt_shift(Key::ArrowUp)),
             Some(Command::Editor(ViewCommand::MoveLinesUp))
         );
-        assert_eq!(resolve(alt(Key::ArrowLeft)), Some(Command::NavigateBack));
+        assert_eq!(resolve(alt(Key::ArrowLeft)), Some(Command::PreviousTab));
+        assert_eq!(
+            resolve(ctrl_alt(Key::ArrowLeft)),
+            Some(Command::NavigateBack)
+        );
+        assert_eq!(resolve(key(Key::F12)), Some(Command::LastToolWindow));
         assert_eq!(
             resolve(ctrl_alt_shift(Key::J)),
             Some(Command::Editor(ViewCommand::SelectAllOccurrences))

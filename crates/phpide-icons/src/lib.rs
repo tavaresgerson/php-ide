@@ -136,6 +136,9 @@ icons! {
     Keyboard => "keyboard", "keyboard", "Keyboard";
     Command => "command", "command", "Command";
     Home => "home", "home", "Home";
+    Locate => "locate", "current-location", "Select opened file";
+    CollapseAll => "collapse-all", "fold", "Collapse all";
+    ExpandAll => "expand-all", "unfold", "Expand all";
     FilePhp => "file-php", "file-type-php", "PHP file";
     FileJs => "file-js", "file-type-js", "JavaScript file";
     FileTs => "file-ts", "file-type-ts", "TypeScript file";

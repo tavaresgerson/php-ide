@@ -101,6 +101,53 @@ impl PhpIdeApp {
             Command::ZoomOut => self.set_zoom(self.zoom / 1.1),
             Command::ZoomReset => self.set_zoom(1.0),
             Command::HideAllToolWindows => self.tw.toggle_hide_all(),
+            Command::LastToolWindow => {
+                if self.tw.show_last() == ToolWindow::Project {
+                    ctx.memory_mut(|m| m.request_focus(crate::project_tree::tree_id()));
+                }
+            }
+            Command::OpenProject => self.open_project_dialog(ctx),
+            Command::CloseProject => self.request_close_project(ctx),
+            Command::CloseAllTabs => self.request_close_all(false),
+            Command::ReopenClosedTab => {
+                if !self.ws.reopen_closed_tab() {
+                    self.ws.message = "No closed tab to reopen".into();
+                }
+            }
+            Command::NextTab | Command::PreviousTab => {
+                let count = self.ws.buffers.len();
+                if count > 1 {
+                    self.ws.active = if cmd == Command::NextTab {
+                        (self.ws.active + 1) % count
+                    } else {
+                        (self.ws.active + count - 1) % count
+                    };
+                }
+            }
+            Command::LastEditLocation => {
+                match self.ws.edit_locations.pop() {
+                    Some((path, line0, col0)) => {
+                        let here = self.ws.active_buffer().and_then(|b| b.path.clone());
+                        // Already there: go one further back.
+                        let target = if here.as_deref() == Some(path.as_path())
+                            && self.ws.active_buffer().is_some_and(|b| {
+                                b.document.line_col(self.cursor_char).0 == line0 + 1
+                            }) {
+                            self.ws.edit_locations.pop().unwrap_or((path, line0, col0))
+                        } else {
+                            (path, line0, col0)
+                        };
+                        self.ws.open_file_at(&target.0, target.1, target.2);
+                        self.editors.request_focus();
+                    }
+                    None => self.ws.message = "No edit location".into(),
+                }
+            }
+            Command::SelectIn => {
+                self.tw.set_visible(ToolWindow::Project, true);
+                crate::project_tree::follow_active_file(self, ctx, true);
+                ctx.memory_mut(|m| m.request_focus(crate::project_tree::tree_id()));
+            }
             Command::NavigateBack => {
                 if !self.ws.navigate_back() {
                     self.ws.message = "no navigation history".to_string();
@@ -210,6 +257,29 @@ impl PhpIdeApp {
             self.pending_close = Some(PendingClose::Others(keep));
         } else {
             self.ws.close_other_tabs(keep);
+        }
+    }
+
+    /// Close All / Close Unpinned: confirms when a closing tab is modified.
+    pub fn request_close_all(&mut self, keep_pinned: bool) {
+        let any_dirty = self
+            .ws
+            .buffers
+            .iter()
+            .any(|b| b.dirty && !(keep_pinned && b.pinned));
+        if any_dirty {
+            self.pending_close = Some(PendingClose::All { keep_pinned });
+        } else {
+            self.ws.close_all_tabs(keep_pinned);
+        }
+    }
+
+    /// Close Project: back to the Home screen, asking about unsaved files.
+    pub fn request_close_project(&mut self, ctx: &egui::Context) {
+        if self.ws.buffers.iter().any(|b| b.dirty) {
+            self.pending_close = Some(PendingClose::Home);
+        } else {
+            self.close_project(ctx);
         }
     }
 
@@ -338,8 +408,14 @@ impl PhpIdeApp {
     pub(crate) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let pairs = commands::shortcuts_by_specificity();
         let mut fired = Vec::new();
+        // Text commands belong to the focused widget: with the Project tree
+        // or a text field focused, Ctrl+D or Ctrl+Z must not edit the code.
+        let other_focus = !self.editors.editor_focused && ctx.memory(|m| m.focused().is_some());
         ctx.input_mut(|i| {
             for (shortcut, command) in &pairs {
+                if other_focus && command.is_text_command() {
+                    continue;
+                }
                 if i.consume_shortcut(shortcut) {
                     fired.push(*command);
                 }

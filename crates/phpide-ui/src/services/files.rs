@@ -16,14 +16,72 @@ use eframe::egui;
 use phpide_core::jobs::{JobHandle, JobOutcome, JobSystem};
 use phpide_core::{FileEntry, IdeError};
 
-/// Folders never shown in the tree (tool metadata, not project content).
-const HIDDEN_IN_TREE: [&str; 2] = [".git", ".idea"];
+/// Excluded folders: tool metadata, not project content. Shown only with
+/// "Show Excluded Files" (RF-NAV-10).
+const EXCLUDED: [&str; 3] = [".git", ".idea", ".phpide"];
+
+/// Most folders "Expand All" opens under one folder, so it cannot walk all
+/// of `vendor/` by accident.
+const EXPAND_ALL_LIMIT: usize = 400;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
     pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
+    pub excluded: bool,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// How the tree orders and filters entries (RF-NAV-10, RF-NAV-14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeOptions {
+    /// "name", "type" or "modified" (newest first).
+    pub sort: String,
+    pub folders_first: bool,
+    pub show_excluded: bool,
+}
+
+impl Default for TreeOptions {
+    fn default() -> Self {
+        TreeOptions {
+            sort: "name".into(),
+            folders_first: true,
+            show_excluded: false,
+        }
+    }
+}
+
+fn extension_of(name: &str) -> String {
+    name.rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map(|(_, ext)| ext.to_lowercase())
+        .unwrap_or_default()
+}
+
+/// Orders folder contents for display. Folders keep name order whatever
+/// the sort, as in PhpStorm.
+pub fn sort_entries(entries: &mut [TreeEntry], options: &TreeOptions) {
+    entries.sort_by(|a, b| {
+        let group = if options.folders_first {
+            b.is_dir.cmp(&a.is_dir)
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        let by_name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+        group.then_with(|| {
+            if a.is_dir && b.is_dir {
+                return by_name();
+            }
+            match options.sort.as_str() {
+                "type" => extension_of(&a.name)
+                    .cmp(&extension_of(&b.name))
+                    .then_with(by_name),
+                "modified" => b.modified.cmp(&a.modified).then_with(by_name),
+                _ => by_name(),
+            }
+        })
+    });
 }
 
 /// One visible row of the tree, in display order.
@@ -47,6 +105,8 @@ pub struct ProjectFiles {
     index_stale: bool,
     /// The first read (root folder + index) has been requested.
     started: bool,
+    /// Folders whose subfolders expand as they load ("Expand All").
+    expanding: HashSet<PathBuf>,
 }
 
 impl ProjectFiles {
@@ -62,7 +122,78 @@ impl ProjectFiles {
             index_job: None,
             index_stale: false,
             started: false,
+            expanding: HashSet::new(),
         }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn is_expanded(&self, dir: &Path) -> bool {
+        self.expanded.contains(dir)
+    }
+
+    /// Expands `dir` (no-op when open).
+    pub fn expand(&mut self, jobs: &JobSystem, ctx: &egui::Context, dir: &Path) {
+        if !self.expanded.contains(dir) {
+            self.toggle(jobs, ctx, dir);
+        }
+    }
+
+    /// Collapses every folder (RF-NAV-07).
+    pub fn collapse_all(&mut self) {
+        self.expanding.clear();
+        self.expanded.retain(|dir| *dir == self.root);
+    }
+
+    /// Expands `dir` and its subfolders as they load, up to a limit, and
+    /// skipping excluded and dependency folders (RF-NAV-07).
+    pub fn expand_all(&mut self, jobs: &JobSystem, ctx: &egui::Context, dir: &Path) {
+        self.expanding.insert(dir.to_path_buf());
+        self.expand(jobs, ctx, dir);
+        self.continue_expand_all(jobs, ctx);
+    }
+
+    fn continue_expand_all(&mut self, jobs: &JobSystem, ctx: &egui::Context) {
+        if self.expanding.is_empty() {
+            return;
+        }
+        let mut opened = 0;
+        let mut queue: Vec<PathBuf> = self.expanding.iter().cloned().collect();
+        while let Some(dir) = queue.pop() {
+            let Some(children) = self.loaded.get(&dir) else {
+                continue;
+            };
+            let subdirs: Vec<PathBuf> = children
+                .iter()
+                .filter(|c| c.is_dir && !c.excluded)
+                .filter(|c| !matches!(c.name.as_str(), "vendor" | "node_modules"))
+                .map(|c| c.path.clone())
+                .collect();
+            for sub in subdirs {
+                if self.expanded.len() >= EXPAND_ALL_LIMIT {
+                    self.expanding.clear();
+                    return;
+                }
+                if self.expanded.insert(sub.clone()) {
+                    opened += 1;
+                    if !self.loaded.contains_key(&sub) {
+                        self.request_dir(jobs, ctx, &sub);
+                    }
+                }
+                queue.push(sub);
+            }
+        }
+        if opened == 0 && self.pending.is_empty() {
+            self.expanding.clear();
+        }
+    }
+
+    /// Re-reads one folder (after a file operation in it).
+    pub fn reload_dir(&mut self, jobs: &JobSystem, ctx: &egui::Context, dir: &Path) {
+        self.request_dir(jobs, ctx, dir);
+        self.request_index(jobs, ctx);
     }
 
     /// True while the search index is being built.
@@ -112,17 +243,29 @@ impl ProjectFiles {
     }
 
     /// Rows to draw, in order. Only expanded and loaded folders contribute.
-    pub fn visible_rows(&self) -> Vec<TreeRow> {
+    pub fn visible_rows(&self, options: &TreeOptions) -> Vec<TreeRow> {
         let mut rows = Vec::new();
-        self.push_children(&self.root, 0, &mut rows);
+        self.push_children(&self.root, 0, options, &mut rows);
         rows
     }
 
-    fn push_children(&self, dir: &Path, depth: usize, rows: &mut Vec<TreeRow>) {
+    fn push_children(
+        &self,
+        dir: &Path,
+        depth: usize,
+        options: &TreeOptions,
+        rows: &mut Vec<TreeRow>,
+    ) {
         let Some(children) = self.loaded.get(dir) else {
             return;
         };
-        for child in children {
+        let mut children: Vec<TreeEntry> = children
+            .iter()
+            .filter(|c| options.show_excluded || !c.excluded)
+            .cloned()
+            .collect();
+        sort_entries(&mut children, options);
+        for child in &children {
             let expanded = child.is_dir && self.expanded.contains(&child.path);
             rows.push(TreeRow {
                 entry: child.clone(),
@@ -132,7 +275,7 @@ impl ProjectFiles {
                 error: self.failed.get(&child.path).cloned(),
             });
             if expanded {
-                self.push_children(&child.path, depth + 1, rows);
+                self.push_children(&child.path, depth + 1, options, rows);
             }
         }
     }
@@ -164,6 +307,7 @@ impl ProjectFiles {
                 JobOutcome::Ok(entries) => {
                     self.failed.remove(&dir);
                     self.loaded.insert(dir, entries);
+                    self.continue_expand_all(jobs, ctx);
                 }
                 JobOutcome::Err(error) => {
                     self.failed.insert(dir, error.message);
@@ -224,30 +368,32 @@ impl ProjectFiles {
     }
 }
 
-/// Folder contents for the tree: folders first, then files, each sorted by
-/// name without regard to case.
+/// Folder contents for the tree, in name order (display order is
+/// [`sort_entries`]).
 pub fn read_dir_sorted(dir: &Path) -> io::Result<Vec<TreeEntry>> {
     let mut entries = Vec::new();
     for item in fs::read_dir(dir)? {
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if HIDDEN_IN_TREE.contains(&name.as_str()) {
-            continue;
-        }
         let path = item.path();
         let file_type = item.file_type()?;
-        let is_dir = if file_type.is_symlink() {
-            fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+        let metadata = if file_type.is_symlink() {
+            fs::metadata(&path).ok()
         } else {
-            file_type.is_dir()
+            item.metadata().ok()
         };
-        entries.push(TreeEntry { path, name, is_dir });
+        let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
+        let modified = metadata.and_then(|m| m.modified().ok());
+        let excluded = EXCLUDED.contains(&name.as_str());
+        entries.push(TreeEntry {
+            path,
+            name,
+            is_dir,
+            excluded,
+            modified,
+        });
     }
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    sort_entries(&mut entries, &TreeOptions::default());
     Ok(entries)
 }
 
@@ -299,21 +445,24 @@ mod tests {
         settle(&mut files, &jobs, &ctx);
 
         let names: Vec<String> = files
-            .visible_rows()
+            .visible_rows(&TreeOptions::default())
             .iter()
             .map(|row| row.entry.name.clone())
             .collect();
         assert_eq!(names, vec!["src", "vendor", ".env", "composer.json"]);
-        assert!(files.visible_rows().iter().all(|row| !row.expanded));
+        assert!(files
+            .visible_rows(&TreeOptions::default())
+            .iter()
+            .all(|row| !row.expanded));
 
         files.toggle(&jobs, &ctx, &root.join("vendor"));
         assert!(
-            files.visible_rows()[1].loading,
+            files.visible_rows(&TreeOptions::default())[1].loading,
             "reading happens in background"
         );
         settle(&mut files, &jobs, &ctx);
         let names: Vec<String> = files
-            .visible_rows()
+            .visible_rows(&TreeOptions::default())
             .iter()
             .map(|row| row.entry.name.clone())
             .collect();
@@ -340,12 +489,63 @@ mod tests {
         }
         files.reveal(&jobs, &ctx, &deep.join("Deep.php"));
         settle(&mut files, &jobs, &ctx);
-        let rows = files.visible_rows();
+        let rows = files.visible_rows(&TreeOptions::default());
         let last = rows
             .iter()
             .find(|row| row.entry.name == "Deep.php")
             .expect("revealed");
         assert_eq!(last.depth, 10);
+    }
+
+    #[test]
+    fn options_sort_filter_and_expand_all() {
+        let dir = project();
+        let root = dir.path().to_path_buf();
+        fs::write(root.join("b.txt"), "").unwrap();
+        fs::write(root.join("a.php"), "").unwrap();
+        let jobs = JobSystem::new();
+        let ctx = egui::Context::default();
+        let mut files = ProjectFiles::new(root.clone());
+        files.refresh(&jobs, &ctx);
+        settle(&mut files, &jobs, &ctx);
+        let names = |files: &ProjectFiles, options: &TreeOptions| -> Vec<String> {
+            files
+                .visible_rows(options)
+                .iter()
+                .map(|r| r.entry.name.clone())
+                .collect()
+        };
+        let by_type = TreeOptions {
+            sort: "type".into(),
+            ..TreeOptions::default()
+        };
+        assert_eq!(
+            names(&files, &by_type),
+            vec!["src", "vendor", ".env", "composer.json", "a.php", "b.txt"]
+        );
+        let with_excluded = TreeOptions {
+            show_excluded: true,
+            ..TreeOptions::default()
+        };
+        assert_eq!(names(&files, &with_excluded)[0], ".git");
+        let mixed = TreeOptions {
+            folders_first: false,
+            ..TreeOptions::default()
+        };
+        assert_eq!(names(&files, &mixed)[0], ".env");
+
+        files.expand_all(&jobs, &ctx, &root);
+        settle(&mut files, &jobs, &ctx);
+        assert!(files.is_expanded(&root.join("src/level0/level1")));
+        assert!(
+            !files.is_expanded(&root.join("vendor")),
+            "dependencies stay closed"
+        );
+        files.collapse_all();
+        assert!(files
+            .visible_rows(&TreeOptions::default())
+            .iter()
+            .all(|r| !r.expanded));
     }
 
     #[test]

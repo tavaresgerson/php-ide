@@ -264,6 +264,7 @@ impl PhpIdeApp {
         let Some(index) = self.editors.pane_buffer(pane, &self.ws) else {
             return;
         };
+        self.file_type_notice(ui, index);
         let deco_owned = self.decorations(index);
         let blame_on = self.settings.blame_gutter && index == self.ws.active;
         let blame_stale = self.ws.buffers[index].dirty;
@@ -311,6 +312,7 @@ impl PhpIdeApp {
         let path = buffer.path.clone();
         if output.focused {
             self.editors.focus = pane;
+            self.editors.editor_focused = true;
         }
         let focused_pane = self.editors.split.is_none() || self.editors.focus == pane;
         if focused_pane {
@@ -319,6 +321,16 @@ impl PhpIdeApp {
         }
         if output.blocked_edit {
             self.ws.message = "the file is read-only (unlock it in the status bar)".to_string();
+        }
+        if output.edited {
+            if let Some(path) = path.clone() {
+                let buffer = &self.ws.buffers[index];
+                let (line, col) = buffer
+                    .document
+                    .line_col(caret.min(buffer.document.len_chars()));
+                self.ws
+                    .record_edit(&path, line.saturating_sub(1), col.saturating_sub(1));
+            }
         }
         if let Some(phpide_editor::GutterClick::LineNumber(line0)) = output.gutter_click {
             if let Some(path) = path.clone() {
@@ -356,6 +368,11 @@ impl PhpIdeApp {
     pub(crate) fn editor(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.editors.retain_open(&self.ws);
+        self.editors.editor_focused = false;
+        self.editors.set_file_types(
+            &self.settings.file_type_patterns,
+            &self.settings.file_type_overrides,
+        );
         self.editors.note_active(&self.ws);
         self.refresh_vcs_marks(ctx);
         let theme = crate::design::current(ctx);
@@ -584,4 +601,107 @@ pub(crate) fn active_path_matches(ws: &Workspace, path: &Path, revision: u64) ->
     ws.active_buffer()
         .map(|b| b.path.as_deref() == Some(path) && b.document.revision() == revision)
         .unwrap_or(false)
+}
+
+/// `*.ext` for a file with an extension (`None` for `Makefile`, `.env`).
+pub(crate) fn extension_pattern(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    let (stem, extension) = name.rsplit_once('.')?;
+    (!stem.is_empty() && !extension.is_empty()).then(|| format!("*.{extension}"))
+}
+
+impl PhpIdeApp {
+    /// Offers a file type for files no pattern recognizes (RF-HL-02).
+    fn file_type_notice(&mut self, ui: &mut egui::Ui, index: usize) {
+        let buffer = &self.ws.buffers[index];
+        let Some(path) = buffer.path.clone() else {
+            return;
+        };
+        if self.editors.detect(buffer) != phpide_php::filetype::Detected::Unknown {
+            return;
+        }
+        let pattern = extension_pattern(&path);
+        let message = match &pattern {
+            Some(p) => format!("No file type is associated with {p} files."),
+            None => "No file type is associated with this file.".to_string(),
+        };
+        let mut choice: Option<&'static str> = None;
+        crate::design::components::editor_notice(
+            ui,
+            crate::design::components::Tone::Info,
+            &message,
+            |ui| {
+                ui.menu_button("Associate with file type…", |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for file_type in phpide_php::filetype::FILE_TYPES {
+                                if ui.button(file_type.name).clicked() {
+                                    choice = Some(file_type.id);
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
+                if ui.link("Open as plain text").clicked() {
+                    choice = Some("text");
+                }
+            },
+        );
+        if let Some(id) = choice {
+            match pattern {
+                Some(pattern) => self.associate_file_type(&pattern, id),
+                None => self.set_file_type_override(&path, Some(id)),
+            }
+        }
+    }
+
+    /// The type id forced on `path`, if any.
+    pub(crate) fn file_type_override(&self, path: &std::path::Path) -> Option<&str> {
+        let key = path.to_string_lossy();
+        self.settings
+            .file_type_overrides
+            .iter()
+            .find(|(p, _)| *p == key)
+            .map(|(_, id)| id.as_str())
+    }
+
+    /// Forces a type on one file (`None` goes back to detection).
+    pub(crate) fn set_file_type_override(&mut self, path: &std::path::Path, id: Option<&str>) {
+        let key = path.to_string_lossy().into_owned();
+        self.settings.file_type_overrides.retain(|(p, _)| *p != key);
+        if let Some(id) = id {
+            self.settings
+                .file_type_overrides
+                .push((key, id.to_string()));
+        }
+        self.persist_settings();
+    }
+
+    /// Associates a name pattern (`*.tpl`) with a type for every file.
+    pub(crate) fn associate_file_type(&mut self, pattern: &str, id: &str) {
+        self.settings
+            .file_type_patterns
+            .retain(|(p, _)| !p.eq_ignore_ascii_case(pattern));
+        self.settings
+            .file_type_patterns
+            .push((pattern.to_string(), id.to_string()));
+        self.persist_settings();
+        self.ws.message = format!("{pattern} files now open as {id}");
+    }
+}
+
+impl PhpIdeApp {
+    /// Opens `path` in a tab: a preview tab (replaced by the next preview)
+    /// or a permanent one, next to the active tab unless the settings say
+    /// "at the end" (RF-TAB-01, RF-TAB-02).
+    pub(crate) fn open_file_tab(&mut self, path: &std::path::Path, preview: bool) {
+        self.ws.open_tabs_at_end = self.settings.tabs_open_at_end;
+        self.ws.open_file_ex(path, preview);
+        if !preview {
+            if let Some(buffer) = self.ws.active_buffer_mut() {
+                buffer.preview = false;
+            }
+        }
+    }
 }

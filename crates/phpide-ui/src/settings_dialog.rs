@@ -14,6 +14,9 @@ pub enum SettingsPage {
     EditorAppearance,
     EditorFont,
     PhpLanguageLevel,
+    SystemSettings,
+    EditorTabs,
+    FileTypes,
     Named(&'static str),
 }
 
@@ -25,6 +28,9 @@ impl SettingsPage {
             SettingsPage::EditorAppearance => "General | Appearance",
             SettingsPage::EditorFont => "Font",
             SettingsPage::PhpLanguageLevel => "Language Level",
+            SettingsPage::SystemSettings => "System Settings",
+            SettingsPage::EditorTabs => "General | Editor Tabs",
+            SettingsPage::FileTypes => "File Types",
             SettingsPage::Named(label) => label,
         }
     }
@@ -171,6 +177,9 @@ fn page_for(label: &'static str) -> SettingsPage {
         "General | Appearance" => SettingsPage::EditorAppearance,
         "Font" => SettingsPage::EditorFont,
         "Language Level" => SettingsPage::PhpLanguageLevel,
+        "System Settings" => SettingsPage::SystemSettings,
+        "General | Editor Tabs" => SettingsPage::EditorTabs,
+        "File Types" => SettingsPage::FileTypes,
         other => SettingsPage::Named(other),
     }
 }
@@ -263,6 +272,9 @@ fn show_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             SettingsPage::EditorAppearance => "Editor | General | Appearance",
             SettingsPage::EditorFont => "Editor | Font",
             SettingsPage::PhpLanguageLevel => "PHP | Language Level",
+            SettingsPage::SystemSettings => "Appearance & Behavior | System Settings",
+            SettingsPage::EditorTabs => "Editor | General | Editor Tabs",
+            SettingsPage::FileTypes => "Editor | File Types",
             _ => page.label(),
         })
         .weak(),
@@ -274,10 +286,140 @@ fn show_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         SettingsPage::EditorAppearance => editor_appearance_page(app, ui),
         SettingsPage::EditorFont => editor_font_page(app, ui),
         SettingsPage::PhpLanguageLevel => php_page(app, ui),
+        SettingsPage::SystemSettings => system_page(app, ui),
+        SettingsPage::EditorTabs => tabs_page(app, ui),
+        SettingsPage::FileTypes => file_types_page(app, ui),
         SettingsPage::Named(name) => {
             ui.label(format!("{name} settings."));
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Not available yet.").weak());
+        }
+    }
+}
+
+/// Project opening and startup (RF-PRJ-08, RF-PRJ-11).
+fn system_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let mut changed = false;
+    ui.label(egui::RichText::new("Project").strong());
+    changed |= ui
+        .checkbox(
+            &mut app.settings.reopen_last_project,
+            "Reopen projects on startup",
+        )
+        .changed();
+    ui.add_space(6.0);
+    ui.label("Open project in:");
+    for (value, label) in [
+        ("new", "New window"),
+        ("current", "Current window"),
+        ("ask", "Ask"),
+    ] {
+        if ui
+            .radio(app.settings.open_project_mode == value, label)
+            .clicked()
+        {
+            app.settings.open_project_mode = value.to_string();
+            changed = true;
+        }
+    }
+    if changed {
+        app.persist_settings();
+    }
+}
+
+/// Tab opening and closing policy (RF-TAB-01, RF-TAB-03).
+fn tabs_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let mut changed = false;
+    ui.label(egui::RichText::new("Opening Policy").strong());
+    changed |= ui
+        .checkbox(
+            &mut app.settings.tabs_open_at_end,
+            "Open new tabs at the end",
+        )
+        .changed();
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Closing Policy").strong());
+    ui.horizontal(|ui| {
+        ui.label("Tab limit:");
+        let mut limit = app.settings.tab_limit;
+        if ui
+            .add(egui::DragValue::new(&mut limit).range(1..=99))
+            .changed()
+        {
+            app.settings.tab_limit = limit;
+            app.ws.tab_limit = limit as usize;
+            changed = true;
+        }
+    });
+    ui.label(
+        egui::RichText::new(
+            "Over the limit, the unmodified tab opened longest ago closes. Pinned tabs stay.",
+        )
+        .weak(),
+    );
+    if changed {
+        app.ws.open_tabs_at_end = app.settings.tabs_open_at_end;
+        app.persist_settings();
+    }
+}
+
+/// Recognized file types and the user's patterns (RF-HL-03).
+fn file_types_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    egui::ScrollArea::vertical()
+        .max_height(260.0)
+        .show(ui, |ui| {
+            egui::Grid::new("file-types").striped(true).show(ui, |ui| {
+                ui.label(egui::RichText::new("Type").strong());
+                ui.label(egui::RichText::new("Patterns").strong());
+                ui.end_row();
+                for file_type in phpide_php::filetype::FILE_TYPES {
+                    ui.label(file_type.name);
+                    let mut patterns: Vec<String> =
+                        file_type.patterns.iter().map(|p| p.to_string()).collect();
+                    for (pattern, id) in &app.settings.file_type_patterns {
+                        if id == file_type.id {
+                            patterns.push(format!("{pattern} (yours)"));
+                        }
+                    }
+                    ui.label(egui::RichText::new(patterns.join(", ")).weak());
+                    ui.end_row();
+                }
+            });
+        });
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Your patterns").strong());
+    let mut remove = None;
+    for (i, (pattern, id)) in app.settings.file_type_patterns.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let name = phpide_php::filetype::by_id(id).map_or(id.as_str(), |t| t.name);
+            ui.label(format!("{pattern} → {name}"));
+            if ui.small_button("Remove").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if app.settings.file_type_patterns.is_empty() {
+        ui.weak("None. Pick a type from the status bar or the notice of an unknown file.");
+    }
+    if let Some(i) = remove {
+        app.settings.file_type_patterns.remove(i);
+        app.persist_settings();
+    }
+    if !app.settings.file_type_overrides.is_empty() {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Files with a forced type").strong());
+        let mut clear = None;
+        for (i, (path, id)) in app.settings.file_type_overrides.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{path} → {id}"));
+                if ui.small_button("Revert").clicked() {
+                    clear = Some(i);
+                }
+            });
+        }
+        if let Some(i) = clear {
+            app.settings.file_type_overrides.remove(i);
+            app.persist_settings();
         }
     }
 }

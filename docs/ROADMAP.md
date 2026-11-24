@@ -171,15 +171,45 @@ keystroke costs under 16 ms (measured with `editor_pipeline`); interaction
 tests cover typing, grouped undo, multi-cursor, folding and split.
 ✔ Measured below ("Phase 3 results").
 
-### Phase 4 — Polished shell (M)
+### Phase 4 — Polished shell (M) — in progress
 
-Window header, single-row tabs, Project tool window (icons, keyboard,
-context menu, Git status), icon rails, quiet status bar, breadcrumbs,
-palette, Welcome and Settings rebuilt with the components, async clone with
-progress, unified notifications.
+Scope and status per requirement in [REQUIREMENTS.md](REQUIREMENTS.md)
+(PhpStorm reference list, MVP items first).
 
-**Done when:** "after" screenshots approved in all three themes; open
-project → edit → save → close works with the keyboard only.
+Done (2026-11-24):
+- [x] File types: name patterns, `.dist`/`.example` suffixes, shebang and
+      `<?php` detection, user patterns and per-file overrides (status bar,
+      tree, Settings › File Types), notice for unknown files; `.env`, INI,
+      TOML, Dockerfile and ignore files highlighted by a built-in
+      line-based engine; TypeScript, SCSS, Twig, Vue, NEON mapped to grammars.
+- [x] Project view: follows the active tab (or Select Opened File), keyboard
+      navigation, speed search, multi-select, Expand/Collapse All, sorting,
+      folders on top, excluded files; New (file, folder, PHP class with
+      PSR-4 namespace), Cut/Copy/Paste, Rename, Delete to Trash, Copy Path,
+      Open In (file manager, terminal), Open in Right Split.
+- [x] Tabs: open next to the active tab, one scrolling row with a list of
+      all tabs, parent folder for duplicate names, `*` when modified, path
+      tooltip, middle click, Close All/Unpinned, Reopen Closed Tab, copy path,
+      double click to keep a preview tab or maximize the editor, oldest
+      unmodified tab closes over the limit.
+- [x] Home: recent projects with search, remove, missing marker and context
+      menu; native folder chooser with a built-in fallback; drop a folder to
+      open it; New Project and Get from VCS dialogs; second project opens in
+      a new window, this window or asks; Close Project; reopen the last
+      project on startup.
+- [x] PhpStorm shortcuts: Ctrl+Alt+←/→ back/forward, Alt+←/→ tabs,
+      Ctrl+Shift+Backspace last edit, Alt+F1 Select In, F12 last tool window,
+      Ctrl+E twice for edited files; editor shortcuts only act when the
+      editor (or nothing else) has focus.
+
+Still to do: switching between project windows (RF-PRJ-10), attach project,
+Color Scheme page with per-language overrides (RF-HL-10/11), clickable
+breadcrumbs, Search Everywhere scope tabs, window header and status bar
+polish, Settings rebuilt with the components, notifications as toasts.
+
+**Done when:** every MVP item of REQUIREMENTS.md is ✅; "after" screenshots
+approved in all three themes; open project → edit → save → close works with
+the keyboard only.
 
 ### Phase 5 — PHP intelligence on the new editor (M)
 

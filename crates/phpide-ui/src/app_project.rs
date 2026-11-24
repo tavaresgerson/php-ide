@@ -40,7 +40,9 @@ impl PhpIdeApp {
             db,
             // The file index is built in the background by `files`.
             ws: Workspace::unscanned(root.clone()),
-            selected: None,
+            tree: Default::default(),
+            project_open: !start_welcome,
+            open_prompt: None,
             cursor_char: 0,
             palette: PaletteState::new(),
             search: SearchState::new(),
@@ -124,7 +126,7 @@ impl PhpIdeApp {
             } else {
                 app.ws.root.join(f)
             };
-            app.ws.open_file_ex(&path, true);
+            app.ws.open_file_ex(&path, false);
         }
         if std::env::var_os("PHPIDE_SMOKE_PROJECT_CLOSE").is_some() {
             if let Some(buffer) = app.ws.active_buffer_mut() {
@@ -231,7 +233,9 @@ impl PhpIdeApp {
         self.git = services::git::GitService::new(root.clone());
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.refresh_composer(false);
-        self.selected = None;
+        self.tree = Default::default();
+        self.project_open = true;
+        self.ws.open_tabs_at_end = self.settings.tabs_open_at_end;
         self.welcome_open = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
             "PHP IDE — {}",
@@ -243,7 +247,73 @@ impl PhpIdeApp {
     pub fn persist_settings(&mut self) {
         self.settings.zoom = self.zoom;
         self.settings.theme = self.theme.name().to_string();
-        self.settings.save();
+        // Interaction tests drive real app instances: they must not write
+        // temporary projects into the user's settings.
+        if !cfg!(test) {
+            self.settings.save();
+        }
+    }
+
+    /// Opens `root` as asked by the "open project" setting: in this
+    /// window, in a new one, or after asking (RF-PRJ-08).
+    pub fn open_project_at(&mut self, root: PathBuf, ctx: &egui::Context) {
+        if !self.project_open || root == self.ws.root && self.project_open {
+            self.request_load_project(root, ctx);
+            return;
+        }
+        match self.settings.open_project_mode.as_str() {
+            "current" => self.request_load_project(root, ctx),
+            "new" => self.open_in_new_window(&root),
+            _ => self.open_prompt = Some(root),
+        }
+    }
+
+    /// Starts another PHP IDE process on `root`.
+    pub fn open_in_new_window(&mut self, root: &Path) {
+        let exe = std::env::current_exe();
+        let spawned = exe.and_then(|exe| {
+            std::process::Command::new(exe)
+                .arg(root)
+                .stdin(std::process::Stdio::null())
+                .spawn()
+        });
+        self.ws.message = match spawned {
+            Ok(_) => {
+                self.settings.touch_project(root);
+                // This window keeps its own project as the one to reopen.
+                self.settings.last_project = self.ws.root.display().to_string();
+                self.persist_settings();
+                format!("Opened {} in a new window", root.display())
+            }
+            Err(e) => format!("could not open a new window: {e}"),
+        };
+        self.welcome_open = false;
+    }
+
+    /// Close Project: stops the project's services and shows Home
+    /// (RF-PRJ-12). Unsaved files were handled by the caller.
+    pub fn close_project(&mut self, ctx: &egui::Context) {
+        let _ = self.jobs.shutdown(Duration::from_secs(2));
+        self.search.cancel();
+        self.exec.stop_if_running();
+        self.rd.shutdown();
+        if let Some(old) = self.lsp.take() {
+            old.stop();
+        }
+        self.lsp_init = None;
+        self.lsp_opened.clear();
+        self.watcher = None;
+        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+        self.ws = Workspace::unscanned(home.clone());
+        self.files = services::files::ProjectFiles::new(home.clone());
+        self.git = services::git::GitService::new(home);
+        self.tree = Default::default();
+        self.editors = editor_area::EditorArea::default();
+        self.project_open = false;
+        self.welcome_open = true;
+        self.settings.last_project.clear();
+        self.persist_settings();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title("PHP IDE".into()));
     }
 
     pub fn apply_theme(&mut self, theme: ThemeId, ctx: &egui::Context) {

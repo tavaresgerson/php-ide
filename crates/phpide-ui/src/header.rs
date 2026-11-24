@@ -71,6 +71,9 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         chosen = Some(spec.id);
                         ui.close();
                     }
+                    if spec.id == Command::OpenProject {
+                        recent_projects_menu(app, ui);
+                    }
                 }
             });
         }
@@ -81,6 +84,34 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     })
     .response
     .on_hover_text("Main menu");
+}
+
+/// File › Recent Projects (RF-PRJ-03).
+fn recent_projects_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let recents: Vec<String> = app
+        .settings
+        .recent_projects
+        .iter()
+        .filter(|p| std::path::Path::new(p.as_str()) != app.ws.root || !app.project_open)
+        .cloned()
+        .collect();
+    ui.add_enabled_ui(!recents.is_empty(), |ui| {
+        ui.menu_button("Recent Projects", |ui| {
+            ui.set_min_width(320.0);
+            for path in recents {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                let button = egui::Button::new(name).shortcut_text(path.clone());
+                if ui.add(button).clicked() {
+                    let ctx = ui.ctx().clone();
+                    app.open_project_at(std::path::PathBuf::from(path), &ctx);
+                    ui.close();
+                }
+            }
+        });
+    });
 }
 
 /// Widget de projeto: nome da raiz + ações de projeto.
@@ -98,16 +129,23 @@ fn project_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 .small(),
         );
         ui.separator();
+        recent_projects_menu(app, ui);
+        if ui.button("Open Project…").clicked() {
+            app.open_project_dialog(ui.ctx());
+            ui.close();
+        }
+        if ui.button("Close Project").clicked() {
+            app.request_close_project(ui.ctx());
+            ui.close();
+        }
+        ui.separator();
         if ui.button("Reload Project Tree").clicked() {
             app.files.refresh(&app.jobs, ui.ctx());
             ui.close();
         }
         if ui.button("Reveal Active File").clicked() {
-            if let Some(path) = app.ws.active_buffer().and_then(|b| b.path.clone()) {
-                app.files.reveal(&app.jobs, ui.ctx(), &path);
-                app.selected = Some(path);
-                app.tw.set_visible(ToolWindow::Project, true);
-            }
+            app.tw.set_visible(ToolWindow::Project, true);
+            crate::project_tree::follow_active_file(app, ui.ctx(), true);
             ui.close();
         }
         if ui.button("Back to Welcome Screen").clicked() {

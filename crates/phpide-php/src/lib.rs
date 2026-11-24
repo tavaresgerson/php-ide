@@ -283,6 +283,15 @@ impl LineHighlighter {
         })
     }
 
+    /// Highlighter for a syntect grammar by its name (`"YAML"`).
+    pub fn for_syntax_name(name: &str) -> Option<Self> {
+        let syntax = syntax_set().find_syntax_by_name(name)?;
+        Some(LineHighlighter {
+            syntax,
+            states: Vec::new(),
+        })
+    }
+
     pub fn language_name(&self) -> &str {
         &self.syntax.name
     }
@@ -418,6 +427,7 @@ impl SymbolKind {
 }
 
 pub mod composer;
+pub mod filetype;
 
 #[cfg(test)]
 mod tests {

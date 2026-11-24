@@ -7,6 +7,10 @@ use std::collections::HashMap;
 use eframe::egui;
 use phpide_core::{Buffer, Workspace};
 use phpide_editor::{EditorView, Syntax, ViewCommand};
+use phpide_php::filetype::{self, Detected};
+
+/// `(pattern or path, file type id)` pairs from the settings.
+type Pairs = Vec<(String, String)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pane {
@@ -38,11 +42,16 @@ pub(crate) struct EditorArea {
     pub focus: Pane,
     /// Screen rect of the focused caret (completion popup anchor).
     pub caret_rect: Option<egui::Rect>,
+    /// An editor pane had keyboard focus last frame (editor shortcuts only
+    /// apply then, or when nothing else is focused).
+    pub editor_focused: bool,
     /// Give keyboard focus to the focused pane on its next frame (file
     /// opened, popup closed).
     focus_request: bool,
     /// Buffer shown by the primary pane last frame.
     last_active: Option<u64>,
+    /// User patterns and per-file overrides (from settings).
+    file_types: (Pairs, Pairs),
 }
 
 impl Default for EditorArea {
@@ -54,8 +63,10 @@ impl Default for EditorArea {
             split: None,
             focus: Pane::Primary,
             caret_rect: None,
+            editor_focused: false,
             focus_request: false,
             last_active: None,
+            file_types: (Vec::new(), Vec::new()),
         }
     }
 }
@@ -86,18 +97,69 @@ impl EditorArea {
         false
     }
 
+    /// Applies the user's file-type patterns and per-file overrides;
+    /// buffers whose type changes get a new syntax.
+    pub fn set_file_types(
+        &mut self,
+        patterns: &[(String, String)],
+        overrides: &[(String, String)],
+    ) {
+        if self.file_types.0 != patterns || self.file_types.1 != overrides {
+            self.file_types = (patterns.to_vec(), overrides.to_vec());
+            self.syntaxes.clear();
+        }
+    }
+
+    /// The file type of `buffer`: per-file override, user patterns, then
+    /// the built-in patterns and the first line.
+    pub fn detect(&self, buffer: &Buffer) -> Detected {
+        let Some(path) = buffer.path.as_deref() else {
+            return Detected::Known(filetype::by_id("php").expect("PHP type"));
+        };
+        let key = path.to_string_lossy();
+        if let Some(file_type) = self
+            .file_types
+            .1
+            .iter()
+            .find(|(p, _)| *p == key)
+            .and_then(|(_, id)| filetype::by_id(id))
+        {
+            return Detected::Known(file_type);
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let rope = buffer.document.rope();
+        let first_line: String = if rope.len_lines() > 0 {
+            rope.line(0).chars().take(200).collect()
+        } else {
+            String::new()
+        };
+        filetype::detect_with(&name, &first_line, &self.file_types.0)
+    }
+
+    fn ensure_syntax(&mut self, buffer: &Buffer) {
+        if !self.syntaxes.contains_key(&buffer.id) {
+            let detected = self.detect(buffer);
+            self.syntaxes.insert(buffer.id, Syntax::for_type(&detected));
+        }
+    }
+
     pub fn syntax(&mut self, buffer: &Buffer) -> &mut Syntax {
+        self.ensure_syntax(buffer);
         self.syntaxes
-            .entry(buffer.id)
-            .or_insert_with(|| Syntax::for_path(buffer.path.as_deref()))
+            .get_mut(&buffer.id)
+            .expect("syntax just created")
     }
 
     /// View and syntax of a pane's buffer, borrowed together.
     pub fn pane_parts(&mut self, pane: Pane, buffer: &Buffer) -> (&mut EditorView, &mut Syntax) {
+        self.ensure_syntax(buffer);
         let syntax = self
             .syntaxes
-            .entry(buffer.id)
-            .or_insert_with(|| Syntax::for_path(buffer.path.as_deref()));
+            .get_mut(&buffer.id)
+            .expect("syntax just created");
         let view = match (pane, self.split.as_mut()) {
             (Pane::Secondary, Some(split)) => &mut split.view,
             _ => self.views.entry(buffer.id).or_default(),

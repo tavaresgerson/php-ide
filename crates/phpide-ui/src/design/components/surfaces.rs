@@ -495,3 +495,38 @@ pub fn tooltip_contents(ui: &mut egui::Ui, text: &str, shortcut: Option<&str>) {
         }
     });
 }
+
+/// Strip at the top of an editor pane (IntelliJ "editor notification"):
+/// a tone icon, a message and link-style actions added by `actions`.
+pub fn editor_notice(
+    ui: &mut egui::Ui,
+    tone: Tone,
+    message: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    let theme = theme(ui);
+    let p = &theme.palette;
+    egui::Frame::new()
+        .fill(p.bg_panel)
+        .stroke(Stroke::new(1.0, p.border_subtle))
+        .inner_margin(egui::Margin::symmetric(space::S5 as i8, space::S3 as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(theme.metrics.icon, theme.metrics.icon),
+                    Sense::hover(),
+                );
+                paint_icon(ui.painter(), rect, tone.icon(), tone.color(p));
+                ui.add_space(space::S3);
+                ui.label(
+                    egui::RichText::new(message)
+                        .font(body_font())
+                        .color(p.text_primary),
+                );
+                ui.add_space(space::S5);
+                ui.style_mut().visuals.hyperlink_color = p.accent;
+                actions(ui);
+            });
+        });
+}

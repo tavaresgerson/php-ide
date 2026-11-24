@@ -119,6 +119,8 @@ pub struct ToolWindows {
     pub all_hidden: bool,
     saved: Option<[bool; ToolWindow::COUNT]>,
     active: Option<ToolWindow>,
+    /// Last tool window shown (F12 brings it back).
+    last: Option<ToolWindow>,
 }
 
 impl Default for ToolWindows {
@@ -130,6 +132,7 @@ impl Default for ToolWindows {
             all_hidden: false,
             saved: None,
             active: Some(ToolWindow::Project),
+            last: Some(ToolWindow::Project),
         }
     }
 }
@@ -147,9 +150,17 @@ impl ToolWindows {
         self.all_hidden = false;
         if visible {
             self.active = Some(tw);
+            self.last = Some(tw);
         } else if self.active == Some(tw) {
             self.active = None;
         }
+    }
+
+    /// Shows the last tool window (default Project) and returns it.
+    pub fn show_last(&mut self) -> ToolWindow {
+        let tw = self.last.unwrap_or(ToolWindow::Project);
+        self.set_visible(tw, true);
+        tw
     }
 
     pub fn toggle(&mut self, tw: ToolWindow) {

@@ -52,6 +52,7 @@ pub fn status_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 encoding_widget(app, ui);
                 line_ending_widget(app, ui);
                 caret_widget(app, ui);
+                file_type_widget(app, ui);
                 php_level_widget(app, ui);
             });
         });
@@ -97,6 +98,55 @@ fn navigation_bar_contents(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// File type of the active file, with a menu to force another one
+/// (RF-HL-04) or associate the extension with it (RF-HL-02).
+fn file_type_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let Some(buffer) = app.ws.active_buffer() else {
+        return;
+    };
+    let Some(path) = buffer.path.clone() else {
+        return;
+    };
+    let detected = app.editors.detect(buffer);
+    let overridden = app.file_type_override(&path).is_some();
+    let current = detected.name().to_string();
+    ui.menu_button(current.clone(), |ui| {
+        ui.set_min_width(180.0);
+        ui.label(egui::RichText::new("File type of this file").weak().small());
+        if ui.selectable_label(!overridden, "Auto-detect").clicked() {
+            app.set_file_type_override(&path, None);
+            ui.close();
+        }
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for file_type in phpide_php::filetype::FILE_TYPES {
+                    let selected = overridden && current == file_type.name;
+                    if ui.selectable_label(selected, file_type.name).clicked() {
+                        app.set_file_type_override(&path, Some(file_type.id));
+                        ui.close();
+                    }
+                }
+            });
+        if let Some(pattern) = crate::app_editor::extension_pattern(&path) {
+            if let phpide_php::filetype::Detected::Known(file_type) = &detected {
+                ui.separator();
+                if ui
+                    .button(format!("Use {} for all {pattern} files", file_type.name))
+                    .clicked()
+                {
+                    app.associate_file_type(&pattern, file_type.id);
+                    app.set_file_type_override(&path, None);
+                    ui.close();
+                }
+            }
+        }
+    })
+    .response
+    .on_hover_text("File type: highlighting and language support");
 }
 
 fn php_level_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

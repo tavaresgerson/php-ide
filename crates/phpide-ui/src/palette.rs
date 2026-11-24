@@ -49,6 +49,8 @@ pub struct PaletteState {
     pub query: String,
     pub selected: usize,
     pub just_opened: bool,
+    /// Recent Files shows only edited files (Ctrl+E pressed twice, RF-SEL-07).
+    pub edited_only: bool,
 }
 
 impl PaletteState {
@@ -59,10 +61,17 @@ impl PaletteState {
             query: String::new(),
             selected: 0,
             just_opened: false,
+            edited_only: false,
         }
     }
 
     pub fn open_with(&mut self, mode: PaletteMode) {
+        if self.open && mode == PaletteMode::Recent && self.mode == PaletteMode::Recent {
+            self.edited_only = !self.edited_only;
+            self.selected = 0;
+            return;
+        }
+        self.edited_only = false;
         self.open = true;
         self.mode = mode;
         self.query.clear();
@@ -102,7 +111,7 @@ pub fn fuzzy_score(needle: &str, hay: &str) -> Option<i32> {
             let hc = hay[h].to_ascii_lowercase();
             let boundary = h == 0
                 || matches!(hay[h - 1], '/' | '\\' | '_' | '.' | '-')
-                || hay[h - 1].is_ascii_uppercase() && hay[h].is_ascii_lowercase();
+                || hay[h].is_uppercase() && hay[h - 1].is_lowercase();
             if hc == n_lower {
                 score += 1;
                 if h == 0 || boundary {
@@ -184,7 +193,10 @@ fn collect_entries(
     }
 
     let want_actions = matches!(mode, PaletteMode::All | PaletteMode::Actions);
-    let want_files = matches!(mode, PaletteMode::All | PaletteMode::Files);
+    let want_files = matches!(
+        mode,
+        PaletteMode::All | PaletteMode::Files | PaletteMode::Recent
+    );
 
     if want_actions {
         for spec in crate::commands::REGISTRY {
@@ -216,7 +228,12 @@ fn collect_entries(
     if want_files {
         match mode {
             PaletteMode::Recent => {
-                for path in &ws.recent_files {
+                let list = if state.edited_only {
+                    &ws.edited_files
+                } else {
+                    &ws.recent_files
+                };
+                for path in list {
                     let rel = path
                         .strip_prefix(&ws.root)
                         .unwrap_or(path)
@@ -280,10 +297,14 @@ pub fn show(
         )
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new(state.mode.title())
-                    .strong()
-                    .small()
-                    .weak(),
+                egui::RichText::new(if state.mode == PaletteMode::Recent && state.edited_only {
+                    "Recently Edited Files"
+                } else {
+                    state.mode.title()
+                })
+                .strong()
+                .small()
+                .weak(),
             );
             let edit = egui::TextEdit::singleline(&mut state.query)
                 .hint_text("Type to search (> for actions)")

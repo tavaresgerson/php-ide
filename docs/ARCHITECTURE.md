@@ -5,7 +5,7 @@
 | Crate | Responsibility |
 |---|---|
 | `phpide-core` | `Document` (rope, change sets, change log), `Buffer` (tab + grouped undo history), `Workspace`, file tree, diagnostics, byte/char/UTF-16 offsets, revisions, `JobSystem`, versioned settings, `IdeError`, logger with secret redaction, atomic save |
-| `phpide-php` | PHP metadata, Composer discovery (language level, PSR-4/PSR-0 roots), syntect highlighting by semantic role (`SyntaxRole`), per line for non-PHP files (`LineHighlighter`) |
+| `phpide-php` | PHP metadata, Composer discovery (language level, PSR-4/PSR-0 roots), file types (`filetype`: name patterns, first-line detection, built-in line languages), syntect highlighting by semantic role (`SyntaxRole`), per line for non-PHP files (`LineHighlighter`) |
 | `phpide-syntax` | tree-sitter-php: structural blocks, folding ranges, offline syntax errors |
 | `phpide-lsp` | LSP client: JSON-RPC over stdio on threads (no async runtime), capabilities, document sync, completion, workspace edits |
 | `phpide-dbgp` | DBGp (Xdebug): listener, breakpoints, stepping, stack, variables, path mappings |
@@ -37,7 +37,9 @@ an `EditorStyle` built from its theme and a `Decorations` value per frame.
 - DBGp listens on port 9003 in its own thread.
 
 - `phpide-ui/src/services/` owns UI-side I/O: `git.rs` (branch, line
-  markers, blame) and `files.rs` (search index, lazily loaded tree). Each
+  markers, blame), `files.rs` (search index, lazily loaded tree),
+  `file_ops.rs` (create, rename, copy, move, delete to Trash) and
+  `desktop.rs` (file manager, terminal, native folder chooser). Each
   runs its work as jobs and exposes cached state; a test fails if render
   code calls Git or scans folders directly.
 

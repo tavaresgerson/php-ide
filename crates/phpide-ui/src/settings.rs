@@ -105,6 +105,47 @@ pub struct Settings {
     pub blame_gutter: bool,
     /// Lens mode: preview ao pairar na scrollbar (UI-ED-006).
     pub lens_mode: bool,
+    /// User file-name patterns, `(pattern, file type id)` (RF-HL-02/03).
+    pub file_type_patterns: Vec<(String, String)>,
+    /// File type forced on single files, `(absolute path, type id)` (RF-HL-04).
+    pub file_type_overrides: Vec<(String, String)>,
+    /// The Project tree follows the active editor tab (RF-NAV-06).
+    pub tree_autoscroll_from_source: bool,
+    /// A single click opens files from the Project tree (RF-NAV-04).
+    pub tree_single_click_open: bool,
+    /// Project tree order: "name", "type" or "modified" (RF-NAV-14).
+    pub tree_sort: String,
+    /// Folders before files in the Project tree.
+    pub tree_folders_first: bool,
+    /// Show dot files and excluded folders (`vendor`, `.git`) (RF-NAV-10).
+    pub tree_show_excluded: bool,
+    /// New tabs open at the end instead of next to the active one (RF-TAB-01).
+    pub tabs_open_at_end: bool,
+    /// Opening a project while one is open: "ask", "new" or "current" (RF-PRJ-08).
+    pub open_project_mode: String,
+    /// Reopen the last project on startup (RF-PRJ-11).
+    pub reopen_last_project: bool,
+    /// Project open when the IDE quit (empty after Close Project).
+    pub last_project: String,
+}
+
+fn pairs(value: &Value) -> Option<Vec<(String, String)>> {
+    let object = value.as_object()?;
+    Some(
+        object
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+            .collect(),
+    )
+}
+
+fn pairs_json(pairs: &[(String, String)]) -> Value {
+    Value::Object(
+        pairs
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
+            .collect(),
+    )
 }
 
 /// Editor font size limits; NaN falls back to the default.
@@ -153,6 +194,17 @@ impl Default for Settings {
             hint_exclude: Vec::new(),
             blame_gutter: false,
             lens_mode: true,
+            file_type_patterns: Vec::new(),
+            file_type_overrides: Vec::new(),
+            tree_autoscroll_from_source: true,
+            tree_single_click_open: true,
+            tree_sort: "name".to_string(),
+            tree_folders_first: true,
+            tree_show_excluded: false,
+            tabs_open_at_end: false,
+            open_project_mode: "ask".to_string(),
+            reopen_last_project: true,
+            last_project: String::new(),
         }
     }
 }
@@ -250,6 +302,43 @@ impl Settings {
         if let Some(value) = v["lens_mode"].as_bool() {
             s.lens_mode = value;
         }
+        if let Some(value) = pairs(&v["file_type_patterns"]) {
+            s.file_type_patterns = value;
+        }
+        if let Some(value) = pairs(&v["file_type_overrides"]) {
+            s.file_type_overrides = value;
+        }
+        if let Some(value) = v["tree_autoscroll_from_source"].as_bool() {
+            s.tree_autoscroll_from_source = value;
+        }
+        if let Some(value) = v["tree_single_click_open"].as_bool() {
+            s.tree_single_click_open = value;
+        }
+        if let Some(value) = v["tree_sort"].as_str() {
+            if matches!(value, "name" | "type" | "modified") {
+                s.tree_sort = value.to_string();
+            }
+        }
+        if let Some(value) = v["tree_folders_first"].as_bool() {
+            s.tree_folders_first = value;
+        }
+        if let Some(value) = v["tree_show_excluded"].as_bool() {
+            s.tree_show_excluded = value;
+        }
+        if let Some(value) = v["tabs_open_at_end"].as_bool() {
+            s.tabs_open_at_end = value;
+        }
+        if let Some(value) = v["open_project_mode"].as_str() {
+            if matches!(value, "ask" | "new" | "current") {
+                s.open_project_mode = value.to_string();
+            }
+        }
+        if let Some(value) = v["reopen_last_project"].as_bool() {
+            s.reopen_last_project = value;
+        }
+        if let Some(value) = v["last_project"].as_str() {
+            s.last_project = value.to_string();
+        }
         if let Some(value) = v["tab_limit"].as_u64() {
             // Limites seguros: pelo menos 1 aba, no máximo 99.
             s.tab_limit = value.clamp(1, 99) as u32;
@@ -296,6 +385,17 @@ impl Settings {
             "hint_exclude": self.hint_exclude,
             "blame_gutter": self.blame_gutter,
             "lens_mode": self.lens_mode,
+            "file_type_patterns": pairs_json(&self.file_type_patterns),
+            "file_type_overrides": pairs_json(&self.file_type_overrides),
+            "tree_autoscroll_from_source": self.tree_autoscroll_from_source,
+            "tree_single_click_open": self.tree_single_click_open,
+            "tree_sort": self.tree_sort,
+            "tree_folders_first": self.tree_folders_first,
+            "tree_show_excluded": self.tree_show_excluded,
+            "tabs_open_at_end": self.tabs_open_at_end,
+            "open_project_mode": self.open_project_mode,
+            "reopen_last_project": self.reopen_last_project,
+            "last_project": self.last_project,
         });
         if let Err(e) = store::save(&dir.join("settings.json"), &v) {
             eprintln!("{}", e.log_line());
@@ -303,8 +403,17 @@ impl Settings {
     }
 
     /// Registra projeto aberto no topo do MRU (sem duplicatas, máx. 12).
+    /// Removes a project from the recent list (RF-PRJ-05). Files stay.
+    pub fn forget_project(&mut self, path: &str) {
+        self.recent_projects.retain(|p| p != path);
+        if self.last_project == path {
+            self.last_project.clear();
+        }
+    }
+
     pub fn touch_project(&mut self, path: &Path) {
         let s = path.display().to_string();
+        self.last_project = s.clone();
         self.recent_projects.retain(|p| p != &s);
         self.recent_projects.insert(0, s);
         self.recent_projects.truncate(12);

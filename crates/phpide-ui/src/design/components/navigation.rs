@@ -13,8 +13,8 @@ pub struct TabResponse {
     pub close_clicked: bool,
 }
 
-/// Editor tab: icon, label, close button (or modified dot) and an accent
-/// underline on the active tab.
+/// Editor tab: icon, label (`*` before it when modified, RF-TAB-09),
+/// close button and an accent underline on the active tab.
 pub struct Tab {
     label: String,
     icon: Option<(IconId, Color32)>,
@@ -86,10 +86,15 @@ impl Tab {
         } else {
             p.text_secondary
         };
+        let shown_label = if self.modified {
+            format!("*{}", self.label)
+        } else {
+            self.label.clone()
+        };
         let text = {
             let mut job = egui::text::LayoutJob::default();
             job.append(
-                &self.label,
+                &shown_label,
                 0.0,
                 egui::TextFormat {
                     font_id: body_font(),
@@ -178,25 +183,13 @@ impl Tab {
                     IconId::Pin,
                     p.text_muted,
                 );
-            } else if self.closable {
-                if self.modified && !hovered && !self.active {
-                    ui.painter()
-                        .circle_filled(close_rect.center(), 3.5, p.text_secondary);
-                } else if hovered || self.active || self.modified {
-                    paint_icon(
-                        ui.painter(),
-                        close_rect.shrink(2.0),
-                        IconId::Close,
-                        p.text_muted,
-                    );
-                    if self.modified && !hovered {
-                        ui.painter().circle_filled(
-                            close_rect.right_top() + egui::vec2(-1.0, 1.0),
-                            2.5,
-                            p.accent,
-                        );
-                    }
-                }
+            } else if self.closable && (hovered || self.active) {
+                paint_icon(
+                    ui.painter(),
+                    close_rect.shrink(2.0),
+                    IconId::Close,
+                    p.text_muted,
+                );
             }
             if state == State::Focused {
                 focus_ring(ui.painter(), rect.shrink(2.0), radius::CONTROL, &p);
@@ -226,6 +219,7 @@ pub struct TreeRow {
     selected: bool,
     focused: bool,
     forced: Option<State>,
+    highlight: Option<(usize, usize)>,
 }
 
 impl TreeRow {
@@ -240,7 +234,14 @@ impl TreeRow {
             selected: false,
             focused: false,
             forced: None,
+            highlight: None,
         }
+    }
+
+    /// Chars `[start, end)` of the label matched by a speed search.
+    pub fn highlight(mut self, range: Option<(usize, usize)>) -> Self {
+        self.highlight = range;
+        self
     }
 
     pub fn depth(mut self, depth: usize) -> Self {
@@ -343,11 +344,22 @@ impl TreeRow {
             let available = rect.right() - x - space::S4;
             let text = galley_truncated(ui, self.label.clone(), body_font(), fg, available);
             let text_width = text.size().x;
-            ui.painter().galley(
-                egui::pos2(x, rect.center().y - text.size().y / 2.0),
-                text,
-                fg,
-            );
+            let text_pos = egui::pos2(x, rect.center().y - text.size().y / 2.0);
+            if let Some((start, end)) = self.highlight {
+                let from = text.pos_from_cursor(egui::text::CCursor::new(start));
+                let to = text.pos_from_cursor(egui::text::CCursor::new(end));
+                let mark = egui::Rect::from_min_max(
+                    text_pos + egui::vec2(from.left(), from.top()),
+                    text_pos + egui::vec2(to.left(), to.bottom()),
+                )
+                .expand2(egui::vec2(1.0, 0.0));
+                ui.painter().rect_filled(
+                    mark,
+                    CornerRadius::same(radius::CONTROL / 2),
+                    p.search_match_bg,
+                );
+            }
+            ui.painter().galley(text_pos, text, fg);
             if let Some(detail) = self.detail {
                 let detail_x = x + text_width + space::S4;
                 let detail = galley_truncated(

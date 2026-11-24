@@ -89,6 +89,10 @@ type SemanticCache = (
 pub enum PendingClose {
     /// Fechar a aba `i` (do contexto, Ctrl+F4 ou palette).
     Tab(usize),
+    /// Close every tab (pinned ones too unless `keep_pinned`).
+    All { keep_pinned: bool },
+    /// Close the project and go back to the Home screen (RF-PRJ-12).
+    Home,
     /// Fechar as outras abas (Close Others).
     Others(usize),
     /// Fechar todas as abas e abrir outro projeto (Welcome).
@@ -119,8 +123,17 @@ fn main() -> eframe::Result<()> {
             Box::new(|cc| Ok(Box::new(design::gallery::GalleryApp::new(&cc.egui_ctx)))),
         );
     }
-    let arg = args.next();
+    let mut arg = args.next();
     let files: Vec<PathBuf> = args.map(PathBuf::from).collect();
+    let loaded = settings::Settings::load();
+    // Reopen the project that was open at exit (RF-PRJ-11).
+    if arg.is_none()
+        && loaded.reopen_last_project
+        && !loaded.last_project.is_empty()
+        && Path::new(&loaded.last_project).is_dir()
+    {
+        arg = Some(loaded.last_project.clone());
+    }
     let root = arg
         .clone()
         .map(PathBuf::from)
@@ -130,7 +143,6 @@ fn main() -> eframe::Result<()> {
     } else {
         "PHP IDE".to_string()
     };
-    let loaded = settings::Settings::load();
     let theme = settings_theme(&loaded);
     // Sem argumento de projeto, abre na Welcome Screen (REQUISITOS 1.5).
     let start_welcome = arg.is_none();
@@ -171,7 +183,12 @@ type GitMarkerCache = (PathBuf, u64, Vec<(u32, bool)>);
 struct PhpIdeApp {
     ws: Workspace,
     db: database::DatabaseState,
-    selected: Option<PathBuf>,
+    tree: project_tree::TreeState,
+    /// A project is loaded (false on the Home screen before the first one
+    /// and after Close Project).
+    project_open: bool,
+    /// Asking how to open a second project (RF-PRJ-08).
+    open_prompt: Option<PathBuf>,
     cursor_char: usize,
     palette: PaletteState,
     search: SearchState,
@@ -405,6 +422,8 @@ impl eframe::App for PhpIdeApp {
             }
         }
         self.completion_popup(ctx);
+        welcome::poll_picker(self, ctx);
+        welcome::open_prompt_dialog(self, ctx);
         scheme::scheme_popup(self, ctx);
         self.goto_line_popup(ctx);
         settings_dialog::show(self, ctx);

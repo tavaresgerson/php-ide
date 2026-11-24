@@ -173,13 +173,20 @@ impl PhpIdeApp {
             return;
         };
         let indices = close::targets(&pending, self.ws.buffers.len());
-        let report = if matches!(&pending, PendingClose::Project(_) | PendingClose::Exit) {
+        let report = if matches!(
+            &pending,
+            PendingClose::Project(_) | PendingClose::Exit | PendingClose::Home
+        ) {
             self.save_all_dirty()
         } else {
             self.save_dirty_indices(&indices)
         };
         match close::after_successful_save(&mut self.ws, &pending, &report) {
             close::CloseAction::Closed => self.pending_close = None,
+            close::CloseAction::Home => {
+                self.pending_close = None;
+                self.close_project(ctx);
+            }
             close::CloseAction::LoadProject(path) => {
                 self.pending_close = None;
                 self.load_project(path, ctx);
@@ -217,6 +224,14 @@ impl PhpIdeApp {
             PendingClose::Others(_) => (
                 "Close Other Tabs".to_string(),
                 "Other tabs have unsaved changes.".to_string(),
+            ),
+            PendingClose::All { .. } => (
+                "Close All Tabs".to_string(),
+                "Some tabs have unsaved changes.".to_string(),
+            ),
+            PendingClose::Home => (
+                "Close Project".to_string(),
+                "There are unsaved changes. Close the project anyway?".to_string(),
             ),
             PendingClose::Project(path) => (
                 "Switch Project".to_string(),
@@ -278,6 +293,14 @@ impl PhpIdeApp {
                     }
                     PendingClose::Others(keep) => {
                         self.ws.close_other_tabs(keep);
+                    }
+                    PendingClose::All { keep_pinned } => {
+                        self.ws.close_all_tabs(keep_pinned);
+                    }
+                    PendingClose::Home => {
+                        self.pending_close = None;
+                        self.close_project(ctx);
+                        return;
                     }
                     PendingClose::Project(path) => {
                         self.pending_close = None;

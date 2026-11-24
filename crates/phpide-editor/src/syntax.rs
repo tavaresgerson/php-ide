@@ -13,6 +13,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use phpide_core::{Document, Revision};
+use phpide_php::filetype::{self, Detected, FileType, Highlighting, SimpleLanguage};
 use phpide_php::{LineHighlighter, SyntaxRole};
 use phpide_syntax::folding::FoldRange;
 use phpide_syntax::SyntaxReport;
@@ -168,12 +169,14 @@ fn parse_in_background(rope: Rope, revision: Revision) -> Receiver<(Revision, Op
 enum Engine {
     TreeSitter(Box<TreeSitterEngine>),
     Lines(Box<LineHighlighter>),
+    Simple(&'static SimpleLanguage),
     Plain,
 }
 
 /// Highlighting and structure of one document.
 pub struct Syntax {
     engine: Engine,
+    file_type: Detected,
     /// Revision the line cache describes (with or without a tree).
     revision: Option<Revision>,
     had_tree: bool,
@@ -182,21 +185,8 @@ pub struct Syntax {
     structure_job: Option<(Instant, Receiver<(Revision, Structure)>)>,
 }
 
-fn is_php(path: Option<&Path>) -> bool {
-    match path {
-        None => true,
-        Some(path) => {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
-            name.ends_with(".php")
-                || name.ends_with(".phtml")
-                || name.ends_with(".inc")
-                || name.ends_with(".phpt")
-                || name == "artisan"
-        }
-    }
+fn php_type() -> &'static FileType {
+    filetype::by_id("php").expect("PHP file type")
 }
 
 impl Syntax {
@@ -210,28 +200,42 @@ impl Syntax {
 
     /// Chooses the engine by file name (`None`: an untitled PHP file).
     pub fn for_path(path: Option<&Path>) -> Self {
-        let engine = if is_php(path) {
-            let mut parser = Parser::new();
-            match parser.set_language(&php_language()) {
-                Ok(()) => Engine::TreeSitter(Box::new(TreeSitterEngine {
-                    parser,
-                    tree: None,
-                    tree_revision: None,
-                    pending: None,
-                })),
-                Err(_) => Engine::Plain,
-            }
-        } else {
-            let name = path
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            LineHighlighter::for_file_name(&name)
+        match path.and_then(|p| p.file_name()) {
+            None => Syntax::for_type(&Detected::Known(php_type())),
+            Some(name) => Syntax::for_type(&filetype::detect(&name.to_string_lossy(), "")),
+        }
+    }
+
+    /// The engine of a detected file type.
+    pub fn for_type(detected: &Detected) -> Self {
+        let engine = match detected {
+            Detected::Known(file_type) => match file_type.highlighting {
+                Highlighting::Php => {
+                    let mut parser = Parser::new();
+                    match parser.set_language(&php_language()) {
+                        Ok(()) => Engine::TreeSitter(Box::new(TreeSitterEngine {
+                            parser,
+                            tree: None,
+                            tree_revision: None,
+                            pending: None,
+                        })),
+                        Err(_) => Engine::Plain,
+                    }
+                }
+                Highlighting::Syntect(grammar) => LineHighlighter::for_syntax_name(grammar)
+                    .map(|h| Engine::Lines(Box::new(h)))
+                    .unwrap_or(Engine::Plain),
+                Highlighting::Simple(language) => Engine::Simple(language),
+                Highlighting::None => Engine::Plain,
+            },
+            Detected::Grammar(grammar) => LineHighlighter::for_syntax_name(grammar)
                 .map(|h| Engine::Lines(Box::new(h)))
-                .unwrap_or(Engine::Plain)
+                .unwrap_or(Engine::Plain),
+            Detected::Unknown => Engine::Plain,
         };
         Syntax {
             engine,
+            file_type: detected.clone(),
             revision: None,
             had_tree: false,
             cache: HashMap::new(),
@@ -240,12 +244,14 @@ impl Syntax {
         }
     }
 
+    /// The file type this syntax was built for.
+    pub fn file_type(&self) -> &Detected {
+        &self.file_type
+    }
+
+    /// Name of the file type (status bar).
     pub fn language_name(&self) -> &str {
-        match &self.engine {
-            Engine::TreeSitter(_) => "PHP",
-            Engine::Lines(h) => h.language_name(),
-            Engine::Plain => "Plain text",
-        }
+        self.file_type.name()
     }
 
     /// The syntax tree (PHP only), as of the last [`Syntax::sync`].
@@ -340,6 +346,11 @@ impl Syntax {
                     self.cache.clear();
                 }
             }
+            Engine::Simple(_) => {
+                if self.revision != Some(revision) {
+                    self.cache.clear();
+                }
+            }
             Engine::Plain => {}
         }
         self.revision = Some(revision);
@@ -375,6 +386,15 @@ impl Syntax {
                     .into_iter()
                     .map(|spans| {
                         spans
+                            .into_iter()
+                            .map(|(start, end, role)| Span { start, end, role })
+                            .collect()
+                    })
+                    .collect(),
+                Engine::Simple(language) => (lo..=hi)
+                    .map(|line| {
+                        language
+                            .highlight_line(&rope.line(line).to_string())
                             .into_iter()
                             .map(|(start, end, role)| Span { start, end, role })
                             .collect()

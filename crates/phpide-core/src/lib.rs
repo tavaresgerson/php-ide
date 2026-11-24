@@ -442,6 +442,15 @@ pub struct Workspace {
     /// mais antiga não fixada. Default: [`TAB_LIMIT`]; configurável via
     /// Settings (`tab_limit`).
     pub tab_limit: usize,
+    /// New tabs go to the end instead of next to the active tab.
+    pub open_tabs_at_end: bool,
+    /// Recently closed files, most recent last (Reopen Closed Tab).
+    pub closed_tabs: Vec<PathBuf>,
+    /// Files edited in this session, most recent first (Recent Files with
+    /// "show edited only").
+    pub edited_files: Vec<PathBuf>,
+    /// Where the last edits happened, most recent last: (path, line0, col0).
+    pub edit_locations: Vec<(PathBuf, usize, usize)>,
 }
 
 /// Máximo de abas antes da Closing Policy fechar a mais antiga não fixada
@@ -473,6 +482,10 @@ impl Workspace {
             nav_forward: Vec::new(),
             recent_files: Vec::new(),
             tab_limit: TAB_LIMIT,
+            open_tabs_at_end: false,
+            closed_tabs: Vec::new(),
+            edited_files: Vec::new(),
+            edit_locations: Vec::new(),
         }
     }
 
@@ -520,8 +533,13 @@ impl Workspace {
                         return;
                     }
                 }
-                self.buffers.push(buf);
-                self.active = self.buffers.len() - 1;
+                let at = if self.open_tabs_at_end || self.buffers.is_empty() {
+                    self.buffers.len()
+                } else {
+                    (self.active + 1).min(self.buffers.len())
+                };
+                self.buffers.insert(at, buf);
+                self.active = at;
                 self.enforce_tab_limit();
                 self.touch_recent(path);
                 self.message.clear();
@@ -535,11 +553,17 @@ impl Workspace {
     /// candidata — evita perda).
     fn enforce_tab_limit(&mut self) {
         while self.buffers.len() > self.tab_limit {
-            let victim = self
-                .buffers
-                .iter()
-                .position(|b| !b.pinned && !b.dirty)
-                .or_else(|| self.buffers.iter().position(|b| !b.pinned));
+            // The tab opened longest ago (lowest id), never the active one.
+            let active = self.active;
+            let oldest = |dirty_ok: bool| {
+                self.buffers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, b)| *i != active && !b.pinned && (dirty_ok || !b.dirty))
+                    .min_by_key(|(_, b)| b.id)
+                    .map(|(i, _)| i)
+            };
+            let victim = oldest(false).or_else(|| oldest(true));
             match victim {
                 Some(i) => {
                     let was_active = i == self.active;
@@ -557,6 +581,24 @@ impl Workspace {
         }
     }
 
+    /// Records an edit at `line0:col0` of `path`. Edits on the same line
+    /// as the previous one replace it, so the list keeps distinct places.
+    pub fn record_edit(&mut self, path: &Path, line0: usize, col0: usize) {
+        self.edited_files.retain(|p| p != path);
+        self.edited_files.insert(0, path.to_path_buf());
+        self.edited_files.truncate(50);
+        if let Some(last) = self.edit_locations.last_mut() {
+            if last.0 == path && last.1 == line0 {
+                last.2 = col0;
+                return;
+            }
+        }
+        self.edit_locations.push((path.to_path_buf(), line0, col0));
+        if self.edit_locations.len() > 50 {
+            self.edit_locations.remove(0);
+        }
+    }
+
     fn touch_recent(&mut self, path: &Path) {
         self.recent_files.retain(|p| p != path);
         self.recent_files.insert(0, path.to_path_buf());
@@ -570,7 +612,8 @@ impl Workspace {
             return !self.buffers.is_empty();
         }
         let was_active = i == self.active;
-        self.buffers.remove(i);
+        let closed = self.buffers.remove(i);
+        self.remember_closed(closed.path);
         if was_active {
             self.active = i
                 .saturating_sub(1)
@@ -581,6 +624,44 @@ impl Workspace {
         !self.buffers.is_empty()
     }
 
+    fn remember_closed(&mut self, path: Option<PathBuf>) {
+        if let Some(path) = path {
+            self.closed_tabs.retain(|p| *p != path);
+            self.closed_tabs.push(path);
+            if self.closed_tabs.len() > 30 {
+                self.closed_tabs.remove(0);
+            }
+        }
+    }
+
+    /// Reopens the most recently closed file that is not open (RF-TAB-15).
+    pub fn reopen_closed_tab(&mut self) -> bool {
+        while let Some(path) = self.closed_tabs.pop() {
+            let open = self
+                .buffers
+                .iter()
+                .any(|b| b.path.as_deref() == Some(&path));
+            if !open && path.is_file() {
+                self.open_file_ex(&path, false);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Closes every tab except pinned ones (`keep_pinned`).
+    pub fn close_all_tabs(&mut self, keep_pinned: bool) {
+        let mut i = 0;
+        while i < self.buffers.len() {
+            if keep_pinned && self.buffers[i].pinned {
+                i += 1;
+            } else {
+                self.close_tab(i);
+            }
+        }
+        self.active = self.active.min(self.buffers.len().saturating_sub(1));
+    }
+
     /// Fecha todas exceto a aba `i` (Close Others do menu de contexto);
     /// abas fixadas são preservadas.
     pub fn close_other_tabs(&mut self, keep: usize) {
@@ -589,11 +670,18 @@ impl Workspace {
         }
         let keep_path = self.buffers[keep].path.clone();
         let mut i = 0;
+        let mut closed = Vec::new();
         self.buffers.retain(|b| {
             let keep_me = i == keep || b.pinned;
+            if !keep_me {
+                closed.push(b.path.clone());
+            }
             i += 1;
             keep_me
         });
+        for path in closed {
+            self.remember_closed(path);
+        }
         self.active = keep_path
             .and_then(|p| {
                 self.buffers
@@ -817,6 +905,68 @@ mod tests {
         );
         assert!(ws.buffers.len() <= TAB_LIMIT);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tabs_open_next_to_the_active_one_and_the_oldest_closes_first() {
+        let root = std::env::temp_dir().join(format!("phpide-tabs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in ["a", "b", "c", "d"] {
+            fs::write(root.join(format!("{name}.php")), "<?php").unwrap();
+        }
+        let mut ws = Workspace::unscanned(root.clone());
+        let open = |ws: &mut Workspace, name: &str| {
+            ws.open_file_ex(&root.join(format!("{name}.php")), false)
+        };
+        let names =
+            |ws: &Workspace| -> Vec<String> { ws.buffers.iter().map(|b| b.name()).collect() };
+        open(&mut ws, "a");
+        open(&mut ws, "b");
+        ws.active = 0;
+        open(&mut ws, "c");
+        assert_eq!(
+            names(&ws),
+            ["a.php", "c.php", "b.php"],
+            "c opens right after a"
+        );
+        assert_eq!(ws.active, 1);
+
+        ws.tab_limit = 3;
+        open(&mut ws, "d");
+        assert_eq!(
+            names(&ws),
+            ["c.php", "d.php", "b.php"],
+            "a was opened first, so it closes first"
+        );
+
+        ws.open_tabs_at_end = true;
+        ws.close_tab(0);
+        assert_eq!(ws.closed_tabs.last(), Some(&root.join("c.php")));
+        assert!(ws.reopen_closed_tab());
+        assert_eq!(
+            names(&ws).last().map(String::as_str),
+            Some("c.php"),
+            "reopened at the end"
+        );
+        ws.buffers[0].pinned = true;
+        ws.close_all_tabs(true);
+        assert_eq!(names(&ws), ["d.php"], "the pinned tab stays");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn edit_locations_keep_one_entry_per_line() {
+        let mut ws = Workspace::unscanned(PathBuf::from("/p"));
+        let a = Path::new("/p/a.php");
+        ws.record_edit(a, 3, 1);
+        ws.record_edit(a, 3, 9);
+        ws.record_edit(a, 10, 0);
+        assert_eq!(
+            ws.edit_locations,
+            vec![(a.to_path_buf(), 3, 9), (a.to_path_buf(), 10, 0)]
+        );
+        assert_eq!(ws.edited_files, vec![a.to_path_buf()]);
     }
 
     #[test]

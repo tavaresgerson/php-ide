@@ -48,11 +48,14 @@ through tree-sitter.
 | Keys | Action |
 |---|---|
 | Shift Shift / Ctrl+P | Search Everywhere |
-| Ctrl+Shift+N / Ctrl+E / Ctrl+Shift+A | Go to File / Recent Files / Find Action |
+| Ctrl+Shift+N / Ctrl+E (twice: edited only) / Ctrl+Shift+A | Go to File / Recent Files / Find Action |
 | Ctrl+S / Ctrl+Z / Ctrl+Shift+Z | Save / Undo / Redo |
-| Ctrl+N / Ctrl+F4 | New file / Close tab |
+| Ctrl+N / Ctrl+F4 / Ctrl+Shift+T | New file / Close tab / Reopen closed tab |
+| Alt+←/→ / Ctrl+Tab | Previous/next tab / Switcher |
+| Ctrl+Alt+←/→ / Ctrl+Shift+Backspace | Back / Forward / Last edit location |
+| Alt+F1 | Select the open file in the Project view |
 | Ctrl+Space | Completion |
-| F12 / Ctrl+B | Go to definition |
+| Ctrl+B | Go to definition |
 | Ctrl+F / Ctrl+R / F3 | Find / Replace / Find next in the editor |
 | Ctrl+Shift+F | Find in files |
 | F2 / Shift+F2 | Next / previous problem |
@@ -63,12 +66,15 @@ through tree-sitter.
 | Shift+F10 / Shift+F9 / Ctrl+F2 | Run file / Debug with Xdebug / Stop |
 | F9 | Toggle breakpoint (Resume while debugging) |
 | F7 / F8 / Shift+F8 | Step into / over / out |
-| Alt+1…0, Alt+F12 | Tool windows, Terminal |
+| Alt+1…0, Alt+F12, F12 | Tool windows, Terminal, last tool window |
+| Alt+Insert / Shift+F6 / Delete | New / Rename / Delete in the Project view (typing searches) |
+| Ctrl+Shift+F12 / Shift+Esc | Hide all tool windows (maximize editor) / Hide active |
 | Ctrl+Alt+S | Settings |
 
 ## Documentation
 
 - [docs/ROADMAP.md](docs/ROADMAP.md) — plan and phase status
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — PhpStorm reference requirements and their status
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — crates, threading and data flow
 - [CONTRIBUTING.md](CONTRIBUTING.md) — setup, quality gates and baseline
 

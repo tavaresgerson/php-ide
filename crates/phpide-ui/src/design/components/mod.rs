@@ -15,8 +15,8 @@ pub use navigation::{
     menu_frame, menu_item, menu_separator, ListRow, Tab, TabResponse, TreeResponse, TreeRow,
 };
 pub use surfaces::{
-    panel_frame, splitter, tooltip, tooltip_contents, Dialog, DialogResponse, EmptyState,
-    PanelHeader, ProgressBar, Spinner, SplitAxis, StatusItem,
+    editor_notice, panel_frame, splitter, tooltip, tooltip_contents, Dialog, DialogResponse,
+    EmptyState, PanelHeader, ProgressBar, Spinner, SplitAxis, StatusItem,
 };
 pub use toast::{toast_card, Toast, Toasts};
 

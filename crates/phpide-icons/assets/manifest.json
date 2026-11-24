@@ -465,6 +465,21 @@
       "name": "file-svg",
       "tabler": "file-type-svg",
       "file": "assets/file-svg.svg"
+    },
+    {
+      "name": "locate",
+      "tabler": "current-location",
+      "file": "assets/locate.svg"
+    },
+    {
+      "name": "collapse-all",
+      "tabler": "fold",
+      "file": "assets/collapse-all.svg"
+    },
+    {
+      "name": "expand-all",
+      "tabler": "unfold",
+      "file": "assets/expand-all.svg"
     }
   ]
 }

@@ -1,6 +1,8 @@
 //! Background services owned by the app. Each one runs its I/O in jobs and
 //! exposes cached state that the UI reads every frame without blocking.
 
+pub mod desktop;
+pub mod file_ops;
 pub mod files;
 pub mod git;
 
