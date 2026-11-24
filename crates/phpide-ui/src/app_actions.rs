@@ -51,7 +51,23 @@ impl PhpIdeApp {
                     .run(phpide_editor::ViewCommand::Redo, &mut self.ws);
             }
             Command::Complete => self.trigger_completion(),
-            Command::ToggleToolWindow(tw) => self.tw.toggle(tw),
+            Command::RenameSymbol => self.rename_symbol(),
+            Command::ShowContextActions => self.show_context_actions(),
+            Command::ReformatCode => self.reformat_code(),
+            Command::QuickDocumentation => self.quick_documentation(),
+            Command::ParameterInfo => self.start_signature_help(None, false),
+            Command::FileStructure => self.file_structure(),
+            Command::LanguageServerLog => self.intel.log_open = true,
+            Command::ToggleToolWindow(tw) => {
+                self.tw.toggle(tw);
+                if tw == ToolWindow::Terminal {
+                    if self.tw.is_visible(tw) {
+                        self.terminal.request_focus();
+                    } else {
+                        self.editors.request_focus();
+                    }
+                }
+            }
             Command::HideActiveToolWindow => {
                 self.tw.hide_active();
             }
@@ -275,8 +291,44 @@ impl PhpIdeApp {
                 }
             }
             Command::RestartLsp => self.restart_lsp(),
-            Command::RunCurrent => self.run_current_php(),
-            Command::DebugCurrent => self.debug_run(),
+            Command::RunCurrent => self.run_selected(false),
+            Command::DebugCurrent => self.run_selected(true),
+            Command::RunContext => self.run_context(false),
+            Command::DebugContext => self.run_context(true),
+            Command::RunWithCoverage => self.run_with_coverage(),
+            Command::EditConfigurations => self.open_edit_configurations(),
+            Command::EvaluateExpression => {
+                if self.rd.status == run_debug::DebugStatus::Paused {
+                    self.rd.evaluate_open = true;
+                } else {
+                    self.ws.message = "Evaluate needs a paused debug session".to_string();
+                }
+            }
+            Command::ViewBreakpoints => {
+                // The breakpoint on the caret's line, when there is one.
+                let at = self.ws.active_buffer().and_then(|b| {
+                    let path = b.path.clone()?;
+                    let line = b
+                        .document
+                        .line_col(self.cursor_char.min(b.document.len_chars()))
+                        .0 as u32;
+                    let store = self.rd.bp_store.lock().ok()?;
+                    store.line_at(&path, line).map(|bp| bp.id)
+                });
+                self.rd.breakpoints_dialog = Some(at);
+            }
+            Command::RerunLast => {
+                let last = self
+                    .rd
+                    .selected
+                    .or_else(|| self.rd.manager.sessions().last().map(|s| s.id));
+                if let Some(id) = last {
+                    if let Some(new_id) = self.rd.manager.rerun(id) {
+                        self.rd.selected = Some(new_id);
+                        self.tw.set_visible(ToolWindow::Run, true);
+                    }
+                }
+            }
             Command::GotoLine => self.goto_line_open = true,
         }
         let _ = ctx;
@@ -369,7 +421,7 @@ impl PhpIdeApp {
         );
         match buf.try_save() {
             Ok(()) => {
-                self.ws.message = "salvo".to_string();
+                self.ws.message = "Saved".to_string();
                 self.logger
                     .info(Component::Core, &corr, "buffer_saved", &[]);
             }
@@ -426,20 +478,42 @@ impl PhpIdeApp {
         self.ws.buffers.iter().any(|b| b.dirty)
     }
     /// Shift×2 abre o Search Everywhere (edge da tecla Shift, janela de 400ms).
+    /// Search Everywhere on Shift tapped twice. A tap is Shift pressed and
+    /// released alone: Shift+letters, Ctrl+Shift+F10 and the like do not count.
     pub(crate) fn detect_double_shift(&mut self, ctx: &egui::Context) {
-        let down = ctx.input(|i| i.modifiers.shift);
-        if down && !self.shift_was_down && !self.palette.open {
+        let (down, other_modifier, key_event) = ctx.input(|i| {
+            (
+                i.modifiers.shift,
+                i.modifiers.ctrl || i.modifiers.alt || i.modifiers.command,
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)
+                    )
+                }),
+            )
+        });
+        if self.palette.open {
+            self.shift_was_down = down;
+            return;
+        }
+        if down && !self.shift_was_down {
+            self.shift_alone = !other_modifier && !key_event;
+        } else if down && (other_modifier || key_event) {
+            self.shift_alone = false;
+        }
+        if !down && self.shift_was_down && self.shift_alone {
             let now = Instant::now();
-            if let Some(last) = self.last_shift_press {
-                if now.duration_since(last) < Duration::from_millis(400) {
+            match self.last_shift_press {
+                Some(last) if now.duration_since(last) < Duration::from_millis(400) => {
                     self.open_palette(PaletteMode::All);
                     self.last_shift_press = None;
-                } else {
-                    self.last_shift_press = Some(now);
                 }
-            } else {
-                self.last_shift_press = Some(now);
+                _ => self.last_shift_press = Some(now),
             }
+        }
+        if !down {
+            self.shift_alone = false;
         }
         self.shift_was_down = down;
     }
@@ -470,6 +544,12 @@ impl PhpIdeApp {
         let popup = self.palette.open
             || self.settings_dialog.open
             || self.completion.open
+            || self.intel.rename.is_some()
+            || self.intel.actions.is_some()
+            || self.intel.structure.is_some()
+            || self.intel.log_open
+            || self.intel.hover.shown.is_some()
+            || self.intel.signature.open
             || self.goto_line_open
             || self.select_in.is_some()
             || self.tree.dialog.is_some()
@@ -477,6 +557,7 @@ impl PhpIdeApp {
             || self.pending_close.is_some()
             || self.welcome_open;
         if !popup
+            && !self.terminal.focused
             && !tree_focused
             && !self.editors.editor_focused
             && !self.ws.buffers.is_empty()
@@ -487,9 +568,23 @@ impl PhpIdeApp {
             }
             self.editors.request_focus();
         }
+        // The terminal keeps every key but the tool window shortcuts.
+        let terminal_focused = self.terminal.focused;
         ctx.input_mut(|i| {
             for (shortcut, command) in &pairs {
                 if other_focus && command.is_text_command() {
+                    continue;
+                }
+                if terminal_focused
+                    && !matches!(
+                        command,
+                        Command::ToggleToolWindow(_)
+                            | Command::HideActiveToolWindow
+                            | Command::HideAllToolWindows
+                            | Command::LastToolWindow
+                            | Command::OpenSettings
+                    )
+                {
                     continue;
                 }
                 // Ctrl+NumPad +/− expand and collapse the focused tree.
@@ -654,7 +749,7 @@ impl PhpIdeApp {
             Ok(()) => {
                 self.tw.set_visible(ToolWindow::Debug, true);
                 self.ws.message = format!(
-                    "debug: waiting for Xdebug on 127.0.0.1:{} (IDE key phpide)",
+                    "Debug: waiting for Xdebug on 127.0.0.1:{} (IDE key phpide)",
                     run_debug::RunDebugState::debug_port()
                 );
             }
@@ -687,5 +782,24 @@ impl PhpIdeApp {
                 run_panels::show_execution_point(self);
             }
         });
+    }
+}
+
+impl PhpIdeApp {
+    /// Opens a `path:line` reported by a tool (output, stack traces):
+    /// absolute, or relative to the project root.
+    pub(crate) fn open_reported_location(&mut self, path: &str, line: usize) {
+        let candidate = std::path::Path::new(path);
+        let path = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            self.ws.root.join(candidate)
+        };
+        if path.is_file() {
+            self.ws.open_file_at(&path, line.saturating_sub(1), 0);
+            self.editors.request_focus();
+        } else {
+            self.ws.message = format!("{} does not exist", path.display());
+        }
     }
 }

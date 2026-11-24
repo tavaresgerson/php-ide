@@ -239,6 +239,17 @@ impl DbgpSession {
         }
     }
 
+    /// Children of an array/object (`property_get`), for the lazy variable
+    /// tree: the first page of what the backend sends.
+    pub fn children(&mut self, fullname: &str, depth: u32) -> io::Result<Vec<Variable>> {
+        let d = depth.to_string();
+        let xml = self.send_xml("property_get", &[("n", fullname), ("d", &d), ("c", "0")])?;
+        Ok(parse_context(&xml)
+            .into_iter()
+            .filter(|v| v.fullname != fullname)
+            .collect())
+    }
+
     /// Avalia todos os watches no frame selecionado (T-RUN-DBG-002-02).
     pub fn evaluate_watches(&mut self, watches: &[Watch], depth: u32) -> Vec<WatchValue> {
         watches

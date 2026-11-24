@@ -256,6 +256,9 @@ impl PhpIdeApp {
             },
             indent_guides: true,
             blink: !self.settings.reduced_motion,
+            inline_diagnostics: self.settings.inline_diagnostics,
+            // The documentation popup shows the diagnostics under the pointer.
+            diagnostic_tooltips: false,
         }
     }
 
@@ -303,6 +306,9 @@ impl PhpIdeApp {
         let buffer_id = self.ws.buffers[index].id;
         // Popups own the keyboard while open; the request waits for them.
         let popup_open = self.completion.open
+            || self.intel.rename.is_some()
+            || self.intel.structure.is_some()
+            || self.intel.log_open
             || self.palette.open
             || self.goto_line_open
             || self.select_in.is_some()
@@ -357,14 +363,11 @@ impl PhpIdeApp {
             self.dispatch_command(Command::GotoDefinition, ui.ctx());
         }
         if focused_pane && !output.typed.is_empty() {
-            let trigger = output.typed.ends_with('$')
-                || output.typed.ends_with("->")
-                || output.typed.ends_with('>')
-                || output.typed.ends_with('\\')
-                || output.typed.ends_with("::");
-            if trigger && !self.completion.open {
-                self.trigger_completion();
-            }
+            self.on_typed(&output.typed);
+        }
+        if focused_pane {
+            let pointer = ui.ctx().pointer_hover_pos();
+            self.note_hover(output.hover, pointer);
         }
         if let (Some(line0), true) = (output.scrollbar_hover_line, self.settings.lens_mode) {
             let pointer = ui

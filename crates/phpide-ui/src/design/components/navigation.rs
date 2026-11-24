@@ -295,8 +295,17 @@ impl TreeRow {
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(egui::vec2(width, m.row), Sense::click());
         let (label, selected) = (self.label.clone(), self.selected);
+        let detail = self.detail.clone();
         response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &label)
+            let mut info = egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                true,
+                selected,
+                &label,
+            );
+            // The detail ("75% lines covered") is read out as the value.
+            info.current_text_value = detail.clone();
+            info
         });
         let state = state_of(&response, true, self.forced);
         let arrow_rect = egui::Rect::from_center_size(

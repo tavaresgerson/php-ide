@@ -175,6 +175,16 @@ impl RunManager {
         }
     }
 
+    /// Closes a session's tab (stopping it first if it still runs).
+    pub fn close(&mut self, id: SessionId) {
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
+            if session.state.is_live() {
+                session.shutdown();
+            }
+        }
+        self.sessions.retain(|s| s.id != id);
+    }
+
     /// Remove sessões encerradas que não estão pinadas e excedem o teto de
     /// abas ( Closing Policy do painel Run — reciclagem das mais antigas).
     pub fn reclaim_finished(&mut self, keep: usize) {

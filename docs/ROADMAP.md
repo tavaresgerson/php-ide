@@ -230,7 +230,7 @@ own; font ligatures (the text engine does not shape them).
 approved in all three themes; open project → edit → save → close works with
 the keyboard only.
 
-### Phase 5 — PHP intelligence on the new editor (M)
+### Phase 5 — PHP intelligence on the new editor (M) — done (2026-11-24)
 
 Incremental `didChange`, completion with docs and snippets, hover, signature
 help, inline diagnostics, definition/implementation, usages, rename, code
@@ -239,12 +239,84 @@ actions, formatting, Structure, visible server state with restart.
 **Done when:** a real gate with intelephense and phpactor on a small Laravel
 fixture passes through UI interaction tests.
 
-### Phase 6 — Run, debug, test (M)
+Done (2026-11-24):
+- [x] Ranged `didChange` built from the editor's change log (a mirror of
+      what the server has; full text only when the log no longer reaches
+      back or the server asks for full sync). Every request flushes the
+      sync first, so answers are about the text on screen.
+- [x] Completion keeps the keyboard in the editor and filters as you type
+      (prefix, word starts, subsequence; `sortText` breaks ties); opens on
+      `->`, `::`, `$`, server trigger characters and identifiers; letter
+      badges per kind; documentation panel resolved lazily
+      (`completionItem/resolve`); snippets with Tab / Shift+Tab stops;
+      `additionalTextEdits` (imports) in one undo step.
+- [x] Quick Documentation on mouse rest (500 ms) and Ctrl+Q, with the
+      diagnostics under the pointer and Markdown (code blocks, inline code,
+      bold, lists). Inline diagnostics: the worst message of a line at its
+      end.
+- [x] Parameter Info (Ctrl+P, and on `(` / `,`) with the active parameter
+      highlighted, following the caret.
+- [x] Rename Symbol (Shift+F6, with `prepareRename`), context actions
+      (Alt+Enter: quick fixes with their diagnostics, commands, resolve),
+      Reformat Code (Ctrl+Alt+L), File Structure popup (Ctrl+F12),
+      `workspace/applyEdit` and `window/showMessage` from the server.
+- [x] Server state in the status bar with Restart and the server log.
+- [x] Gates: `gate_lsp.rs` drives every feature through the UI against a
+      built-in fixture server (real LSP over pipes, `phpide_lsp::fixture`);
+      `real_servers_on_laravel_fixture` runs the same flow with intelephense
+      or phpactor on `tests/fixtures/laravel-mini` when one is installed
+      (skipped otherwise — run it locally).
+
+Shortcut changes: Ctrl+P is Parameter Info (Search Everywhere is Shift
+Shift), Ctrl+F12 is File Structure (the Structure tool window stays on
+Alt+7).
+
+### Phase 6 — Run, debug, test (M) — done (2026-11-24)
 
 Run Configurations UI, Debug tool window (frames, lazy variable tree,
 watches, evaluate, conditional breakpoints), PHPUnit tree with rerun of
-failed tests, coverage in the gutter, real terminal with a PTY
-(`portable-pty` + `alacritty_terminal`).
+failed tests, coverage in the gutter, real terminal with a PTY.
+
+Done (2026-11-24):
+- [x] Run/Debug Configurations dialog (PHP Script, PHPUnit, Composer
+      Script) with validation, saved to `.phpide/run-configurations.json`;
+      configuration selector in the header with Current File, temporary
+      configurations (up to five, Save Configuration) and Edit
+      Configurations….
+- [x] Run the test method, test class or script at the caret
+      (Ctrl+Shift+F10 / Ctrl+Shift+F9) as a temporary configuration;
+      Rerun (Ctrl+F5); Run with Coverage.
+- [x] Run tool window: one tab per session (pin, close), output with
+      stderr in red and clickable `path:line` links, live PHPUnit tree
+      (TeamCity) with Show Passed, failure details and stack-trace links,
+      Rerun Failed Tests (a `--filter` of the failed methods).
+- [x] Coverage (Clover) in the editor gutter and as "NN% lines covered" in
+      the Project view.
+- [x] Debug tool window: Resume, Stop, Detach, Show Execution Point, steps,
+      Evaluate (Alt+F8), Mute and View Breakpoints (Ctrl+Shift+F8: enabled,
+      condition, hit count, go to source); frames; variable tree with lazy
+      children (`property_get` on expand) and watches.
+- [x] Terminal: new crate `phpide-term` — PTY on Unix (openpty, own
+      session and controlling terminal, resize, working directory of the
+      foreground process) and an xterm-compatible emulator (colors up to
+      true color, alternate screen, scroll regions, bracketed paste,
+      application cursor keys, 10 000 lines of scrollback). Tabs of
+      sessions; selection and copy; Ctrl+click opens `path:line` links;
+      while it has focus, the terminal keeps the keys (only tool-window
+      shortcuts and Settings pass through).
+- [x] Gates: `gate_run.rs` drives configurations, the test tree, Rerun
+      Failed Tests, coverage, run at the caret, output links and a debug
+      session through the UI. This environment has neither PHPUnit nor
+      Xdebug, so the gate uses a PHP script that speaks PHPUnit's TeamCity
+      output and writes Clover, and a DBGp peer that answers like Xdebug;
+      the real-PHPUnit tests in `phpide-run` run where PHPUnit is installed.
+
+Shortcut changes: Shift+F10 / Shift+F9 run and debug the selected
+configuration (Current File by default, so the old behaviour stays);
+Search Everywhere's double Shift now counts only lone Shift taps.
+
+Left for later: the terminal on Windows (ConPTY) and mouse reporting to
+programs; terminal in its own window (1.x item below).
 
 ### Phase 7 — Git (M)
 
@@ -260,14 +332,106 @@ packages, CI with interaction tests and visual snapshots.
 
 ### After v1.0
 
-Unfreeze in this order: Database Tools (`phpide-db` is solid; it needs the
-new UI), frameworks (Laravel/Symfony), HTTP client, frontend TypeScript,
-Docker/Remote.
+The maintainer's post-1.0 list (2026-11-24). Each item is planned as a
+phase of its own, with the same rule as before: a gate through UI
+interaction tests and screenshots in the three themes.
+
+#### 1.x
+
+- [ ] **PHPantom as the PHP analysis engine.** PHPantom
+      (<https://github.com/AJenbo/phpantom_lsp>, MIT, Rust; Mago parser,
+      phpstorm-stubs embedded, Composer autoload, generics, PHPStan
+      annotations, Laravel) becomes the engine PHP IDE ships with, so code
+      intelligence works out of the box with no proprietary or external
+      server. intelephense and phpactor stay selectable.
+  - Decide how it is shipped: a bundled binary started over stdio (what
+    the client already does) or linked as a crate and served in process
+    over the stream transport (`LspClient::connect`, as the fixture
+    server is). Pin a version; update it deliberately.
+  - Settings › Languages › PHP: engine (PHPantom / intelephense /
+    phpactor / custom command), its options (`.phpantom.toml`: PHP
+    version, indexing strategy, diagnostics), restart.
+  - Map what it offers to the features of Phase 5 (completion, hover,
+    signature help, definition, references, rename, code actions,
+    formatting, semantic tokens, inlay hints); hide what it lacks.
+  - Attached projects (RF-PRJ-08) as workspace folders of the engine.
+  - **Done when:** `real_servers_on_laravel_fixture` passes with PHPantom
+    in CI on every commit, with no server installed on the machine, and
+    the startup and keystroke latencies are measured on a large project.
+- [ ] **Terminal in its own window.** Builds on the PTY terminal of
+      Phase 6: the terminal can live in a separate OS window (and move
+      back into the tool window), several sessions as tabs, split
+      sessions, profiles (shell, working directory, environment), shell
+      integration (command boundaries, exit status, clickable file paths
+      and `file:line` links that open in the editor), search in the
+      scrollback, the editor's font and theme.
+  - **Done when:** a long-running command (`php artisan serve`, `npm run
+    dev`) keeps running in a detached terminal window while the project
+    window is used, and its output links open files.
+- [ ] **Minimap on the right of the editor,** as in VS Code: a scaled
+      rendering of the file with the visible area highlighted; click and
+      drag to scroll; marks for diagnostics, Git changes, search matches
+      and the selection; on/off, width and "render characters vs blocks"
+      in Settings › Editor. It must cost nothing noticeable on 50k-line
+      files (rendered from the highlight spans, cached per revision).
+  - **Done when:** the editor benchmark on 54k lines stays within the
+    Phase 3 numbers with the minimap on, and snapshot tests cover it.
+
+#### 2.x
+
+- [ ] **Database tools: a complete manager and modeler,** with the
+      features and look of the JetBrains database tools
+      (<https://www.jetbrains.com/help/webstorm/2026.3/relational-databases.html>).
+      `phpide-db` already has SQLite, PostgreSQL and MySQL drivers behind
+      the `experimental` feature; this item gives them the new UI and
+      completes them.
+  - Data sources: connection dialog per driver (host, port, user,
+    password from the system keyring, database, SSL/TLS, SSH tunnel),
+    test connection, drivers for MySQL/MariaDB, PostgreSQL, SQLite and
+    SQL Server first.
+  - Database Explorer tool window: schemas, tables, views, columns,
+    keys, indexes, routines, triggers; filter, refresh, DDL of an object.
+  - Query console and SQL files attached to a data source: SQL
+    completion from the schema, run statement / selection / file,
+    several result tabs, execution plan (EXPLAIN) as a tree and a
+    diagram, cancel.
+  - Data editor: grid with sorting, filtering (WHERE / ORDER BY fields),
+    paging, editing with a pending-changes preview and Submit /
+    Rollback, value editor for long text, JSON and binary; transaction
+    mode (auto / manual).
+  - Import and export: CSV, JSON, SQL inserts, Markdown/HTML tables;
+    dump and restore through `mysqldump`, `pg_dump`, `pg_restore` and
+    `psql` when installed.
+  - Modeling: database diagrams (tables and relations) generated from a
+    schema and editable; create and alter tables, columns, keys and
+    indexes through dialogs that show the DDL before running it; schema
+    compare and migration script between two data sources.
+  - **Done when:** a gate against SQLite (always) and PostgreSQL/MySQL in
+    containers (CI) creates a schema from the modeler, edits data in the
+    grid, runs queries with completion and exports/imports a table.
+- [ ] **HTTP client like Bruno** (<https://www.usebruno.com>): collections
+      stored as plain-text files in the repository (Bruno's `.bru` and
+      OpenCollection YAML, so collections open in both tools), folders
+      and requests in tabs, environments with variables and `.env`
+      secrets, REST and GraphQL first (WebSocket and gRPC later),
+      authentication (Basic, Bearer, API key, OAuth 2), pre-request and
+      post-response scripts and assertions, running a folder, response
+      viewer (pretty JSON/XML/HTML, headers, timing, cookies), import from
+      Postman and cURL, copy as cURL / PHP code. Offline: no account and
+      no cloud.
+  - **Done when:** a gate runs a collection from the repository against
+    a local test server, with an environment, a script and assertions,
+    and the same files open unchanged in Bruno.
+
+#### Not scheduled yet
+
+Still frozen behind `experimental`, to be ordered later: framework
+support (Laravel/Symfony), frontend TypeScript, Docker/Remote.
 
 ## Known issues carried over
 
 - Detach/Stop race: Stop during the instant `run` unblocks can degrade to
-  `ConnectionLost`; the process is still killed (Phase 6).
+  `ConnectionLost`; the process is still killed (Phase 8).
 - Database grid shows an unknown total by default on purpose; an explicit
   count action is pending (after v1.0).
 - TLS/SSH for database connections are not implemented (after v1.0).

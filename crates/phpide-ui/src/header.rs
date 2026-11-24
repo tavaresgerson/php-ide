@@ -267,7 +267,7 @@ fn vcs_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     });
 }
 
-/// Run widget: target selector plus Run, Debug and Stop buttons.
+/// Run widget: configuration selector plus Run, Debug and Stop buttons.
 fn run_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let palette = crate::design::theme::current(ui.ctx()).palette;
     let running = app.exec.running
@@ -283,59 +283,96 @@ fn run_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     {
         app.stop_execution();
     }
-    if IconButton::new(IconId::Debug, "Debug")
+    let target = app
+        .selected_run_config()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "Current File".to_string());
+    if IconButton::new(IconId::Debug, format!("Debug '{target}'"))
         .shortcut("Shift+F9")
         .tint(palette.success)
         .show(ui)
         .clicked()
     {
-        app.debug_run();
+        app.run_selected(true);
     }
-    if IconButton::new(IconId::Run, "Run")
+    if IconButton::new(IconId::Run, format!("Run '{target}'"))
         .shortcut("Shift+F10")
         .tint(palette.success)
         .show(ui)
         .clicked()
     {
-        app.run_current_php();
+        app.run_selected(false);
     }
-    let target = app
-        .ws
-        .active_buffer()
-        .and_then(|b| b.path.as_ref())
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Current File".to_string());
-    let response = ToolbarWidget::new(target).tooltip("Run target").show(ui);
+    let icon = app
+        .selected_run_config()
+        .map(|c| crate::run_configs::kind_icon(&c.kind))
+        .unwrap_or(IconId::FilePhp);
+    let response = ToolbarWidget::new(target)
+        .icon(icon)
+        .tooltip("Run/Debug Configurations")
+        .show(ui);
     egui::Popup::menu(&response).show(|ui| {
-        ui.set_min_width(220.0);
-        ui.label(egui::RichText::new("Current file").weak().small());
+        ui.set_min_width(260.0);
+        let selected = app.rd.selected_config_id.clone();
+        let mut choose: Option<Option<String>> = None;
         if ui
-            .add(egui::Button::new("Run Current File").shortcut_text("Shift+F10"))
+            .add(egui::Button::new("Current File").selected(selected.is_none()))
             .clicked()
         {
-            app.run_current_php();
-            ui.close();
+            choose = Some(None);
         }
-        if ui
-            .add(egui::Button::new("Debug Current File").shortcut_text("Shift+F9"))
-            .clicked()
-        {
-            app.debug_run();
-            ui.close();
-        }
-        if !app.rd.configs.is_empty() {
+        let saved: Vec<(String, String)> = app
+            .rd
+            .configs
+            .iter()
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        if !saved.is_empty() {
             ui.separator();
-            ui.label(egui::RichText::new("Configurations").weak().small());
-            let names: Vec<String> = app.rd.configs.iter().map(|c| c.name.clone()).collect();
-            for (index, name) in names.into_iter().enumerate() {
-                if ui.button(format!("Run '{name}'")).clicked() {
-                    app.rd.selected_config = index;
-                    app.tw.set_visible(ToolWindow::Run, true);
-                    crate::run_panels::run_selected_config(app);
-                    ui.close();
+            for (id, name) in saved {
+                if ui
+                    .add(egui::Button::new(name).selected(selected.as_ref() == Some(&id)))
+                    .clicked()
+                {
+                    choose = Some(Some(id));
                 }
             }
+        }
+        let temporary: Vec<(String, String)> = app
+            .rd
+            .temporary
+            .iter()
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        if !temporary.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new("Temporary").weak().small());
+            for (id, name) in &temporary {
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(name).italics())
+                            .selected(selected.as_ref() == Some(id)),
+                    )
+                    .clicked()
+                {
+                    choose = Some(Some(id.clone()));
+                }
+            }
+        }
+        ui.separator();
+        if let Some(id) = selected.filter(|id| temporary.iter().any(|(t, _)| t == id)) {
+            if ui.button("Save Configuration").clicked() {
+                app.save_temporary(&id);
+                ui.close();
+            }
+        }
+        if ui.button("Edit Configurations…").clicked() {
+            app.open_edit_configurations();
+            ui.close();
+        }
+        if let Some(choice) = choose {
+            app.rd.selected_config_id = choice;
+            ui.close();
         }
     });
 }

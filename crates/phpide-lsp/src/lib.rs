@@ -6,11 +6,14 @@
 //! padrão do Estágio 2 (busca, watcher).
 
 pub mod edits;
+pub mod fixture;
+pub mod snippet;
+pub mod sync;
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -104,14 +107,27 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
 pub struct LspDiagnostic {
     pub line0: usize,
     pub col0: usize,
+    pub end_line0: usize,
+    pub end_col0: usize,
     pub message: String,
     /// 1=Erro, 2=Aviso, 3=Info, 4=Dica (0 = não informado).
     pub severity: u8,
     pub source: String,
+    /// The diagnostic as published, sent back in `codeAction` contexts.
+    pub raw: Value,
 }
 
-/// Capabilities negociadas no `initialize` (T-PHP-001-01): a UI habilita
-/// recursos conforme o servidor declara suporte, nunca por suposição.
+/// How the server wants document changes (`textDocumentSync.change`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SyncKind {
+    None,
+    #[default]
+    Full,
+    Incremental,
+}
+
+/// Capabilities negotiated in `initialize` (T-PHP-001-01): the UI enables a
+/// feature only when the server declares it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServerCapabilities {
     pub definition_provider: bool,
@@ -126,37 +142,78 @@ pub struct ServerCapabilities {
     pub semantic_token_types: Vec<String>,
     pub hover_provider: bool,
     pub completion_provider: bool,
+    pub completion_resolve: bool,
+    pub completion_triggers: Vec<String>,
+    pub signature_help_provider: bool,
+    pub signature_triggers: Vec<String>,
+    pub signature_retriggers: Vec<String>,
+    pub rename_provider: bool,
+    pub prepare_rename: bool,
+    pub code_action_provider: bool,
+    pub formatting_provider: bool,
+    pub range_formatting_provider: bool,
+    pub execute_commands: Vec<String>,
+    pub sync: SyncKind,
+}
+
+/// A provider declared as `true` or as an options object.
+fn provider(value: &Value) -> bool {
+    value.as_bool().unwrap_or(false) || value.is_object()
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl ServerCapabilities {
-    /// Extrai as capabilities do resultado do `initialize`.
+    /// Extracts the capabilities from the `initialize` result.
     pub fn from_initialize(result: &Value) -> Self {
         let caps = &result["capabilities"];
-        let mut c = ServerCapabilities {
-            definition_provider: caps["definitionProvider"].as_bool().unwrap_or(false),
-            type_definition_provider: caps["typeDefinitionProvider"].as_bool().unwrap_or(false),
-            references_provider: caps["referencesProvider"].as_bool().unwrap_or(false),
-            document_symbol_provider: caps["documentSymbolProvider"].as_bool().unwrap_or(false),
-            workspace_symbol_provider: caps["workspaceSymbolProvider"].as_bool().unwrap_or(false),
-            document_highlight_provider: caps["documentHighlightProvider"]
+        let sync = match &caps["textDocumentSync"] {
+            Value::Number(n) => n.as_u64(),
+            Value::Object(o) => o.get("change").and_then(Value::as_u64),
+            _ => None,
+        };
+        ServerCapabilities {
+            definition_provider: provider(&caps["definitionProvider"]),
+            implementation_provider: provider(&caps["implementationProvider"]),
+            type_definition_provider: provider(&caps["typeDefinitionProvider"]),
+            references_provider: provider(&caps["referencesProvider"]),
+            document_symbol_provider: provider(&caps["documentSymbolProvider"]),
+            workspace_symbol_provider: provider(&caps["workspaceSymbolProvider"]),
+            document_highlight_provider: provider(&caps["documentHighlightProvider"]),
+            hover_provider: provider(&caps["hoverProvider"]),
+            completion_provider: caps["completionProvider"].is_object(),
+            completion_resolve: caps["completionProvider"]["resolveProvider"]
                 .as_bool()
                 .unwrap_or(false),
-            hover_provider: caps["hoverProvider"].as_bool().unwrap_or(false),
-            completion_provider: caps["completionProvider"].is_object(),
+            completion_triggers: strings(&caps["completionProvider"]["triggerCharacters"]),
+            signature_help_provider: caps["signatureHelpProvider"].is_object(),
+            signature_triggers: strings(&caps["signatureHelpProvider"]["triggerCharacters"]),
+            signature_retriggers: strings(&caps["signatureHelpProvider"]["retriggerCharacters"]),
+            rename_provider: provider(&caps["renameProvider"]),
+            prepare_rename: caps["renameProvider"]["prepareProvider"]
+                .as_bool()
+                .unwrap_or(false),
+            code_action_provider: provider(&caps["codeActionProvider"]),
+            formatting_provider: provider(&caps["documentFormattingProvider"]),
+            range_formatting_provider: provider(&caps["documentRangeFormattingProvider"]),
+            execute_commands: strings(&caps["executeCommandProvider"]["commands"]),
             semantic_tokens_provider: caps["semanticTokensProvider"].is_object(),
-            semantic_token_types: caps["semanticTokensProvider"]["legend"]["tokenTypes"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|t| t.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            ..Default::default()
-        };
-        // implementationProvider pode vir como bool ou como opcional.
-        c.implementation_provider = caps["implementationProvider"].as_bool().unwrap_or(false);
-        c
+            semantic_token_types: strings(&caps["semanticTokensProvider"]["legend"]["tokenTypes"]),
+            sync: match sync {
+                Some(0) => SyncKind::None,
+                Some(2) => SyncKind::Incremental,
+                _ => SyncKind::Full,
+            },
+        }
     }
 }
 
@@ -176,6 +233,10 @@ pub struct Shared {
     pub capabilities: Mutex<ServerCapabilities>,
     /// Log do servidor (window/logMessage, stderr) — cap de 200 linhas.
     pub log: Mutex<Vec<String>>,
+    /// `workspace/applyEdit` requests from the server, applied by the UI.
+    pub apply_edits: Mutex<Vec<Value>>,
+    /// `window/showMessage` notifications: (type, message).
+    pub messages: Mutex<Vec<(u8, String)>>,
 }
 
 impl Shared {
@@ -197,15 +258,16 @@ pub struct LspClient {
     pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Value>>>>,
     next_id: Arc<AtomicI64>,
     pub shared: Arc<Shared>,
-    child: Arc<Mutex<Child>>,
+    /// The server process; `None` for an in-process transport (tests).
+    child: Arc<Mutex<Option<Child>>>,
     /// Parada voluntária (stop/troca de projeto): o fim do stdio neste
     /// estado NÃO é crash — não deve virar `Failed` (T-PHP-001-02).
     stopping: Arc<AtomicBool>,
 }
 
 impl LspClient {
-    /// Sobe o servidor e faz o handshake `initialize` (sem `initialized` ainda —
-    /// a UI envia depois de registrar o que precisa).
+    /// Starts the server and sends `initialize` (without `initialized`: the
+    /// UI sends it after registering the capabilities).
     pub fn spawn(
         command: &str,
         args: &[&str],
@@ -223,48 +285,58 @@ impl LspClient {
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take().ok_or("no stderr")?;
+        Ok(Self::connect(
+            Box::new(stdin),
+            Box::new(stdout),
+            Some(Box::new(stderr)),
+            Some(child),
+            root,
+        ))
+    }
 
+    /// Talks to a server over any pair of streams: the stdio of a process or,
+    /// in tests, an in-process server. Sends `initialize`.
+    pub fn connect(
+        input: Box<dyn Write + Send>,
+        output: Box<dyn io::Read + Send>,
+        stderr: Option<Box<dyn io::Read + Send>>,
+        child: Option<Child>,
+        root: &Path,
+    ) -> (Self, mpsc::Receiver<Value>) {
         let shared = Arc::new(Shared::default());
         let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let next_id = Arc::new(AtomicI64::new(1));
         let stopping = Arc::new(AtomicBool::new(false));
 
-        // Thread escritora: canal -> framing -> stdin do servidor.
+        // Writer thread: channel -> framing -> server input.
         let (writer_tx, writer_rx) = mpsc::channel::<String>();
         {
-            let mut stdin: ChildStdin = stdin;
+            let mut input = input;
             thread::spawn(move || {
                 while let Ok(body) = writer_rx.recv() {
-                    if stdin.write_all(&encode_frame(&body)).is_err() {
+                    if input.write_all(&encode_frame(&body)).is_err() {
                         break;
                     }
-                    let _ = stdin.flush();
+                    let _ = input.flush();
                 }
             });
         }
 
-        // Thread leitora: stdout -> roteamento (respostas / notificações / pedidos do servidor).
+        // Reader thread: server output -> responses / notifications / requests.
         {
             let pending = Arc::clone(&pending);
             let shared = Arc::clone(&shared);
             let writer_tx = writer_tx.clone();
             let stopping = Arc::clone(&stopping);
             thread::spawn(move || {
-                let mut reader = io::BufReader::new(stdout);
-                loop {
-                    match read_frame(&mut reader) {
-                        Ok(Some(body)) => {
-                            if let Ok(msg) = serde_json::from_str::<Value>(&body) {
-                                route_message(msg, &pending, &shared, &writer_tx);
-                            }
-                        }
-                        Ok(None) => break, // servidor encerrou
-                        Err(_) => break,   // stream corrompido
+                let mut reader = io::BufReader::new(output);
+                while let Ok(Some(body)) = read_frame(&mut reader) {
+                    if let Ok(msg) = serde_json::from_str::<Value>(&body) {
+                        route_message(msg, &pending, &shared, &writer_tx);
                     }
                 }
-                // Crash real apenas quando não foi parada voluntária
-                // (NFR-007/T-PHP-001-02: servidor caindo não derruba a IDE).
+                // A crash only when the stop was not ours (NFR-007).
                 if !stopping.load(Ordering::SeqCst) {
                     if let Ok(mut s) = shared.status.lock() {
                         if !matches!(*s, LspStatus::Failed(_)) {
@@ -272,11 +344,12 @@ impl LspClient {
                         }
                     }
                 }
+                // Unblock every request still waiting.
+                pending.lock().unwrap().clear();
             });
         }
 
-        // Thread de stderr -> log.
-        {
+        if let Some(stderr) = stderr {
             let shared = Arc::clone(&shared);
             thread::spawn(move || {
                 let mut reader = io::BufReader::new(stderr);
@@ -296,29 +369,8 @@ impl LspClient {
             child: Arc::new(Mutex::new(child)),
             stopping,
         };
-
-        let root_uri = path_to_uri(root);
-        let init_rx = client.request(
-            "initialize",
-            json!({
-                "processId": std::process::id(),
-                "rootUri": root_uri,
-                "capabilities": {
-                    "textDocument": {
-                        "synchronization": { "didSave": true },
-                        "publishDiagnostics": {},
-                        "definition": {},
-                        "documentSymbol": {},
-                        "hover": {},
-                        "completion": { "completionItem": { "snippetSupport": false } }
-                    },
-                    "workspace": { "configuration": true }
-                },
-                "clientInfo": { "name": "phpide", "version": env!("CARGO_PKG_VERSION") }
-            }),
-        );
-
-        Ok((client, init_rx))
+        let init_rx = client.request("initialize", initialize_params(root));
+        (client, init_rx)
     }
 
     /// Envia um request; devolve Receiver para o **result** (erros viram Value nulo).
@@ -495,8 +547,10 @@ impl LspClient {
         self.notify("exit", Value::Null);
         thread::sleep(Duration::from_millis(120));
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -504,8 +558,225 @@ impl LspClient {
 impl Drop for LspClient {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill();
+            }
         }
+    }
+}
+
+/// `initialize` params: what this client supports.
+fn initialize_params(root: &Path) -> Value {
+    let root_uri = path_to_uri(root);
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    json!({
+        "processId": std::process::id(),
+        "rootUri": root_uri,
+        "rootPath": root.display().to_string(),
+        "workspaceFolders": [{ "uri": root_uri, "name": name }],
+        "capabilities": {
+            "general": { "positionEncodings": ["utf-16"] },
+            "textDocument": {
+                "synchronization": { "didSave": true, "dynamicRegistration": false },
+                "publishDiagnostics": { "relatedInformation": false },
+                "definition": { "linkSupport": true },
+                "implementation": { "linkSupport": true },
+                "typeDefinition": { "linkSupport": true },
+                "references": {},
+                "documentHighlight": {},
+                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                "hover": { "contentFormat": ["markdown", "plaintext"] },
+                "completion": {
+                    "contextSupport": true,
+                    "completionItem": {
+                        "snippetSupport": true,
+                        "documentationFormat": ["markdown", "plaintext"],
+                        "deprecatedSupport": true,
+                        "insertReplaceSupport": false,
+                        "resolveSupport": {
+                            "properties": ["documentation", "detail", "additionalTextEdits"]
+                        }
+                    }
+                },
+                "signatureHelp": {
+                    "contextSupport": true,
+                    "signatureInformation": {
+                        "documentationFormat": ["markdown", "plaintext"],
+                        "parameterInformation": { "labelOffsetSupport": true },
+                        "activeParameterSupport": true
+                    }
+                },
+                "rename": { "prepareSupport": true },
+                "codeAction": {
+                    "codeActionLiteralSupport": {
+                        "codeActionKind": { "valueSet": [
+                            "", "quickfix", "refactor", "refactor.extract",
+                            "refactor.inline", "refactor.rewrite", "source",
+                            "source.organizeImports", "source.fixAll"
+                        ] }
+                    },
+                    "isPreferredSupport": true,
+                    "resolveSupport": { "properties": ["edit"] }
+                },
+                "formatting": {},
+                "rangeFormatting": {}
+            },
+            "workspace": {
+                "configuration": true,
+                "applyEdit": true,
+                "workspaceEdit": { "documentChanges": true },
+                "workspaceFolders": true,
+                "symbol": {},
+                "executeCommand": {}
+            },
+            "window": { "showMessage": {}, "workDoneProgress": false }
+        },
+        "clientInfo": { "name": "phpide", "version": env!("CARGO_PKG_VERSION") }
+    })
+}
+
+/// A position in an LSP request.
+fn text_position(path: &Path, line0: usize, col0: usize) -> Value {
+    json!({
+        "textDocument": { "uri": path_to_uri(path) },
+        "position": { "line": line0, "character": col0 }
+    })
+}
+
+/// An LSP range.
+pub fn lsp_range(start: (usize, usize), end: (usize, usize)) -> Value {
+    json!({
+        "start": { "line": start.0, "character": start.1 },
+        "end": { "line": end.0, "character": end.1 }
+    })
+}
+
+impl LspClient {
+    /// Incremental `didChange`: `changes` are `TextDocumentContentChangeEvent`s
+    /// built by [`sync::content_changes`].
+    pub fn did_change_events(&self, path: &Path, version: u64, changes: Vec<Value>) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": path_to_uri(path), "version": version },
+                "contentChanges": changes
+            }),
+        );
+    }
+
+    pub fn hover(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.request("textDocument/hover", text_position(path, line0, col0))
+    }
+
+    /// `textDocument/signatureHelp`; `trigger` is the typed character, if any.
+    pub fn signature_help(
+        &self,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+        trigger: Option<char>,
+        retrigger: bool,
+    ) -> mpsc::Receiver<Value> {
+        let mut params = text_position(path, line0, col0);
+        params["context"] = match trigger {
+            Some(c) => json!({
+                "triggerKind": 2, "triggerCharacter": c.to_string(), "isRetrigger": retrigger
+            }),
+            None => json!({ "triggerKind": 1, "isRetrigger": retrigger }),
+        };
+        self.request("textDocument/signatureHelp", params)
+    }
+
+    pub fn completion_resolve(&self, item: &Value) -> mpsc::Receiver<Value> {
+        self.request("completionItem/resolve", item.clone())
+    }
+
+    pub fn prepare_rename(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/prepareRename",
+            text_position(path, line0, col0),
+        )
+    }
+
+    pub fn rename(
+        &self,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+        new_name: &str,
+    ) -> mpsc::Receiver<Value> {
+        let mut params = text_position(path, line0, col0);
+        params["newName"] = json!(new_name);
+        self.request("textDocument/rename", params)
+    }
+
+    /// Code actions for `range`, with the diagnostics that touch it.
+    pub fn code_action(
+        &self,
+        path: &Path,
+        range: Value,
+        diagnostics: Vec<Value>,
+    ) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "range": range,
+                "context": { "diagnostics": diagnostics, "triggerKind": 1 }
+            }),
+        )
+    }
+
+    pub fn code_action_resolve(&self, action: &Value) -> mpsc::Receiver<Value> {
+        self.request("codeAction/resolve", action.clone())
+    }
+
+    pub fn execute_command(&self, command: &Value) -> mpsc::Receiver<Value> {
+        self.request(
+            "workspace/executeCommand",
+            json!({
+                "command": command["command"],
+                "arguments": command.get("arguments").cloned().unwrap_or(json!([]))
+            }),
+        )
+    }
+
+    pub fn formatting(
+        &self,
+        path: &Path,
+        tab_size: usize,
+        insert_spaces: bool,
+    ) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/formatting",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "options": {
+                    "tabSize": tab_size,
+                    "insertSpaces": insert_spaces,
+                    "trimTrailingWhitespace": true,
+                    "insertFinalNewline": true
+                }
+            }),
+        )
+    }
+
+    /// The server log (stderr and `window/logMessage`), oldest first.
+    pub fn log(&self) -> Vec<String> {
+        self.shared.log.lock().unwrap().clone()
+    }
+
+    /// Takes the edits the server asked to apply (`workspace/applyEdit`).
+    pub fn take_apply_edits(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.shared.apply_edits.lock().unwrap())
+    }
+
+    /// Takes the `window/showMessage` notifications.
+    pub fn take_messages(&self) -> Vec<(u8, String)> {
+        std::mem::take(&mut *self.shared.messages.lock().unwrap())
     }
 }
 
@@ -519,14 +790,25 @@ fn route_message(
     // Pedido servidor -> cliente (workspace/configuration, registerCapability, ...):
     // precisa de resposta imediata ou o servidor trava.
     if let (Some(id), Some(method)) = (msg.get("id"), msg.get("method")) {
-        let result = if method == "workspace/configuration" {
-            let n = msg["params"]["items"]
-                .as_array()
-                .map(|a| a.len())
-                .unwrap_or(0);
-            json!(vec![Value::Null; n])
-        } else {
-            Value::Null
+        let result = match method.as_str().unwrap_or("") {
+            "workspace/configuration" => {
+                let n = msg["params"]["items"]
+                    .as_array()
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                json!(vec![Value::Null; n])
+            }
+            "workspace/applyEdit" => {
+                // Applied by the UI on its next frame.
+                shared
+                    .apply_edits
+                    .lock()
+                    .unwrap()
+                    .push(msg["params"]["edit"].clone());
+                json!({ "applied": true })
+            }
+            "workspace/workspaceFolders" => Value::Null,
+            _ => Value::Null,
         };
         let resp = json!({ "jsonrpc": "2.0", "id": id, "result": result });
         let _ = writer_tx.send(resp.to_string());
@@ -562,14 +844,23 @@ fn route_message(
                         .map(|d| LspDiagnostic {
                             line0: d["range"]["start"]["line"].as_u64().unwrap_or(0) as usize,
                             col0: d["range"]["start"]["character"].as_u64().unwrap_or(0) as usize,
+                            end_line0: d["range"]["end"]["line"].as_u64().unwrap_or(0) as usize,
+                            end_col0: d["range"]["end"]["character"].as_u64().unwrap_or(0) as usize,
                             message: d["message"].as_str().unwrap_or("").to_string(),
                             severity: d["severity"].as_u64().unwrap_or(0) as u8,
                             source: d["source"].as_str().unwrap_or("lsp").to_string(),
+                            raw: d.clone(),
                         })
                         .collect()
                 })
                 .unwrap_or_default();
             shared.diagnostics.lock().unwrap().insert(path, items);
+        }
+        Some("window/showMessage") => {
+            let kind = msg["params"]["type"].as_u64().unwrap_or(3) as u8;
+            let text = msg["params"]["message"].as_str().unwrap_or("").to_string();
+            shared.push_log(format!("[message] {text}"));
+            shared.messages.lock().unwrap().push((kind, text));
         }
         Some("window/logMessage") => {
             let line = format!("[log] {}", msg["params"]["message"].as_str().unwrap_or(""));
@@ -716,32 +1007,83 @@ mod tests {
 // Estágio 3.1 — Completamento (textDocument/completion)
 // ---------------------------------------------------------------------------
 
-/// Um item de completamento normalizado para a UI.
+/// A completion item normalised for the UI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionItem {
     pub label: String,
-    /// SymbolKind do LSP (mesma numeração do documentSymbol).
+    /// `CompletionItemKind` of the LSP.
     pub kind: u64,
     pub detail: String,
+    pub documentation: Option<String>,
+    /// Text matched against what the user typed.
+    pub filter_text: String,
+    pub sort_text: String,
+    pub deprecated: bool,
+    pub preselect: bool,
+    /// The item as received, for `completionItem/resolve` and edits.
+    pub raw: Value,
 }
 
 impl CompletionItem {
     pub fn kind_label(&self) -> &'static str {
         match self.kind {
-            5 => "classe",
-            6 => "método",
-            7 => "propriedade",
-            10 => "enum",
-            11 => "interface",
-            12 => "função",
-            13 => "variável",
-            14 => "constante",
-            21 => "palavra-chave",
-            25 => "método",
-            26 => "trait",
-            _ => "símbolo",
+            2 => "method",
+            3 => "function",
+            4 => "constructor",
+            5 => "field",
+            6 => "variable",
+            7 => "class",
+            8 => "interface",
+            9 => "namespace",
+            10 => "property",
+            13 => "enum",
+            14 => "keyword",
+            15 => "snippet",
+            17 => "file",
+            19 => "folder",
+            20 => "enum case",
+            21 => "constant",
+            22 => "struct",
+            25 => "type parameter",
+            _ => "",
         }
     }
+
+    /// Merges a `completionItem/resolve` result.
+    pub fn resolved(&mut self, value: &Value) {
+        if value.is_object() {
+            if let Some(detail) = value["detail"].as_str() {
+                self.detail = detail.to_string();
+            }
+            if let Some(doc) = documentation_text(&value["documentation"]) {
+                self.documentation = Some(doc);
+            }
+            self.raw = value.clone();
+        }
+    }
+}
+
+/// Text of a `documentation` / `contents` value: a string, a
+/// `MarkupContent`, a `MarkedString` or an array of them.
+pub fn documentation_text(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(s) => s.clone(),
+        Value::Object(o) => match (o.get("value"), o.get("language")) {
+            (Some(Value::String(v)), Some(Value::String(lang))) => {
+                format!("```{lang}\n{v}\n```")
+            }
+            (Some(Value::String(v)), _) => v.clone(),
+            _ => return None,
+        },
+        Value::Array(items) => items
+            .iter()
+            .filter_map(documentation_text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => return None,
+    };
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 impl LspClient {
@@ -772,7 +1114,7 @@ impl LspClient {
     }
 }
 
-/// Aceita as duas formas da spec: CompletionItem[] ou CompletionList { items }.
+/// Accepts both forms of the spec: `CompletionItem[]` or `CompletionList`.
 pub fn parse_completions(value: &Value) -> Vec<CompletionItem> {
     let empty = Vec::new();
     let arr: &Vec<Value> = if value.is_array() {
@@ -785,36 +1127,87 @@ pub fn parse_completions(value: &Value) -> Vec<CompletionItem> {
     };
     arr.iter()
         .filter_map(|item| {
-            let label = item["label"].as_str()?;
+            let label = item["label"].as_str()?.to_string();
+            let deprecated = item["deprecated"].as_bool().unwrap_or(false)
+                || item["tags"]
+                    .as_array()
+                    .is_some_and(|t| t.iter().any(|t| t.as_u64() == Some(1)));
             Some(CompletionItem {
-                label: label.to_string(),
+                filter_text: item["filterText"].as_str().unwrap_or(&label).to_string(),
+                sort_text: item["sortText"].as_str().unwrap_or(&label).to_string(),
                 kind: item["kind"].as_u64().unwrap_or(0),
-                detail: item["detail"]
-                    .as_str()
-                    .or(item.get("documentation").and_then(Value::as_str))
-                    .unwrap_or("")
-                    .chars()
-                    .take(80)
-                    .collect(),
+                detail: item["detail"].as_str().unwrap_or("").to_string(),
+                documentation: documentation_text(&item["documentation"]),
+                deprecated,
+                preselect: item["preselect"].as_bool().unwrap_or(false),
+                raw: item.clone(),
+                label,
             })
         })
         .collect()
 }
 
-/// Filtra por prefixo (case-insensitive); sem prefixo devolve tudo.
-/// Ordena: prefixo exato primeiro, depois alfabético. Teto de 50 itens.
-pub fn filter_completions(items: &[CompletionItem], prefix: &str) -> Vec<CompletionItem> {
-    let lower = prefix.to_lowercase();
-    let mut matched: Vec<&CompletionItem> = items
+/// How well `query` matches `candidate`: prefix beats word-start beats
+/// subsequence; `None` when it does not match. Case-insensitive.
+pub fn match_score(candidate: &str, query: &str) -> Option<u32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let lower = candidate.to_lowercase();
+    let q = query.to_lowercase();
+    let trimmed = lower.trim_start_matches(['$', '\\']);
+    if trimmed.starts_with(&q) || lower.starts_with(&q) {
+        let exact_case = candidate
+            .trim_start_matches(['$', '\\'])
+            .starts_with(query.trim_start_matches(['$', '\\']));
+        return Some(if exact_case { 3000 } else { 2000 });
+    }
+    // Subsequence, rewarding matches at word starts (camelCase, _).
+    let chars: Vec<char> = candidate.chars().collect();
+    let mut score = 1000u32;
+    let mut index = 0;
+    for qc in q.chars() {
+        let mut found = false;
+        while index < chars.len() {
+            let c = chars[index];
+            let starts_word = index == 0
+                || c.is_uppercase()
+                || matches!(chars[index - 1], '_' | '\\' | '$' | ':');
+            index += 1;
+            if c.to_lowercase().next() == Some(qc) {
+                if !starts_word {
+                    score = score.saturating_sub(10);
+                }
+                found = true;
+                break;
+            }
+            score = score.saturating_sub(1);
+        }
+        if !found {
+            return None;
+        }
+    }
+    Some(score)
+}
+
+/// Filters by what the user typed and ranks: match quality, then the
+/// server's `sortText`. At most 200 items.
+pub fn filter_completions(items: &[CompletionItem], query: &str) -> Vec<CompletionItem> {
+    let mut matched: Vec<(u32, &CompletionItem)> = items
         .iter()
-        .filter(|it| lower.is_empty() || it.label.to_lowercase().starts_with(&lower))
+        .filter_map(|it| match_score(&it.filter_text, query).map(|s| (s, it)))
         .collect();
-    matched.sort_by(|a, b| {
-        let ea = a.label.len() == prefix.len();
-        let eb = b.label.len() == prefix.len();
-        eb.cmp(&ea).then_with(|| a.label.cmp(&b.label))
+    matched.sort_by(|(sa, a), (sb, b)| {
+        sb.cmp(sa)
+            .then_with(|| a.deprecated.cmp(&b.deprecated))
+            .then_with(|| a.sort_text.cmp(&b.sort_text))
+            .then_with(|| a.label.cmp(&b.label))
     });
-    matched.into_iter().take(50).cloned().collect()
+    matched
+        .into_iter()
+        .take(200)
+        .map(|(_, it)| it.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -824,54 +1217,45 @@ mod completion_tests {
     #[test]
     fn parses_array_and_list_forms() {
         let arr_form = serde_json::json!([
-            { "label": "array_map", "kind": 3, "detail": "callable" },
+            { "label": "array_map", "kind": 3, "detail": "callable",
+              "documentation": { "kind": "markdown", "value": "Applies **f**" } },
             { "label": "strlen", "kind": 3 }
         ]);
         let items = parse_completions(&arr_form);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "array_map");
         assert_eq!(items[0].detail, "callable");
+        assert_eq!(items[0].documentation.as_deref(), Some("Applies **f**"));
+        assert_eq!(items[0].kind_label(), "function");
 
         let list_form = serde_json::json!({ "isIncomplete": false, "items": [
             { "label": "PDO", "kind": 7 }
         ] });
         let items = parse_completions(&list_form);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].label, "PDO");
+        assert_eq!(items[0].kind_label(), "class");
     }
 
     #[test]
-    fn filters_by_prefix_case_insensitive() {
-        let items = vec![
-            CompletionItem {
-                label: "file_get_contents".into(),
-                kind: 3,
-                detail: String::new(),
-            },
-            CompletionItem {
-                label: "FileSystem".into(),
-                kind: 5,
-                detail: String::new(),
-            },
-            CompletionItem {
-                label: "filter_var".into(),
-                kind: 3,
-                detail: String::new(),
-            },
-            CompletionItem {
-                label: "strlen".into(),
-                kind: 3,
-                detail: String::new(),
-            },
-        ];
-        let got = filter_completions(&items, "FIL");
-        let labels: Vec<_> = got.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            vec!["FileSystem", "file_get_contents", "filter_var"]
-        );
-
-        let all = filter_completions(&items, "");
-        assert_eq!(all.len(), 4);
+    fn ranks_prefix_then_word_starts_then_subsequence() {
+        let items = parse_completions(&serde_json::json!([
+            { "label": "file_get_contents", "kind": 3 },
+            { "label": "FileSystem", "kind": 7 },
+            { "label": "getFileName", "kind": 2 },
+            { "label": "strlen", "kind": 3 },
+            { "label": "fgets", "kind": 3, "sortText": "0" }
+        ]));
+        let labels = |q: &str| -> Vec<String> {
+            filter_completions(&items, q)
+                .into_iter()
+                .map(|i| i.label)
+                .collect()
+        };
+        assert_eq!(labels("File")[0], "FileSystem");
+        assert!(labels("fil").contains(&"file_get_contents".to_string()));
+        assert!(labels("gfn").contains(&"getFileName".to_string()));
+        assert!(!labels("fil").contains(&"strlen".to_string()));
+        assert_eq!(labels("").len(), 5);
+        assert_eq!(labels("")[0], "fgets", "sortText decides ties");
     }
 }

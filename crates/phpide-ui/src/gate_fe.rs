@@ -291,8 +291,8 @@ fn gate_application_typescript_without_php_completion_navigation_and_hints() {
         &mut app,
         |app| !app.completion.loading(),
     );
-    app.completion.query.clear();
-    assert!(!app.completion.filtered().is_empty());
+    app.completion.set_query(String::new());
+    assert!(!app.completion.visible().is_empty());
     app.close_completion();
 
     app.cursor_char = std::fs::read_to_string(&main)

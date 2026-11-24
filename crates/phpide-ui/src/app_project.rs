@@ -69,6 +69,8 @@ impl PhpIdeApp {
             lsp_name,
             lsp_crash_notified: false,
             lsp_opened: HashMap::new(),
+            lsp_mirrors: HashMap::new(),
+            lsp_raw_diagnostics: HashMap::new(),
             pending_requests: routing::LspRouting::default(),
             pending_outline: None,
             last_outline_key: None,
@@ -84,11 +86,14 @@ impl PhpIdeApp {
             composer_mtime: None,
             problems_scope: 0,
             completion: CompletionState::new(),
+            snippet: None,
+            intel: Default::default(),
             syntax: None,
             exec: ExecState::new(),
             extras: Vec::new(),
             was_palette_open: false,
             rd: run_debug::RunDebugState::default(),
+            run_dialog: None,
             plugins,
             settings,
             settings_dialog: settings_dialog::SettingsDialogState::default(),
@@ -105,6 +110,7 @@ impl PhpIdeApp {
             rss_cache: None,
             shift_was_down: false,
             last_shift_press: None,
+            shift_alone: false,
             zoom_on_ctrl_wheel: false,
             bookmarks: HashMap::new(),
             editors: editor_area::EditorArea::default(),
@@ -123,7 +129,7 @@ impl PhpIdeApp {
             fe,
             refactor_undo: workspace_edit::UndoStack::default(),
             lens_hover: None,
-            terminal_input: String::new(),
+            terminal: Default::default(),
             commit_message: String::new(),
         };
         if has_project {
@@ -142,6 +148,7 @@ impl PhpIdeApp {
         // Descoberta do projeto Composer (T-PHP-030-01/02): informativa —
         // nunca sobrescreve configuração manual explícita.
         app.refresh_composer(false);
+        app.reload_run_configs();
         // Arquivos passados na CLI: abertos em abas (o último fica ativo).
         for f in &files {
             let path = if f.is_absolute() {
@@ -246,6 +253,8 @@ impl PhpIdeApp {
         self.lsp_init = lsp_init;
         self.lsp_name = lsp_name;
         self.lsp_opened.clear();
+        self.lsp_mirrors.clear();
+        self.lsp_raw_diagnostics.clear();
         self.pending_requests.clear();
         self.pending_outline = None;
         self.last_outline_key = None;
@@ -253,6 +262,9 @@ impl PhpIdeApp {
         self.db.reset_project(&root);
         self.ws = Workspace::unscanned(root.clone());
         self.files = services::files::ProjectFiles::new(root.clone());
+        self.reload_run_configs();
+        // Shells of the previous project end with it.
+        self.terminal = Default::default();
         self.git = services::git::GitService::new(root.clone());
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.refresh_composer(false);
@@ -356,11 +368,14 @@ impl PhpIdeApp {
         self.search.cancel();
         self.exec.stop_if_running();
         self.rd.shutdown();
+        self.terminal = Default::default();
         if let Some(old) = self.lsp.take() {
             old.stop();
         }
         self.lsp_init = None;
         self.lsp_opened.clear();
+        self.lsp_mirrors.clear();
+        self.lsp_raw_diagnostics.clear();
         self.watcher = None;
         let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
         self.ws = Workspace::unscanned(home.clone());
@@ -404,7 +419,7 @@ impl PhpIdeApp {
                     if from_watcher {
                         self.ws.message = format!(
                             "composer.json updated: {} (PHP {})",
-                            info.name.as_deref().unwrap_or("projeto"),
+                            info.name.as_deref().unwrap_or("project"),
                             info.php_level.as_deref().unwrap_or("?")
                         );
                     }
@@ -671,13 +686,24 @@ impl PhpIdeApp {
 }
 
 pub(crate) fn start_lsp(root: &Path) -> (Option<LspClient>, Option<mpsc::Receiver<Value>>, String) {
+    // The built-in fixture server, for tests, screenshots and demos.
+    if std::env::var_os("PHPIDE_FIXTURE_LSP").is_some() {
+        return match phpide_lsp::fixture::start(root) {
+            Ok((client, rx)) => (Some(client), Some(rx), "fixture-php".to_string()),
+            Err(_) => (None, None, String::new()),
+        };
+    }
     match detect_server(root) {
         Some((cmd, args)) => {
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             match LspClient::spawn(&cmd, &refs, root) {
                 Ok((client, rx)) => {
                     eprintln!("[lsp] server: {cmd} {}", args.join(" "));
-                    (Some(client), Some(rx), cmd)
+                    let name = Path::new(&cmd)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or(cmd);
+                    (Some(client), Some(rx), name)
                 }
                 Err(e) => {
                     eprintln!("[lsp] could not start: {e}");

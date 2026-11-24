@@ -3069,6 +3069,7 @@ dependencies = [
  "phpide-core",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -3102,6 +3103,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "phpide-term"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "phpide-ui"
 version = "0.1.0"
 dependencies = [
@@ -3119,6 +3127,7 @@ dependencies = [
  "phpide-php",
  "phpide-run",
  "phpide-syntax",
+ "phpide-term",
  "phpide-vcs",
  "png",
  "serde_json",

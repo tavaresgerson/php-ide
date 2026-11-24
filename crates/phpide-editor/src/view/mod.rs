@@ -127,6 +127,12 @@ impl Default for EditorView {
 }
 
 impl EditorView {
+    /// Drops the cached line layouts (after a font atlas reset, or for a
+    /// render in another egui context).
+    pub fn clear_layouts(&mut self) {
+        self.layouts.clear();
+    }
+
     pub fn new() -> Self {
         EditorView {
             selection: Selection::point(0),

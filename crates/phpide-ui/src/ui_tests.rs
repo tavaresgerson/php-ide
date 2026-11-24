@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 
 use crate::PhpIdeApp;
 
-fn project() -> (tempfile::TempDir, PathBuf) {
+pub(crate) fn project() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -21,7 +21,7 @@ fn project() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
-fn harness(root: &Path, files: Vec<PathBuf>) -> Harness<'static, PhpIdeApp> {
+pub(crate) fn harness(root: &Path, files: Vec<PathBuf>) -> Harness<'static, PhpIdeApp> {
     let root = root.to_path_buf();
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
@@ -40,7 +40,7 @@ fn harness(root: &Path, files: Vec<PathBuf>) -> Harness<'static, PhpIdeApp> {
 }
 
 /// Steps the UI until `done` holds; background jobs finish in real time.
-fn step_until(
+pub(crate) fn step_until(
     harness: &mut Harness<'static, PhpIdeApp>,
     what: &str,
     mut done: impl FnMut(&Harness<'static, PhpIdeApp>) -> bool,
@@ -467,7 +467,7 @@ fn tabs_open_beside_the_active_one_switch_with_alt_arrows_and_reopen() {
     let pos = harness
         .get_all_by_label("Lib.php")
         .map(|n| n.rect())
-        .filter(|r| r.top() > 40.0)
+        .filter(|r| r.top() >= 39.0)
         .min_by(|a, b| a.top().total_cmp(&b.top()))
         .unwrap()
         .center();
@@ -610,8 +610,13 @@ fn search_everywhere_tabs_recent_files_and_settings() {
     let file = root.join("src/App.php");
     let mut harness = harness(&root, vec![file]);
     harness.run_steps(2);
-    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::P);
-    harness.run_steps(2);
+    // Double Shift: two lone taps.
+    for _ in 0..2 {
+        harness.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+        harness.run_steps(1);
+        harness.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        harness.run_steps(1);
+    }
     assert!(harness.state().palette.open);
     assert!(
         harness.query_all_by_label("App.php").count() >= 3,
@@ -779,4 +784,43 @@ fn failures_become_toasts_and_land_in_the_event_log() {
     harness.get_by_label("Clear All").click();
     harness.run_steps(2);
     assert!(harness.state().event_log.is_empty());
+}
+
+/// Phase 6: Alt+F12 opens a real shell; typing runs a command.
+#[test]
+fn terminal_runs_the_shell_on_a_pty() {
+    let (_dir, root) = project();
+    let mut harness = harness(&root, Vec::new());
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::F12);
+    harness.run_steps(3);
+    assert!(
+        harness.state().terminal.focused,
+        "the terminal has the keyboard"
+    );
+    step_until(&mut harness, "the shell", |h| {
+        h.state()
+            .terminal
+            .sessions
+            .first()
+            .is_some_and(|s| !s.screen_text().is_empty())
+    });
+    for c in "echo phpide-$((40 + 2))".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.key_press(egui::Key::Enter);
+    step_until(&mut harness, "the command output", |h| {
+        h.state().terminal.sessions[0]
+            .screen_text()
+            .lines()
+            .any(|l| l.trim() == "phpide-42")
+    });
+    // Tab and arrows went to the shell, not to the IDE.
+    harness.key_press(egui::Key::Tab);
+    harness.run_steps(2);
+    assert!(harness.state().terminal.focused);
+    // Esc from Alt+F12 again hides it and gives the keyboard back.
+    harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::F12);
+    harness.run_steps(3);
+    assert!(!harness.state().terminal.focused);
 }

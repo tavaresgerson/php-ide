@@ -96,6 +96,9 @@ pub struct Palette {
     pub file_archive: Color32,
     pub file_text: Color32,
     pub folder: Color32,
+    /// The 16 ANSI colours of the terminal: black, red, green, yellow,
+    /// blue, magenta, cyan, white, then their bright variants.
+    pub terminal_ansi: [Color32; 16],
 }
 
 impl Palette {
@@ -241,6 +244,24 @@ pub const DARK: Palette = Palette {
     file_archive: hex(0xB5A06A),
     file_text: hex(0xA5AFBC),
     folder: hex(0x7E9BC4),
+    terminal_ansi: [
+        hex(0x2B2D30),
+        hex(0xF0524F),
+        hex(0x5C962C),
+        hex(0xA68A0D),
+        hex(0x3993D4),
+        hex(0xA771BF),
+        hex(0x00A3A3),
+        hex(0xC9CCD6),
+        hex(0x595D66),
+        hex(0xFF4050),
+        hex(0x4FC414),
+        hex(0xE5BF00),
+        hex(0x1FB0FF),
+        hex(0xED7EED),
+        hex(0x00E5E5),
+        hex(0xFFFFFF),
+    ],
 };
 
 pub const DARK_SYNTAX: SyntaxPalette = SyntaxPalette {
@@ -329,6 +350,24 @@ pub const LIGHT: Palette = Palette {
     file_archive: hex(0x806B2E),
     file_text: hex(0x4C5561),
     folder: hex(0x52739F),
+    terminal_ansi: [
+        hex(0x24292F),
+        hex(0xCF222E),
+        hex(0x116329),
+        hex(0x7D4E00),
+        hex(0x0969DA),
+        hex(0x8250DF),
+        hex(0x1B7C83),
+        hex(0x6E7781),
+        hex(0x57606A),
+        hex(0xA40E26),
+        hex(0x1A7F37),
+        hex(0x633C01),
+        hex(0x218BFF),
+        hex(0xA475F9),
+        hex(0x3192AA),
+        hex(0x8C959F),
+    ],
 };
 
 pub const LIGHT_SYNTAX: SyntaxPalette = SyntaxPalette {
@@ -417,6 +456,24 @@ pub const HIGH_CONTRAST: Palette = Palette {
     file_archive: hex(0xE6D095),
     file_text: hex(0xFFFFFF),
     folder: hex(0xA3C6FF),
+    terminal_ansi: [
+        hex(0x000000),
+        hex(0xFF6B6B),
+        hex(0x7CFC00),
+        hex(0xFFE066),
+        hex(0x6CB6FF),
+        hex(0xF0A0FF),
+        hex(0x5CF2F2),
+        hex(0xFFFFFF),
+        hex(0x9E9E9E),
+        hex(0xFF8A8A),
+        hex(0xA6FF4D),
+        hex(0xFFF099),
+        hex(0x99CCFF),
+        hex(0xF7C2FF),
+        hex(0x99FFFF),
+        hex(0xFFFFFF),
+    ],
 };
 
 pub const HIGH_CONTRAST_SYNTAX: SyntaxPalette = SyntaxPalette {
@@ -561,6 +618,12 @@ pub struct Metrics {
     pub popover_padding: f32,
     pub gap: f32,
     pub group_gap: f32,
+}
+
+/// A colour chosen by a program (true colour or the xterm 256-colour cube
+/// in terminal output), not by the theme.
+pub fn program_color(r: u8, g: u8, b: u8) -> Color32 {
+    Color32::from_rgb(r, g, b)
 }
 
 #[cfg(test)]

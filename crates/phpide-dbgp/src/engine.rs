@@ -72,6 +72,11 @@ pub enum EngineEvent {
     WatchValues(Vec<crate::session::WatchValue>),
     /// Variáveis do frame selecionado.
     FrameVariables(Vec<crate::session::Variable>),
+    /// Children of `fullname` (answer to `EngineCommand::Children`).
+    Children {
+        fullname: String,
+        children: Vec<crate::session::Variable>,
+    },
 }
 
 /// Comandos da UI para a engine.
@@ -96,6 +101,8 @@ pub enum EngineCommand {
     },
     /// Seleciona frame para inspeção (context_get -d depth).
     SelectFrame(u32),
+    /// Children of a variable in a frame (lazy variable tree).
+    Children { fullname: String, depth: u32 },
     /// Encerra a engine (troca de projeto / fechamento da IDE).
     Shutdown,
 }
@@ -400,6 +407,10 @@ fn run_session(
                 let _ = events.send(EngineEvent::WatchValues(
                     session.evaluate_watches(&watches, depth),
                 ));
+            }
+            EngineCommand::Children { fullname, depth } => {
+                let children = session.children(&fullname, depth).unwrap_or_default();
+                let _ = events.send(EngineEvent::Children { fullname, children });
             }
             EngineCommand::SelectFrame(depth) => {
                 let variables = session.variables(depth).unwrap_or_default();

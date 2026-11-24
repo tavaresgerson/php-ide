@@ -232,6 +232,50 @@ impl EditorArea {
         view.run(command, buffer, syntax)
     }
 
+    /// Drops every view's cached layouts (snapshot renders use a fresh
+    /// egui context and font atlas).
+    #[cfg(test)]
+    pub fn clear_layouts(&mut self) {
+        for view in self.views.values_mut() {
+            view.clear_layouts();
+        }
+        if let Some(split) = self.split.as_mut() {
+            split.view.clear_layouts();
+        }
+    }
+
+    /// Selects `anchor..head` in the active buffer's view (snippet stops,
+    /// rename).
+    pub fn select(&mut self, ws: &mut Workspace, anchor: usize, head: usize) {
+        let pane = if self.split.is_some() {
+            self.focus
+        } else {
+            Pane::Primary
+        };
+        let Some(index) = self.pane_buffer(pane, ws) else {
+            return;
+        };
+        let (view, _) = self.pane_parts(pane, &ws.buffers[index]);
+        view.set_caret(&ws.buffers[index].document, head, false);
+        view.set_selection(
+            &mut ws.buffers[index],
+            phpide_editor::selection::Selection::single(anchor, head),
+        );
+    }
+
+    /// The primary selection of the active view, `(start, end)`.
+    pub fn selection(&mut self, ws: &Workspace) -> Option<(usize, usize)> {
+        let pane = if self.split.is_some() {
+            self.focus
+        } else {
+            Pane::Primary
+        };
+        let index = self.pane_buffer(pane, ws)?;
+        let (view, _) = self.pane_parts(pane, &ws.buffers[index]);
+        let range = view.selection.primary();
+        Some((range.start(), range.end()))
+    }
+
     /// Moves the caret of the active buffer's view (completion, jumps).
     pub fn set_caret(&mut self, ws: &mut Workspace, pos: usize) {
         let pane = if self.split.is_some() {

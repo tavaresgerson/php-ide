@@ -48,6 +48,11 @@ pub struct EditorOptions {
     pub sticky_lines: usize,
     pub indent_guides: bool,
     pub blink: bool,
+    /// Show the message of the worst diagnostic at the end of its line.
+    pub inline_diagnostics: bool,
+    /// Tooltip with the diagnostic under the pointer (off when the app
+    /// shows its own documentation popup).
+    pub diagnostic_tooltips: bool,
 }
 
 impl Default for EditorOptions {
@@ -59,6 +64,8 @@ impl Default for EditorOptions {
             sticky_lines: 5,
             indent_guides: true,
             blink: true,
+            inline_diagnostics: true,
+            diagnostic_tooltips: true,
         }
     }
 }
@@ -776,6 +783,35 @@ impl<'a> Editor<'a> {
                     wavy(&text_painter, x_of(a), to, y + g.row_height - 3.0, color);
                 }
             }
+            if self.options.inline_diagnostics {
+                let worst = self
+                    .decorations
+                    .diagnostics
+                    .iter()
+                    .filter(|d| {
+                        d.severity >= DiagnosticSeverity::Warning
+                            && d.start >= line_start
+                            && d.start <= line_stop
+                    })
+                    .max_by_key(|d| d.severity);
+                if let Some(d) = worst {
+                    let color = match d.severity {
+                        DiagnosticSeverity::Error => c.error,
+                        _ => c.warning,
+                    };
+                    let message = d.message.lines().next().unwrap_or("").to_string();
+                    let x = x0 + layout.width() + g.char_width * 3.0;
+                    let font = egui::FontId::new(
+                        self.style.font().size * 0.92,
+                        egui::FontFamily::Proportional,
+                    );
+                    let galley =
+                        ui.painter()
+                            .layout_no_wrap(message, font, color.gamma_multiply(0.85));
+                    let at = pos2(x, y + (g.row_height - galley.size().y) * 0.5);
+                    text_painter.galley(at, galley, color);
+                }
+            }
             for range in self.view.selection.ranges() {
                 let head = range.head.min(rope.len_chars());
                 if rope.char_to_line(head) != *line {
@@ -822,6 +858,7 @@ impl<'a> Editor<'a> {
                     .decorations
                     .diagnostics
                     .iter()
+                    .filter(|_| self.options.diagnostic_tooltips)
                     .filter(|d| d.start <= pos && pos <= d.end.max(d.start + 1))
                     .max_by_key(|d| d.severity)
                 {

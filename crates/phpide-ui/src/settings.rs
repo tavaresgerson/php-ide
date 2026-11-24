@@ -93,6 +93,10 @@ pub struct Settings {
     pub tab_limit: u32,
     /// Folding estrutural (UI-ED-002): master switch.
     pub folding: bool,
+    /// Completion opens by itself while typing identifiers.
+    pub completion_auto_popup: bool,
+    /// The worst diagnostic of a line is written at its end.
+    pub inline_diagnostics: bool,
     /// Ícones de fold sempre visíveis (false = só no hover).
     pub fold_icons_always: bool,
     /// Sticky lines: limite de linhas fixas (0 = desliga; default 5).
@@ -201,6 +205,8 @@ impl Default for Settings {
             composer_path: String::new(),
             tab_limit: 10,
             folding: true,
+            completion_auto_popup: true,
+            inline_diagnostics: true,
             fold_icons_always: false,
             sticky_lines_max: 5,
             hint_all_arguments: true,
@@ -298,6 +304,12 @@ impl Settings {
         }
         if let Some(value) = v["folding"].as_bool() {
             s.folding = value;
+        }
+        if let Some(value) = v["completion_auto_popup"].as_bool() {
+            s.completion_auto_popup = value;
+        }
+        if let Some(value) = v["inline_diagnostics"].as_bool() {
+            s.inline_diagnostics = value;
         }
         if let Some(value) = v["fold_icons_always"].as_bool() {
             s.fold_icons_always = value;
@@ -425,6 +437,8 @@ impl Settings {
             "composer_path": self.composer_path,
             "tab_limit": self.tab_limit,
             "folding": self.folding,
+            "completion_auto_popup": self.completion_auto_popup,
+            "inline_diagnostics": self.inline_diagnostics,
             "fold_icons_always": self.fold_icons_always,
             "sticky_lines_max": self.sticky_lines_max,
             "hint_all_arguments": self.hint_all_arguments,

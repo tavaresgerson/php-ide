@@ -446,6 +446,15 @@ fn draw_row(
                 "npm packages"
             });
     }
+    // Coverage of the last run with coverage, per file.
+    if !entry.is_dir {
+        if let Some(file) = app.rd.coverage.as_ref().and_then(|c| c.file(&entry.path)) {
+            widget = widget.detail(format!(
+                "{}% lines covered",
+                (file.percent_tenths() + 5) / 10
+            ));
+        }
+    }
     if row.loading {
         widget = widget.detail("Loading…");
     }

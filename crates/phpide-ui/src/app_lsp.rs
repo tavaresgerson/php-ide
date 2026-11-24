@@ -12,6 +12,8 @@ impl PhpIdeApp {
         }
         self.lsp_init = None;
         self.lsp_opened.clear();
+        self.lsp_mirrors.clear();
+        self.lsp_raw_diagnostics.clear();
         self.pending_requests.clear_origin(routing::LspOrigin::Php);
         self.pending_outline = None;
         self.last_outline_key = None;
@@ -34,8 +36,22 @@ impl PhpIdeApp {
         };
     }
 
+    /// Tests: talk to the built-in fixture server.
+    #[cfg(test)]
+    pub(crate) fn use_fixture_lsp(&mut self) {
+        self.restart_lsp();
+        if let Some(old) = self.lsp.take() {
+            old.stop();
+        }
+        let (client, init) = phpide_lsp::fixture::start(&self.ws.root).expect("fixture server");
+        self.lsp = Some(client);
+        self.lsp_init = Some(init);
+        self.lsp_name = "fixture-php".to_string();
+    }
+
     /// Find Usages (T-PHP-004-03): referências alimentam o painel Find.
     pub fn request_usages(&mut self) {
+        self.sync_documents();
         let Some(path0) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
         };
@@ -221,6 +237,78 @@ impl PhpIdeApp {
         self.pending_symbols = Some(lsp.workspace_symbol(&query));
     }
 
+    /// Sends the open PHP documents' changes to the server. Every request
+    /// calls this first, so the server answers about the text on screen.
+    pub(crate) fn sync_documents(&mut self) {
+        let Some(lsp) = &self.lsp else { return };
+        if !matches!(lsp.status(), LspStatus::Running(_)) || self.lsp_init.is_some() {
+            return;
+        }
+        // One ordered plan (T-PHP-001-03): didOpen → didChange → didClose.
+        let buffers: Vec<(PathBuf, u64)> = self
+            .ws
+            .buffers
+            .iter()
+            .filter_map(|b| {
+                let path = b.path.clone()?;
+                if !phpide_php::Php::is_php_file(&path) {
+                    return None;
+                }
+                Some((path, b.document.revision()))
+            })
+            .collect();
+        for op in intelligence::plan_sync(&buffers, &self.lsp_opened) {
+            match op {
+                intelligence::SyncOp::Open(path, version) => {
+                    let text = self
+                        .ws
+                        .buffers
+                        .iter()
+                        .find(|b| b.path.as_deref() == Some(path.as_path()))
+                        .map(|b| b.document.text())
+                        .unwrap_or_default();
+                    lsp.did_open(&path, &text, version);
+                    if lsp.capabilities().sync == phpide_lsp::SyncKind::Incremental {
+                        self.lsp_mirrors
+                            .insert(path.clone(), phpide_lsp::sync::Mirror::new(&text, version));
+                    }
+                    self.lsp_opened.insert(path, version);
+                }
+                intelligence::SyncOp::Change(path, version) => {
+                    let Some(buffer) = self
+                        .ws
+                        .buffers
+                        .iter()
+                        .find(|b| b.path.as_deref() == Some(path.as_path()))
+                    else {
+                        continue;
+                    };
+                    // Ranged changes from the edit log; full text when the
+                    // server wants it or the log no longer reaches back.
+                    let events = self
+                        .lsp_mirrors
+                        .get_mut(&path)
+                        .and_then(|mirror| mirror.changes_to(&buffer.document));
+                    match events {
+                        Some(events) => {
+                            if !events.is_empty() {
+                                lsp.did_change_events(&path, version, events);
+                            }
+                        }
+                        None => lsp.did_change(&path, &buffer.document.text(), version),
+                    }
+                    self.lsp_opened.insert(path, version);
+                }
+                intelligence::SyncOp::Close(path) => {
+                    lsp.did_close(&path);
+                    self.lsp_opened.remove(&path);
+                    self.lsp_mirrors.remove(&path);
+                    self.ws.set_diagnostics(&path, 0, Vec::new());
+                }
+            }
+        }
+    }
+
     pub(crate) fn poll_lsp(&mut self) {
         let Some(lsp) = &self.lsp else { return };
 
@@ -240,34 +328,8 @@ impl PhpIdeApp {
                         // Diagnósticos passam a ser do LSP; reanálise local do zero.
                         self.ws.clear_diagnostics();
                         self.syntax = None;
-                        let mut enabled = Vec::new();
-                        if caps.definition_provider {
-                            enabled.push("definition");
-                        }
-                        if caps.implementation_provider {
-                            enabled.push("implementation");
-                        }
-                        if caps.type_definition_provider {
-                            enabled.push("typeDefinition");
-                        }
-                        if caps.references_provider {
-                            enabled.push("references");
-                        }
-                        if caps.workspace_symbol_provider {
-                            enabled.push("workspace/symbol");
-                        }
-                        if caps.semantic_tokens_provider {
-                            enabled.push("semanticTokens");
-                        }
-                        self.ws.message = format!(
-                            "language server connected: {} ({})",
-                            self.lsp_name,
-                            if enabled.is_empty() {
-                                "no extra features".to_string()
-                            } else {
-                                enabled.join(", ")
-                            }
-                        );
+                        let _ = caps;
+                        self.ws.message = format!("Language server connected: {}", self.lsp_name);
                     } else {
                         *lsp.shared.status.lock().unwrap() =
                             LspStatus::Failed(format!("initialize rejected: {result}"));
@@ -302,57 +364,23 @@ impl PhpIdeApp {
             return;
         }
 
-        // 2. Sincronização de documentos — plano único e ordenado
-        // (T-PHP-001-03): didOpen → didChange → didClose, sem reprogrer versão.
-        let buffers: Vec<(PathBuf, u64)> = self
-            .ws
-            .buffers
-            .iter()
-            .filter_map(|b| {
-                let path = b.path.clone()?;
-                if !phpide_php::Php::is_php_file(&path) {
-                    return None;
-                }
-                Some((path, b.document.revision()))
-            })
-            .collect();
-        for op in intelligence::plan_sync(&buffers, &self.lsp_opened) {
-            match op {
-                intelligence::SyncOp::Open(path, version) => {
-                    let text = self
-                        .ws
-                        .buffers
-                        .iter()
-                        .find(|b| b.path.as_deref() == Some(path.as_path()))
-                        .map(|b| b.document.text())
-                        .unwrap_or_default();
-                    lsp.did_open(&path, &text, version);
-                    self.lsp_opened.insert(path, version);
-                }
-                intelligence::SyncOp::Change(path, version) => {
-                    let text = self
-                        .ws
-                        .buffers
-                        .iter()
-                        .find(|b| b.path.as_deref() == Some(path.as_path()))
-                        .map(|b| b.document.text())
-                        .unwrap_or_default();
-                    lsp.did_change(&path, &text, version);
-                    self.lsp_opened.insert(path, version);
-                }
-                intelligence::SyncOp::Close(path) => {
-                    lsp.did_close(&path);
-                    self.lsp_opened.remove(&path);
-                    self.ws.set_diagnostics(&path, 0, Vec::new());
-                }
-            }
-        }
+        // 2. Document sync (also flushed before every request).
+        self.sync_documents();
+        let Some(lsp) = &self.lsp else { return };
 
         // 3. Diagnósticos publicados -> painel de problemas (anexados à
         // revisão do buffer: edição posterior invalida até nova publicação).
         let published: Vec<(PathBuf, Vec<LspDiagnostic>)> =
             lsp.shared.diagnostics.lock().unwrap().drain().collect();
         for (path, items) in published {
+            self.lsp_raw_diagnostics.insert(
+                path.clone(),
+                items
+                    .iter()
+                    .map(|d| (d.line0, d.end_line0, d.raw.clone()))
+                    .collect(),
+            );
+
             let revision = self
                 .ws
                 .buffers
@@ -540,48 +568,33 @@ impl PhpIdeApp {
         if let Some(rx) = &self.pending_occurrences {
             if let Ok(result) = rx.try_recv() {
                 self.pending_occurrences = None;
-                let active = self.ws.active_buffer().and_then(|b| {
-                    let path = b.path.clone()?;
-                    let chars: Vec<char> = b.document.text().chars().collect();
-                    let cursor = self.cursor_char.min(chars.len());
-                    let (word, _) = completion::word_at(&chars, cursor);
-                    Some((path, b.document.revision(), word, b.document.text()))
-                });
-                if let Some((path, revision, word, text)) = active {
-                    if word.len() >= 2 {
-                        let ranges = intelligence::parse_highlights(
-                            &phpide_core::Document::new(&text),
-                            &result,
-                        );
-                        self.occurrences = Some((path, revision, word, ranges));
+                if let Some(b) = self.ws.active_buffer() {
+                    if let Some(path) = b.path.clone() {
+                        let (word, _) = completion::word_around(&b.document, self.cursor_char);
+                        if word.len() >= 2 {
+                            let ranges = intelligence::parse_highlights(&b.document, &result);
+                            self.occurrences = Some((path, b.document.revision(), word, ranges));
+                        }
                     }
                 }
             }
         }
         let occurrences_key = self.ws.active_buffer().and_then(|b| {
             let path = b.path.clone()?;
-            let chars: Vec<char> = b.document.text().chars().collect();
-            let cursor = self.cursor_char.min(chars.len());
-            let (word, _) = completion::word_at(&chars, cursor);
+            let (word, _) = completion::word_around(&b.document, self.cursor_char);
             Some((path, b.document.revision(), word))
         });
         match (&occurrences_key, &self.occurrences) {
             (Some((p, r, w)), Some((op, or_, ow, _))) if op == p && or_ == r && ow == w => {}
             (Some((p, r, w)), _) => {
-                let word_ctx = self.ws.active_buffer().map(|b| {
-                    let chars: Vec<char> = b.document.text().chars().collect();
-                    let cursor = self.cursor_char.min(chars.len());
-                    let (word, start) = completion::word_at(&chars, cursor);
-                    (word, start)
-                });
+                let word_ctx = self
+                    .ws
+                    .active_buffer()
+                    .map(|b| completion::word_around(&b.document, self.cursor_char));
                 if let Some((word, _start)) = word_ctx {
                     if word.len() >= 2 && &word == w {
-                        // Servidor primeiro; sem suporte, fallback sintático.
-                        let chars: Vec<char> = self
-                            .ws
-                            .active_buffer()
-                            .map(|b| b.document.text().chars().collect())
-                            .unwrap_or_default();
+                        // Server first; without support, a local fallback
+                        // (only computed when the word changes).
                         let ranges = if lsp.capabilities().document_highlight_provider {
                             if self.pending_occurrences.is_none() {
                                 let (line, col) = self
@@ -600,6 +613,11 @@ impl PhpIdeApp {
                             }
                             None
                         } else {
+                            let chars: Vec<char> = self
+                                .ws
+                                .active_buffer()
+                                .map(|b| b.document.text().chars().collect())
+                                .unwrap_or_default();
                             Some(intelligence::local_occurrences(
                                 &chars,
                                 &word,
@@ -716,37 +734,6 @@ impl PhpIdeApp {
         self.hints.begin(hints::Revision(revision));
     }
 
-    pub(crate) fn poll_completion(&mut self) {
-        if !self.completion.open {
-            return;
-        }
-        let path = self
-            .ws
-            .active_buffer()
-            .and_then(|buffer| buffer.path.clone());
-        let revision = self
-            .ws
-            .active_buffer()
-            .map(|buffer| buffer.document.revision())
-            .unwrap_or(0);
-        let origin = self.completion.origin;
-        if let Some(client) = lsp_client_for_origin(&self.lsp, &self.fe, origin) {
-            self.completion.poll(client, path.as_deref(), revision);
-        } else {
-            self.completion.close_without_client();
-        }
-    }
-
-    pub(crate) fn close_completion(&mut self) {
-        self.editors.request_focus();
-        let origin = self.completion.origin;
-        if let Some(client) = lsp_client_for_origin(&self.lsp, &self.fe, origin) {
-            self.completion.close(client);
-        } else {
-            self.completion.close_without_client();
-        }
-    }
-
     pub(crate) fn request_definition(&mut self) {
         self.request_locations("definition", |lsp, path, line, col| {
             lsp.definition(path, line, col)
@@ -761,6 +748,7 @@ impl PhpIdeApp {
         what: &'static str,
         call: impl Fn(&LspClient, &std::path::Path, usize, usize) -> mpsc::Receiver<Value>,
     ) {
+        self.sync_documents();
         let Some(path0) = self.ws.active_buffer().and_then(|b| b.path.clone()) else {
             return;
         };
@@ -831,224 +819,6 @@ impl PhpIdeApp {
                 LspStatus::Failed(e) => format!("LSP: failed ({e})"),
             },
         }
-    }
-
-    pub(crate) fn trigger_completion(&mut self) {
-        let Some(buf) = self.ws.active_buffer() else {
-            return;
-        };
-        let Some(path) = buf.path.clone() else { return };
-        let Some((lsp, origin)) = lsp_client_for_path(&self.lsp, &self.fe, &path) else {
-            self.ws.message = format!(
-                "no language server for {:?}",
-                path.extension().and_then(|e| e.to_str()).unwrap_or("?")
-            );
-            return;
-        };
-        if !matches!(lsp.status(), LspStatus::Running(_)) {
-            self.ws.message = "the language server is not ready yet".to_string();
-            return;
-        }
-        let cursor = self.cursor_char.min(buf.document.len_chars());
-        let chars: Vec<char> = buf.document.text().chars().collect();
-        let (prefix, word_start) = completion::word_at(&chars, cursor);
-        let (line, col) = buf.document.line_col(cursor);
-        let revision = buf.document.revision();
-        self.completion.begin(
-            lsp,
-            &path,
-            origin,
-            line.saturating_sub(1),
-            col.saturating_sub(1),
-            word_start,
-            prefix,
-            revision,
-        );
-    }
-
-    pub(crate) fn completion_popup(&mut self, ctx: &egui::Context) {
-        if !self.completion.open {
-            return;
-        }
-        let items = self.completion.filtered();
-        if items.is_empty() && !self.completion.loading() {
-            self.close_completion();
-            return;
-        }
-        let mut accept: Option<String> = None;
-        let mut close = false;
-
-        let mut window = egui::Window::new("completion")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false);
-        // Below the caret, or above it when the caret is near the bottom.
-        window = match self.editors.caret_rect {
-            Some(caret) => {
-                let screen = ctx.content_rect();
-                let below = caret.bottom() + 4.0;
-                if below + 320.0 > screen.bottom() {
-                    window
-                        .pivot(egui::Align2::LEFT_BOTTOM)
-                        .fixed_pos(egui::pos2(caret.left(), caret.top() - 4.0))
-                } else {
-                    window.fixed_pos(egui::pos2(caret.left(), below))
-                }
-            }
-            None => window.anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -56.0)),
-        };
-        window
-            .frame(
-                egui::Frame::window(&ctx.global_style())
-                    .shadow(egui::epaint::Shadow::default())
-                    .inner_margin(egui::Margin::same(8)),
-            )
-            .show(ctx, |ui| {
-                let edit = egui::TextEdit::singleline(&mut self.completion.query)
-                    .hint_text("filtrar...")
-                    .desired_width(360.0)
-                    .show(ui);
-                if self.completion.just_opened {
-                    edit.response.request_focus();
-                    self.completion.just_opened = false;
-                }
-                ctx.input(|i| {
-                    if !items.is_empty() {
-                        if i.key_pressed(egui::Key::ArrowDown) {
-                            self.completion.selected =
-                                (self.completion.selected + 1).min(items.len() - 1);
-                        }
-                        if i.key_pressed(egui::Key::ArrowUp) {
-                            self.completion.selected = self.completion.selected.saturating_sub(1);
-                        }
-                        if i.key_pressed(egui::Key::Enter) {
-                            accept = Some(
-                                items[self.completion.selected.min(items.len() - 1)]
-                                    .label
-                                    .clone(),
-                            );
-                        }
-                    }
-                    if i.key_pressed(egui::Key::Escape) {
-                        close = true;
-                    }
-                });
-                ui.separator();
-                if self.completion.loading() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("asking the language server...");
-                    });
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(230.0)
-                    .show(ui, |ui| {
-                        for (i, item) in items.iter().enumerate() {
-                            let sel = i == self.completion.selected;
-                            let row = ui.selectable_label(
-                                sel,
-                                format!("{}   {} — {}", item.label, item.kind_label(), item.detail),
-                            );
-                            if row.clicked() {
-                                accept = Some(item.label.clone());
-                            }
-                        }
-                    });
-                // Documentação do item selecionado (T-PHP-003-03): texto ou
-                // markdown vindo do servidor, sem bloquear o aceite.
-                let doc_text =
-                    self.completion
-                        .selected_raw(self.completion.selected.min(items.len().saturating_sub(1)))
-                        .and_then(|raw| {
-                            raw["documentation"].as_str().map(String::from).or_else(|| {
-                                raw["documentation"]["value"].as_str().map(String::from)
-                            })
-                        })
-                        .filter(|d| !d.trim().is_empty());
-                if let Some(doc) = doc_text {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(doc.trim().chars().take(300).collect::<String>())
-                            .small()
-                            .weak(),
-                    );
-                }
-            });
-
-        if close {
-            self.close_completion();
-        }
-        if let Some(label) = accept {
-            self.accept_completion(ctx, &label);
-        }
-    }
-
-    /// Aplica o item aceito: `textEdit` (range UTF-16) > `insertText` >
-    /// rótulo, pelas conversões centralizadas (T-PHP-003-02, NFR-002).
-    pub(crate) fn accept_completion(&mut self, ctx: &egui::Context, label: &str) {
-        // Captura o item cru (para textEdit) antes de fechar a popup.
-        let raw = {
-            let items = self.completion.filtered();
-            let idx = items.iter().position(|i| i.label == label).unwrap_or(0);
-            self.completion.selected_raw(idx).cloned()
-        };
-        let Some(buf) = self.ws.active_buffer_mut() else {
-            self.close_completion();
-            return;
-        };
-        if buf.readonly {
-            self.close_completion();
-            return;
-        }
-        let cursor = self.cursor_char.min(buf.document.len_chars());
-        let edit = raw.as_ref().and_then(|item| {
-            completion::accept_edit(&buf.document, item, self.completion.word_start, cursor)
-        });
-        match edit {
-            Some(edit) => {
-                if edit.end_char > edit.start_char {
-                    buf.delete(edit.start_char, edit.end_char);
-                }
-                buf.insert(edit.start_char, &edit.new_text);
-                self.cursor_char = edit.start_char + edit.new_text.chars().count();
-            }
-
-            None => {
-                let start = self.completion.word_start.min(cursor);
-                if start < cursor {
-                    buf.delete(start, cursor);
-                }
-                buf.insert(start, label);
-                self.cursor_char = start + label.chars().count();
-            }
-        }
-        // Auto-import (PHP-003-05): additionalTextEdits do item aceito viram
-        // um WorkspaceEdit aplicado com undo coeso único.
-        if let (Some(item), Some(path)) =
-            (raw, self.ws.active_buffer().and_then(|b| b.path.clone()))
-        {
-            let version = self
-                .ws
-                .active_buffer()
-                .map(|b| b.document.revision() as i64);
-            if let Some(extra) =
-                phpide_lsp::edits::parse_additional_edits_at_version(&item, &path, version)
-            {
-                let label = format!("auto-import {}", item["label"].as_str().unwrap_or(""));
-                let mut store = WsStore(&mut self.ws);
-                match workspace_edit::apply(&mut store, &extra, &label, &mut self.refactor_undo) {
-                    Ok((files, edits, _)) if files > 0 => {
-                        self.ws.message = format!("{label} ({edits} edits, undone as one step)");
-                    }
-                    Ok(_) => {}
-                    Err(error) => self.ws.message = error.to_string(),
-                }
-            }
-        }
-        let _ = ctx;
-        self.editors.set_caret(&mut self.ws, self.cursor_char);
-        self.close_completion();
     }
 
     /// Análise estrutural do buffer ativo (tree-sitter). Diagnósticos locais só
@@ -1263,17 +1033,24 @@ pub(crate) fn collect_symbols(
 
 pub(crate) fn symbol_kind_label(kind: u64) -> String {
     match kind {
+        1 => "file",
+        2 => "module",
         3 => "namespace",
-        5 => "classe",
-        6 => "método",
-        7 => "propriedade",
+        4 => "package",
+        5 => "class",
+        6 => "method",
+        7 => "property",
+        8 => "field",
+        9 => "constructor",
         10 => "enum",
         11 => "interface",
-        12 => "função",
-        13 => "variável",
-        14 => "constante",
-        26 => "trait",
-        _ => "símbolo",
+        12 => "function",
+        13 => "variable",
+        14 => "constant",
+        22 => "enum case",
+        23 => "struct",
+        26 => "type parameter",
+        _ => "symbol",
     }
     .to_string()
 }

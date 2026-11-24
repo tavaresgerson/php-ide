@@ -49,6 +49,10 @@ Regras:
 - strings, keywords e tipos devem ser distinguíveis sem saturar toda a linha;
 - Dark, Light e High Contrast têm snapshots dos mesmos arquivos PHP, JS, CSS, HTML e SQL.
 
+### 4.2.1 Terminal
+
+`terminal.ansi[0..16]` (preto, vermelho, verde, amarelo, azul, magenta, ciano, branco e as variantes brilhantes) por tema, em `Palette::terminal_ansi`. O fundo é `color.bg.inset` e o texto padrão `color.text.primary`. As cores 16–255 (cubo xterm e cinzas) e true color vêm do programa e passam por `tokens::program_color`, a única exceção à regra de literais fora de `tokens.rs`. Negrito usa a variante brilhante das oito primeiras cores.
+
 ### 4.3 Tipografia
 
 | Token | Tamanho/estilo padrão | Uso |

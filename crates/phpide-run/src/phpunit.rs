@@ -144,8 +144,11 @@ pub fn scope_args(root: &Path, scope: &TestScope) -> Vec<String> {
             if let Some(f) = file {
                 args.push(abs(f).to_string_lossy().into_owned());
             }
+            // The filter is a regex matched against `Class::method`:
+            // backslashes escaped (`App\Tests\Unit` has `\U`), anchored on
+            // `::` so `CalcTest` does not run `CalcTestExtra`.
             args.push("--filter".into());
-            args.push(class.clone());
+            args.push(format!("{}::", regex_escape(class)));
             args
         }
         TestScope::Method { class, method } => {
@@ -178,7 +181,7 @@ pub fn scope_args(root: &Path, scope: &TestScope) -> Vec<String> {
 }
 
 /// Escapa para uso como literal dentro do regex do `--filter`.
-fn regex_escape(s: &str) -> String {
+pub fn regex_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
 }
 
@@ -431,6 +434,13 @@ impl TeamCityParser {
             roots: Vec::new(),
             suite_path: Vec::new(),
             test_path: Vec::new(),
+        }
+    }
+
+    /// The tree so far, while the tests run.
+    pub fn snapshot(&self) -> TestTree {
+        TestTree {
+            roots: self.roots.clone(),
         }
     }
 
@@ -756,6 +766,19 @@ mod tests {
                 }
             ),
             vec!["/proj/tests".to_string()]
+        );
+        assert_eq!(
+            scope_args(
+                root,
+                &TestScope::Class {
+                    class: "App\\Tests\\Unit\\CalcTest".into(),
+                    file: None
+                }
+            ),
+            vec![
+                "--filter".to_string(),
+                "App\\\\Tests\\\\Unit\\\\CalcTest::".to_string()
+            ]
         );
         assert_eq!(
             scope_args(

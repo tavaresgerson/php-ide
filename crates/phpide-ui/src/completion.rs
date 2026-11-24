@@ -1,10 +1,7 @@
-//! Popup de completamento (Estágio 3.1; T-PHP-003-01/02/03).
-//!
-//! A popup tem seu próprio campo de filtro (foco próprio) — combater por teclas
-//! com o TextEdit embutido não é confiável. Ctrl+Espaço abre; gatilhos
-//! (`$`, `->`, `\`) abrem com o prefixo já digitado; Enter/click aceita;
-//! Esc fecha (enviando `$/cancelRequest`); o aceite aplica `textEdit`
-//! (range UTF-16) ou `insertText`, com fallback para o rótulo.
+//! Code completion (Phase 5): the popup filters as you keep typing in the
+//! editor, shows the documentation of the selected item (resolved lazily),
+//! and accepting applies the item's `textEdit` / `insertText`, expanding
+//! snippets into tab stops.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -12,44 +9,52 @@ use std::sync::mpsc;
 use crate::routing::LspOrigin;
 
 use phpide_lsp::{CompletionItem, LspClient};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub struct CompletionState {
     pub open: bool,
-    pub just_opened: bool,
-    /// Campo de filtro da popup (começa com o prefixo sob o cursor).
-    pub query: String,
-    /// Offset em caracteres onde a palavra sob o cursor começa.
+    /// Char offset where the word being completed starts.
     pub word_start: usize,
-    /// Revisão do documento no disparo — resposta de outra revisão é
-    /// descartada (T-PHP-001-04: resultado atrasado não se aplica).
-    pub request_revision: u64,
+    /// What the user typed since `word_start` (filters the list).
+    pub query: String,
     pub request_path: Option<PathBuf>,
     pub origin: LspOrigin,
-    base: Vec<CompletionItem>,
-    /// Itens crus (JSON) para textEdit/documentação no aceite.
-    raw: Vec<Value>,
+    items: Vec<CompletionItem>,
+    /// Indices into `items`, filtered and ranked for `query`.
+    visible: Vec<usize>,
     pub selected: usize,
     rx: Option<mpsc::Receiver<Value>>,
-    /// Id do request em voo (para `$/cancelRequest` no fechamento).
+    /// Id of the request in flight (`$/cancelRequest` when closing).
     request_id: Option<i64>,
+    /// `completionItem/resolve` in flight: (item index, answer).
+    resolving: Option<(usize, mpsc::Receiver<Value>)>,
+    resolved: std::collections::HashSet<usize>,
+    /// The server said the list is incomplete: ask again as the user types.
+    incomplete: bool,
+}
+
+impl Default for CompletionState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CompletionState {
     pub fn new() -> Self {
         CompletionState {
             open: false,
-            just_opened: false,
-            query: String::new(),
             word_start: 0,
-            request_revision: 0,
+            query: String::new(),
             request_path: None,
             origin: LspOrigin::Php,
-            base: Vec::new(),
-            raw: Vec::new(),
+            items: Vec::new(),
+            visible: Vec::new(),
             selected: 0,
             rx: None,
             request_id: None,
+            resolving: None,
+            resolved: Default::default(),
+            incomplete: false,
         }
     }
 
@@ -57,31 +62,50 @@ impl CompletionState {
         self.rx.is_some()
     }
 
+    pub fn incomplete(&self) -> bool {
+        self.incomplete
+    }
+
+    /// Asks the server for completions at `line0:col0` (UTF-16).
     #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &mut self,
         lsp: &LspClient,
-        path: &std::path::Path,
+        path: &Path,
         origin: LspOrigin,
         line0: usize,
         col0: usize,
         word_start: usize,
-        prefix: String,
-        revision: u64,
+        query: String,
+        trigger: Option<char>,
     ) {
-        // Cancela request anterior ainda em voo (digitação rápida).
         self.cancel_request(lsp);
+        let reopen = self.open && self.word_start == word_start;
         self.word_start = word_start;
-        self.query = prefix;
-        self.selected = 0;
-        self.base.clear();
-        self.raw.clear();
+        self.query = query;
+        if !reopen {
+            self.selected = 0;
+            self.items.clear();
+            self.visible.clear();
+            self.resolved.clear();
+            self.resolving = None;
+        }
         self.open = true;
-        self.just_opened = true;
-        self.request_revision = revision;
         self.request_path = Some(path.to_path_buf());
         self.origin = origin;
-        let (id, rx) = lsp.completion_with_id(path, line0, col0);
+        let context = match trigger {
+            Some(c) => json!({ "triggerKind": 2, "triggerCharacter": c.to_string() }),
+            None if reopen => json!({ "triggerKind": 3 }),
+            None => json!({ "triggerKind": 1 }),
+        };
+        let (id, rx) = lsp.request_with_id(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": phpide_lsp::path_to_uri(path) },
+                "position": { "line": line0, "character": col0 },
+                "context": context,
+            }),
+        );
         self.request_id = Some(id);
         self.rx = Some(rx);
     }
@@ -93,62 +117,161 @@ impl CompletionState {
         self.rx = None;
     }
 
-    /// Consome a resposta do servidor (por frame). `revision` é a revisão
-    /// atual do documento: divergindo, a resposta é descartada.
-    pub fn poll(&mut self, lsp: &LspClient, path: Option<&Path>, revision: u64) {
-        if revision != self.request_revision || path != self.request_path.as_deref() {
-            // Texto mudou desde o disparo: sugestões obsoletas.
-            if self.rx.is_some() {
-                self.cancel_request(lsp);
-                self.base.clear();
-                self.raw.clear();
+    /// Reads the server's answers (once per frame). Returns false when the
+    /// popup should close (nothing to offer).
+    pub fn poll(&mut self, lsp: &LspClient) -> bool {
+        if let Some(rx) = &self.rx {
+            match rx.try_recv() {
+                Ok(value) => {
+                    self.rx = None;
+                    self.request_id = None;
+                    self.incomplete = value["isIncomplete"].as_bool().unwrap_or(false);
+                    let selected_label = self.selected_item().map(|i| i.label.clone());
+                    self.items = phpide_lsp::parse_completions(&value);
+                    self.resolved.clear();
+                    self.resolving = None;
+                    self.refilter();
+                    if let Some(label) = selected_label {
+                        if let Some(at) = self
+                            .visible
+                            .iter()
+                            .position(|i| self.items[*i].label == label)
+                        {
+                            self.selected = at;
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.rx = None;
+                    self.request_id = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
             }
+        }
+        if let Some((index, rx)) = &self.resolving {
+            if let Ok(value) = rx.try_recv() {
+                let index = *index;
+                if let Some(item) = self.items.get_mut(index) {
+                    item.resolved(&value);
+                }
+                self.resolving = None;
+            }
+        }
+        let _ = lsp;
+        self.loading() || !self.visible.is_empty()
+    }
+
+    /// Asks the server for the documentation of the selected item once.
+    pub fn resolve_selected(&mut self, lsp: &LspClient, supported: bool) {
+        if !supported || self.resolving.is_some() {
             return;
         }
-        if let Some(rx) = &self.rx {
-            if let Ok(value) = rx.try_recv() {
-                self.rx = None;
-                self.request_id = None;
-                self.raw = value
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_else(|| value.as_array().cloned().unwrap_or_default());
-                self.base = phpide_lsp::parse_completions(&value);
-                if self.base.is_empty() {
-                    self.close(lsp);
-                }
-            }
+        let Some(&index) = self.visible.get(self.selected) else {
+            return;
+        };
+        if self.resolved.insert(index) && self.items[index].documentation.is_none() {
+            self.resolving = Some((index, lsp.completion_resolve(&self.items[index].raw)));
         }
     }
 
-    pub fn filtered(&self) -> Vec<CompletionItem> {
-        phpide_lsp::filter_completions(&self.base, &self.query)
+    pub fn set_query(&mut self, query: String) {
+        if query != self.query {
+            self.query = query;
+            self.refilter();
+        }
     }
 
-    /// Item cru selecionado (textEdit/documentação), alinhado com `filtered`.
-    pub fn selected_raw(&self, visible_index: usize) -> Option<&Value> {
-        let items = self.filtered();
-        let label = items.get(visible_index)?.label.clone();
-        // `filtered` pode reordenar: localiza o primeiro raw com o mesmo rótulo.
-        self.raw
+    fn refilter(&mut self) {
+        let ranked = phpide_lsp::filter_completions(&self.items, &self.query);
+        // Map back to indices (labels plus sort text identify an item).
+        self.visible = ranked
             .iter()
-            .find(|v| v["label"].as_str() == Some(&label))
+            .filter_map(|r| {
+                self.items.iter().position(|i| {
+                    i.label == r.label && i.sort_text == r.sort_text && i.kind == r.kind
+                })
+            })
+            .collect();
+        self.visible.dedup();
+        let preselect = self.visible.iter().position(|i| self.items[*i].preselect);
+        self.selected = preselect
+            .unwrap_or(0)
+            .min(self.visible.len().saturating_sub(1));
     }
 
-    pub fn close(&mut self, lsp: &LspClient) {
-        self.cancel_request(lsp);
-        self.close_without_client();
+    pub fn visible(&self) -> Vec<&CompletionItem> {
+        self.visible.iter().map(|i| &self.items[*i]).collect()
     }
 
-    pub fn close_without_client(&mut self) {
-        self.request_id = None;
+    pub fn selected_item(&self) -> Option<&CompletionItem> {
+        self.visible.get(self.selected).map(|i| &self.items[*i])
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = self.visible.len();
+        if len == 0 {
+            return;
+        }
+        let next = self.selected as isize + delta;
+        self.selected = if next < 0 {
+            if delta == -1 {
+                len - 1
+            } else {
+                0
+            }
+        } else if next as usize >= len {
+            if delta == 1 {
+                0
+            } else {
+                len - 1
+            }
+        } else {
+            next as usize
+        };
+    }
+
+    pub fn close(&mut self, lsp: Option<&LspClient>) {
+        if let Some(lsp) = lsp {
+            self.cancel_request(lsp);
+        }
         self.rx = None;
+        self.request_id = None;
         self.open = false;
-        self.base.clear();
-        self.raw.clear();
+        self.items.clear();
+        self.visible.clear();
+        self.resolving = None;
+        self.resolved.clear();
         self.query.clear();
         self.request_path = None;
+        self.incomplete = false;
+    }
+}
+
+/// A snippet being filled in: its remaining tab stops, as char ranges at
+/// `revision` of `path`.
+pub struct SnippetSession {
+    pub path: PathBuf,
+    pub revision: u64,
+    pub stops: Vec<(usize, usize)>,
+    /// Next stop Tab visits.
+    pub next: usize,
+}
+
+impl SnippetSession {
+    /// Maps the stops through the edits made since `revision`. False when
+    /// the log no longer reaches back (the session ends).
+    pub fn follow(&mut self, doc: &phpide_core::Document) -> bool {
+        let Some(applied) = doc.changes_since(self.revision) else {
+            return false;
+        };
+        for change in applied {
+            for stop in &mut self.stops {
+                stop.0 = change.changes.map_pos(stop.0, phpide_core::Assoc::Before);
+                stop.1 = change.changes.map_pos(stop.1, phpide_core::Assoc::After);
+            }
+        }
+        self.revision = doc.revision();
+        true
     }
 }
 
@@ -170,9 +293,14 @@ pub fn accept_edit(
     word_start: usize,
     cursor: usize,
 ) -> Option<AcceptEdit> {
-    if let Some(range) = item["textEdit"]["range"].as_object() {
+    let range = item["textEdit"]["range"]
+        .as_object()
+        .or_else(|| item["textEdit"]["replace"].as_object());
+    if let Some(range) = range {
         let start = lsp_pos(doc, &range["start"])?;
-        let end = lsp_pos(doc, &range["end"])?;
+        // The range was computed when the list was asked for; what was
+        // typed since then is replaced too.
+        let end = lsp_pos(doc, &range["end"])?.max(cursor.min(doc.len_chars()));
         let new_text = item["textEdit"]["newText"]
             .as_str()
             .or_else(|| item["insertText"].as_str())
@@ -214,19 +342,41 @@ fn lsp_pos(doc: &phpide_core::Document, pos: &Value) -> Option<usize> {
     )
 }
 
-/// Extrai (prefixo, início) da palavra que termina no offset `cursor`.
-/// Aceita identificadores PHP: letras, dígitos, `_`, `$` e `\` (namespaces).
-pub fn word_at(chars: &[char], cursor: usize) -> (String, usize) {
+/// The identifier that ends at `cursor` and where it starts: letters,
+/// digits, `_`, `$` and `\` (namespaces). Reads only the current line.
+pub fn word_before(doc: &phpide_core::Document, cursor: usize) -> (String, usize) {
+    let rope = doc.rope();
+    let cursor = cursor.min(rope.len_chars());
+    let line_start = rope.line_to_char(rope.char_to_line(cursor));
     let mut start = cursor;
-    while start > 0 {
-        let c = chars[start - 1];
+    while start > line_start {
+        let c = rope.char(start - 1);
         if c.is_alphanumeric() || matches!(c, '_' | '$' | '\\') {
             start -= 1;
         } else {
             break;
         }
     }
-    (chars[start..cursor].iter().collect(), start)
+    (rope.slice(start..cursor).to_string(), start)
+}
+
+/// The identifier touching `cursor` (on either side) and where it starts.
+pub fn word_around(doc: &phpide_core::Document, cursor: usize) -> (String, usize) {
+    let rope = doc.rope();
+    let cursor = cursor.min(rope.len_chars());
+    let (_, start) = word_before(doc, cursor);
+    let line = rope.char_to_line(cursor);
+    let line_end = rope.line_to_char(line) + rope.line(line).len_chars();
+    let mut end = cursor;
+    while end < line_end {
+        let c = rope.char(end);
+        if c.is_alphanumeric() || c == '_' {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    (rope.slice(start..end).to_string(), start)
 }
 
 #[cfg(test)]

@@ -34,6 +34,11 @@ pub enum Command {
     CopyPath,
     CopyReference,
     CopyRepositoryUrl,
+    RenameSymbol,
+    ShowContextActions,
+    ReformatCode,
+    QuickDocumentation,
+    ParameterInfo,
     /// Text commands routed to the focused editor pane.
     Editor(ViewCommand),
     // View
@@ -67,6 +72,7 @@ pub enum Command {
     NavigateForward,
     LastEditLocation,
     SelectIn,
+    FileStructure,
     NextProblem,
     PrevProblem,
     BlockStart,
@@ -75,6 +81,13 @@ pub enum Command {
     // Run
     RunCurrent,
     DebugCurrent,
+    RunContext,
+    DebugContext,
+    RunWithCoverage,
+    RerunLast,
+    EditConfigurations,
+    EvaluateExpression,
+    ViewBreakpoints,
     Stop,
     ToggleBreakpoint,
     // Window
@@ -83,6 +96,7 @@ pub enum Command {
     CloseOtherProjects,
     // Tools
     RestartLsp,
+    LanguageServerLog,
     OpenWelcome,
 }
 
@@ -236,13 +250,7 @@ pub const REGISTRY: &[CommandSpec] = &[
     // Edit
     spec(K::Undo, C::Edit, "Undo", &[ctrl(Key::Z)], true),
     spec(K::Redo, C::Edit, "Redo", &[ctrl_shift(Key::Z)], true),
-    spec(
-        K::UndoRefactor,
-        C::Edit,
-        "Undo Last Refactoring",
-        &[],
-        false,
-    ),
+    spec(K::UndoRefactor, C::Edit, "Undo Last Refactoring", &[], true),
     spec(
         K::Complete,
         C::Edit,
@@ -436,7 +444,7 @@ pub const REGISTRY: &[CommandSpec] = &[
         K::ToggleToolWindow(Tw::Structure),
         C::View,
         "Structure",
-        &[alt(Key::Num7), ctrl(Key::F12)],
+        &[alt(Key::Num7)],
         true,
     ),
     spec(
@@ -554,7 +562,7 @@ pub const REGISTRY: &[CommandSpec] = &[
         K::SearchEverywhere,
         C::Navigate,
         "Search Everywhere",
-        &[ctrl(Key::P)],
+        &[],
         true,
     ),
     spec(
@@ -691,18 +699,49 @@ pub const REGISTRY: &[CommandSpec] = &[
         true,
     ),
     // Run
+    spec(K::RunCurrent, C::Run, "Run", &[shift(Key::F10)], true),
+    spec(K::DebugCurrent, C::Run, "Debug", &[shift(Key::F9)], true),
     spec(
-        K::RunCurrent,
+        K::RunContext,
         C::Run,
-        "Run Current File",
-        &[shift(Key::F10)],
+        "Run Context Configuration",
+        &[ctrl_shift(Key::F10)],
         true,
     ),
     spec(
-        K::DebugCurrent,
+        K::DebugContext,
         C::Run,
-        "Debug Current File",
-        &[shift(Key::F9)],
+        "Debug Context Configuration",
+        &[ctrl_shift(Key::F9)],
+        true,
+    ),
+    spec(
+        K::RunWithCoverage,
+        C::Run,
+        "Run Tests with Coverage",
+        &[],
+        true,
+    ),
+    spec(K::RerunLast, C::Run, "Rerun", &[ctrl(Key::F5)], true),
+    spec(
+        K::EvaluateExpression,
+        C::Run,
+        "Evaluate Expression…",
+        &[alt(Key::F8)],
+        true,
+    ),
+    spec(
+        K::ViewBreakpoints,
+        C::Run,
+        "View Breakpoints…",
+        &[ctrl_shift(Key::F8)],
+        true,
+    ),
+    spec(
+        K::EditConfigurations,
+        C::Run,
+        "Edit Configurations…",
+        &[],
         true,
     ),
     spec(K::Stop, C::Run, "Stop", &[ctrl(Key::F2)], true),
@@ -719,6 +758,56 @@ pub const REGISTRY: &[CommandSpec] = &[
         C::Tools,
         "Restart Language Server",
         &[],
+        true,
+    ),
+    spec(
+        K::LanguageServerLog,
+        C::Tools,
+        "Language Server Log",
+        &[],
+        true,
+    ),
+    // Code (Edit menu)
+    spec(
+        K::RenameSymbol,
+        C::Edit,
+        "Rename Symbol…",
+        &[shift(Key::F6)],
+        true,
+    ),
+    spec(
+        K::ShowContextActions,
+        C::Edit,
+        "Show Context Actions",
+        &[alt(Key::Enter)],
+        true,
+    ),
+    spec(
+        K::ReformatCode,
+        C::Edit,
+        "Reformat Code",
+        &[ctrl_alt(Key::L)],
+        true,
+    ),
+    spec(
+        K::QuickDocumentation,
+        C::View,
+        "Quick Documentation",
+        &[ctrl(Key::Q)],
+        true,
+    ),
+    spec(
+        K::ParameterInfo,
+        C::View,
+        "Parameter Info",
+        &[ctrl(Key::P)],
+        true,
+    ),
+    spec(
+        K::FileStructure,
+        C::Navigate,
+        "File Structure",
+        &[ctrl(Key::F12)],
         true,
     ),
     spec(K::OpenWelcome, C::Tools, "Welcome Screen", &[], true),
@@ -756,6 +845,11 @@ impl Command {
                 | Command::Redo
                 | Command::CopyPath
                 | Command::CopyReference
+                | Command::RenameSymbol
+                | Command::ShowContextActions
+                | Command::ReformatCode
+                | Command::QuickDocumentation
+                | Command::ParameterInfo
         )
     }
 }
@@ -884,6 +978,13 @@ mod tests {
             Some(Command::NavigateBack)
         );
         assert_eq!(resolve(key(Key::F12)), Some(Command::LastToolWindow));
+        // Phase 5: IntelliJ code shortcuts.
+        assert_eq!(resolve(ctrl(Key::P)), Some(Command::ParameterInfo));
+        assert_eq!(resolve(ctrl(Key::Q)), Some(Command::QuickDocumentation));
+        assert_eq!(resolve(ctrl(Key::F12)), Some(Command::FileStructure));
+        assert_eq!(resolve(shift(Key::F6)), Some(Command::RenameSymbol));
+        assert_eq!(resolve(alt(Key::Enter)), Some(Command::ShowContextActions));
+        assert_eq!(resolve(ctrl_alt(Key::L)), Some(Command::ReformatCode));
         assert_eq!(
             resolve(ctrl_alt_shift(Key::J)),
             Some(Command::Editor(ViewCommand::SelectAllOccurrences))

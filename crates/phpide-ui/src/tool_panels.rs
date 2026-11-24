@@ -153,26 +153,7 @@ fn commit(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn terminal(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.monospace(format!("{} $", app.ws.root.display()));
-        let response = egui::TextEdit::singleline(&mut app.terminal_input)
-            .hint_text("shell command")
-            .desired_width(420.0)
-            .show(ui)
-            .response;
-        let submit = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-        if (submit || ui.button("Run").clicked()) && !app.terminal_input.trim().is_empty() {
-            let command = app.terminal_input.trim().to_string();
-            app.exec.run(
-                format!("$ {command}"),
-                "sh".to_string(),
-                vec!["-lc".to_string(), command],
-                app.ws.root.clone(),
-            );
-            app.terminal_input.clear();
-        }
-    });
-    output(app, ui);
+    crate::terminal_panel::show(app, ui);
 }
 
 fn output(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

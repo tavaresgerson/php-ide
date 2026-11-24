@@ -37,15 +37,6 @@ pub enum DebugStatus {
 }
 
 impl DebugStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            DebugStatus::Idle => "idle",
-            DebugStatus::Listening => "listening",
-            DebugStatus::Running => "running",
-            DebugStatus::Paused => "paused",
-        }
-    }
-
     /// Sessão ativa (listener ou script vivo) — atalhos de debug roteiam.
     pub const fn is_active(self) -> bool {
         matches!(
@@ -61,8 +52,10 @@ pub struct RunDebugState {
     pub manager: RunManager,
     /// Configurações disponíveis no seletor do painel Run.
     pub configs: Vec<RunConfig>,
-    /// Configuração selecionada no seletor (índice).
-    pub selected_config: usize,
+    /// Temporary configurations (context runs), newest last.
+    pub temporary: Vec<RunConfig>,
+    /// Id of the configuration selected in the Run widget.
+    pub selected_config_id: Option<String>,
     /// Sessão selecionada na lista (aba ativa).
     pub selected: Option<SessionId>,
     /// Parsers TeamCity das sessões de teste (alimentados no poll).
@@ -71,6 +64,10 @@ pub struct RunDebugState {
     pub test_trees: HashMap<SessionId, TestTree>,
     /// Cobertura da última execução de testes com coverage.
     pub coverage: Option<CoverageReport>,
+    /// Test tree: passed tests shown, collapsed suites, selected row.
+    pub show_passed: bool,
+    pub collapsed_tests: std::collections::HashSet<String>,
+    pub selected_test: Option<String>,
 
     // Debug (DBGp) — store compartilhado com a engine (mesmo Arc).
     pub bp_store: Arc<Mutex<BreakpointStore>>,
@@ -90,6 +87,18 @@ pub struct RunDebugState {
     pub eval_output: String,
     /// Breakpoints mudaram e a engine precisa de UpdateBreakpoints.
     pub breakpoints_dirty: bool,
+    /// Children fetched for the variable tree, by full name.
+    pub children: HashMap<String, Vec<Variable>>,
+    /// Expanded nodes of the variable tree (full names).
+    pub expanded: std::collections::HashSet<String>,
+    /// Result of the last Evaluate, shown as a tree.
+    pub eval_result: Option<Variable>,
+    /// Evaluate Expression dialog (Alt+F8) is open.
+    pub evaluate_open: bool,
+    /// View Breakpoints dialog (Ctrl+Shift+F8): selected breakpoint id.
+    pub breakpoints_dialog: Option<Option<u64>>,
+    /// Text of the "add watch" field.
+    pub new_watch: String,
     /// Quantos bytes do output de cada sessão de teste já foram parseados.
     test_seen: HashMap<SessionId, usize>,
 }
@@ -99,11 +108,15 @@ impl Default for RunDebugState {
         RunDebugState {
             manager: RunManager::new(),
             configs: Vec::new(),
-            selected_config: 0,
+            temporary: Vec::new(),
+            selected_config_id: None,
             selected: None,
             test_parsers: HashMap::new(),
             test_trees: HashMap::new(),
             coverage: None,
+            show_passed: true,
+            collapsed_tests: Default::default(),
+            selected_test: None,
             bp_store: Arc::new(Mutex::new(BreakpointStore::new())),
             engine: None,
             status: DebugStatus::Idle,
@@ -117,6 +130,12 @@ impl Default for RunDebugState {
             eval_input: String::new(),
             eval_output: String::new(),
             breakpoints_dirty: false,
+            children: HashMap::new(),
+            expanded: Default::default(),
+            eval_result: None,
+            evaluate_open: false,
+            breakpoints_dialog: None,
+            new_watch: String::new(),
             test_seen: HashMap::new(),
         }
     }
@@ -180,21 +199,32 @@ impl RunDebugState {
         file: PathBuf,
         interpreter_options: Vec<String>,
     ) -> Result<(), String> {
-        if self.status.is_active() {
-            return Err("a debug session is already active".to_string());
-        }
-        let port = Self::debug_port();
         let config = RunConfig::new(
             "debug-temp",
             format!("debug {}", file.display()),
             RunKind::PhpScript {
-                file: file.clone(),
+                file,
                 args: Vec::new(),
                 interpreter_options,
                 break_at_first_line: false,
             },
         );
-        let mut built = build_command(&config, root, &BuildContext::php_only(php))
+        self.start_debug_config(root, &BuildContext::php_only(php), config)
+    }
+
+    /// Debugs any run configuration: the IDE listens for Xdebug, then the
+    /// process starts with `XDEBUG_CONFIG`/`XDEBUG_SESSION` set.
+    pub fn start_debug_config(
+        &mut self,
+        root: &Path,
+        ctx: &BuildContext,
+        config: RunConfig,
+    ) -> Result<(), String> {
+        if self.status.is_active() {
+            return Err("a debug session is already active".to_string());
+        }
+        let port = Self::debug_port();
+        let mut built = build_command(&config, root, ctx)
             .map_err(|e| format!("{} — {}", e.message, e.action))?;
         // XDEBUG_CONFIG: mescla com o valor existente sem apagar chaves do
         // usuário (T-RUN-DBG-001-01).
@@ -203,13 +233,17 @@ impl RunDebugState {
             built.spec = built.spec.env(k, v);
         }
         // break_at_first_line → breakpoint na linha 1 antes de subir a engine.
-        if matches!(
-            config.kind,
-            RunKind::PhpScript {
-                break_at_first_line: true,
-                ..
-            }
-        ) {
+        if let RunKind::PhpScript {
+            file,
+            break_at_first_line: true,
+            ..
+        } = &config.kind
+        {
+            let file = if file.is_absolute() {
+                file.clone()
+            } else {
+                root.join(file)
+            };
             self.bp_store.lock().unwrap().add_line(file, 1);
         }
         let engine = DebugEngine::start(
@@ -224,7 +258,7 @@ impl RunDebugState {
         .map_err(|e| format!("could not listen for Xdebug connections: {e}"))?;
         self.engine = Some(engine);
         self.status = DebugStatus::Listening;
-        let id = self.manager.start(config, built.spec, None);
+        let id = self.manager.start(config, built.spec, built.plan);
         self.debug_session = Some(id);
         self.selected = Some(id);
         Ok(())
@@ -304,8 +338,25 @@ impl RunDebugState {
                     // seus valores anteriores foram invalidados no Continued.
                     self.refresh_watches();
                 }
-                EngineEvent::FrameVariables(vars) => self.variables = vars,
+                EngineEvent::FrameVariables(vars) => {
+                    self.variables = vars;
+                    self.children.clear();
+                    // Expanded nodes stay expanded: ask for their children again.
+                    let expanded: Vec<String> = self.expanded.iter().cloned().collect();
+                    for fullname in expanded {
+                        if let Some(engine) = &self.engine {
+                            engine.send(EngineCommand::Children {
+                                fullname,
+                                depth: self.selected_frame as u32,
+                            });
+                        }
+                    }
+                }
+                EngineEvent::Children { fullname, children } => {
+                    self.children.insert(fullname, children);
+                }
                 EngineEvent::Evaluated { expression, result } => {
+                    self.eval_result = result.as_ref().ok().cloned().flatten();
                     self.eval_output = match result {
                         Ok(Some(v)) => {
                             let value = v
@@ -335,7 +386,9 @@ impl RunDebugState {
                     // Avaliações/watches são inválidas após Resume (RUN-DBG-002).
                     self.watch_values.clear();
                     self.eval_output.clear();
+                    self.eval_result = None;
                     self.variables.clear();
+                    self.children.clear();
                     self.frames.clear();
                 }
                 EngineEvent::Ended(end) => {
@@ -395,6 +448,21 @@ impl RunDebugState {
         }
     }
 
+    /// Expands or collapses a variable; children are asked for once.
+    pub fn toggle_variable(&mut self, fullname: &str) {
+        if !self.expanded.remove(fullname) {
+            self.expanded.insert(fullname.to_string());
+            if !self.children.contains_key(fullname) {
+                if let Some(engine) = &self.engine {
+                    engine.send(EngineCommand::Children {
+                        fullname: fullname.to_string(),
+                        depth: self.selected_frame as u32,
+                    });
+                }
+            }
+        }
+    }
+
     /// Seleção de frame: variáveis passam a vir daquele frame.
     pub fn select_frame(&mut self, depth: usize) {
         self.selected_frame = depth;
@@ -431,18 +499,5 @@ impl RunDebugState {
 
     pub fn is_listening(&self) -> bool {
         self.status.is_active()
-    }
-
-    /// Inicia a configuração selecionada no seletor (botão Run do painel).
-    /// Devolve erro acionável para a status bar (NFR-005).
-    pub fn start_config(&mut self, root: &Path, ctx: &BuildContext) -> Result<SessionId, String> {
-        let Some(config) = self.configs.get(self.selected_config).cloned() else {
-            return Err("no run configuration selected".to_string());
-        };
-        let built = build_command(&config, root, ctx)
-            .map_err(|e| format!("{} — {}", e.message, e.action))?;
-        let id = self.manager.start(config, built.spec, built.plan);
-        self.selected = Some(id);
-        Ok(id)
     }
 }

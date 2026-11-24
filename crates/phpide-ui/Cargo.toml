@@ -21,6 +21,7 @@ phpide-editor = { path = "../phpide-editor" }
 phpide-icons = { path = "../phpide-icons" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
+phpide-term = { path = "../phpide-term" }
 
 [features]
 # Features frozen until v1.0 (Database Tools, frontend language servers,

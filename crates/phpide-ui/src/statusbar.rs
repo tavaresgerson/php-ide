@@ -62,6 +62,7 @@ pub fn status_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 memory_widget(app, ui);
+                language_server_widget(app, ui);
                 if crate::scope::EXPERIMENTAL {
                     deployment_widget(app, ui);
                 }
@@ -389,6 +390,57 @@ fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         }
         if ui.button("Deployment...").clicked() {
             app.settings_dialog.open(SettingsPage::Named("Deployment"));
+            ui.close();
+        }
+    });
+}
+
+/// State of the PHP language server, with Restart and the server log.
+fn language_server_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    use phpide_lsp::LspStatus;
+    let status = app.lsp.as_ref().map(|l| l.status());
+    let (text, icon, tone, tip) = match &status {
+        None => (
+            "No PHP server".to_string(),
+            IconId::Info,
+            Tone::Neutral,
+            "No language server found: install intelephense or phpactor (vendor/bin or PATH)"
+                .to_string(),
+        ),
+        Some(LspStatus::Starting) => (
+            app.lsp_name.clone(),
+            IconId::Loader,
+            Tone::Neutral,
+            format!("{} is starting", app.lsp_name),
+        ),
+        Some(LspStatus::Running(_)) => (
+            app.lsp_name.clone(),
+            IconId::Success,
+            Tone::Success,
+            format!("{} is running", app.lsp_name),
+        ),
+        Some(LspStatus::Failed(reason)) => (
+            app.lsp_name.clone(),
+            IconId::Error,
+            Tone::Error,
+            format!("{} stopped: {reason}", app.lsp_name),
+        ),
+    };
+    let response = StatusItem::new(text)
+        .icon(icon)
+        .tone(tone)
+        .tooltip(format!("Language server — {tip}"))
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(240.0);
+        ui.label(egui::RichText::new(tip).weak().small());
+        ui.separator();
+        if ui.button("Restart Language Server").clicked() {
+            app.restart_lsp();
+            ui.close();
+        }
+        if ui.button("Language Server Log").clicked() {
+            app.intel.log_open = true;
             ui.close();
         }
     });

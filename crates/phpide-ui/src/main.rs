@@ -7,7 +7,9 @@
 //! editor tabs com preview/pin/Closing Policy e breadcrumbs.
 
 mod app_actions;
+mod app_completion;
 mod app_editor;
+mod app_intel;
 mod app_lsp;
 mod app_panels;
 mod app_project;
@@ -25,11 +27,13 @@ mod header;
 mod hints;
 mod intelligence;
 mod lens;
+mod markdown;
 mod notifications;
 mod palette;
 mod plugins;
 mod project_tree;
 mod routing;
+mod run_configs;
 mod run_debug;
 mod run_panels;
 mod scheme;
@@ -42,6 +46,7 @@ mod settings_editor;
 mod statusbar;
 mod switcher;
 mod tabs;
+mod terminal_panel;
 mod tool_panels;
 mod toolwindows;
 #[cfg(test)]
@@ -235,6 +240,11 @@ struct PhpIdeApp {
     lsp_crash_notified: bool,
     /// Caminho -> revisão já enviada ao servidor.
     lsp_opened: HashMap<PathBuf, u64>,
+    /// The server's copy of each open document, for ranged `didChange`.
+    lsp_mirrors: HashMap<PathBuf, phpide_lsp::sync::Mirror>,
+    /// Diagnostics as published, by file: (first line, last line, raw), for
+    /// code action contexts.
+    lsp_raw_diagnostics: HashMap<PathBuf, Vec<(usize, usize, Value)>>,
     pending_requests: routing::LspRouting,
     pending_outline: Option<(PathBuf, mpsc::Receiver<Value>)>,
     last_outline_key: Option<(PathBuf, u64)>,
@@ -261,6 +271,10 @@ struct PhpIdeApp {
     problems_scope: u8,
     // Estágio 3.1 — completamento
     completion: CompletionState,
+    /// Tab stops of the last snippet inserted by completion.
+    snippet: Option<completion::SnippetSession>,
+    /// Documentation, parameter info, rename, context actions, formatting.
+    intel: app_intel::IntelState,
     // Estágio 3.1 — análise estrutural local (tree-sitter); anexada à
     // revisão do documento: edição invalida, análise reanexa (NFR-002).
     syntax: Option<(PathBuf, Revisioned<Vec<phpide_syntax::Block>>)>,
@@ -272,6 +286,8 @@ struct PhpIdeApp {
     // Estágio 8 — Run/Debug/Test (RUN-001/002, RUN-DBG-001/002/003,
     // RUN-TST-001/002/003): sessões, engine DBGp e cobertura.
     rd: run_debug::RunDebugState,
+    /// Run › Edit Configurations, when open.
+    run_dialog: Option<run_configs::EditDialog>,
     // Estágio 5 — plugins
     plugins: Vec<plugins::PluginCommand>,
     // Estágio 6 — shell de IDE (REQUISITOS Parte 1)
@@ -291,9 +307,12 @@ struct PhpIdeApp {
     /// Detecção de Shift×2 (Search Everywhere).
     shift_was_down: bool,
     last_shift_press: Option<Instant>,
+    /// Shift is held with no other key or modifier (a tap so far).
+    shift_alone: bool,
     pub zoom_on_ctrl_wheel: bool,
     bookmarks: HashMap<PathBuf, BTreeSet<usize>>,
-    terminal_input: String,
+    /// Terminal tool window sessions.
+    terminal: terminal_panel::TerminalState,
     commit_message: String,
     /// Editor views, split pane and per-buffer syntax state.
     editors: editor_area::EditorArea,
@@ -348,6 +367,13 @@ impl eframe::App for PhpIdeApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame_ui(ui);
+    }
+}
+
+impl PhpIdeApp {
+    /// One frame of the whole window (also rendered by snapshot tests).
+    pub(crate) fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         // Screenshot do próprio app para documentação (README): com
         // PHPIDE_SCREENSHOT_TO=<arquivo.ppm> definido, pede o frame N
@@ -405,7 +431,9 @@ impl eframe::App for PhpIdeApp {
         if !self.welcome_open {
             self.poll_project_services(ctx);
         }
-        self.detect_double_shift(ctx);
+        if !self.terminal.focused {
+            self.detect_double_shift(ctx);
+        }
         if !self.palette.open && !self.settings_dialog.open {
             self.handle_shortcuts(ctx);
         }
@@ -416,12 +444,22 @@ impl eframe::App for PhpIdeApp {
         self.poll_routed_requests();
         self.poll_hints();
         self.poll_completion();
+        self.terminal.poll();
+        // Set again by the terminal view if it still has the keyboard.
+        self.terminal.focused = false;
+        self.poll_intel();
         self.poll_symbol_query();
         self.exec.poll();
         self.db.poll();
         // Estágio 8: sessões de execução + engine DBGp (eventos, testes,
         // cobertura) e sync do widget de listener na status bar.
         self.rd.poll();
+        // Once Xdebug connects, the "waiting" hint is stale.
+        if self.rd.status != run_debug::DebugStatus::Listening
+            && self.ws.message.starts_with("Debug: waiting for Xdebug")
+        {
+            self.ws.message.clear();
+        }
         self.debug_listen = self.rd.is_listening();
         self.debug_keys(ctx);
         self.ctrl_wheel_zoom(ctx);
@@ -470,6 +508,16 @@ impl eframe::App for PhpIdeApp {
         }
         self.toasts.show(ctx);
         self.completion_popup(ctx);
+        self.context_actions_popup(ctx);
+        self.file_structure_popup(ctx);
+        self.snippet_keys(ctx);
+        self.signature_popup(ctx);
+        self.hover_popup(ctx);
+        self.rename_dialog(ctx);
+        self.edit_configurations_dialog(ctx);
+        run_panels::evaluate_dialog(self, ctx);
+        run_panels::breakpoints_dialog(self, ctx);
+        self.language_server_log(ctx);
         project_tree::select_in_popup(self, ctx);
         welcome::poll_picker(self, ctx);
         welcome::open_prompt_dialog(self, ctx);
@@ -565,6 +613,10 @@ impl eframe::App for PhpIdeApp {
 
 // Frontend language servers are frozen until v1.0 (see `scope`).
 
+#[cfg(test)]
+mod gate_lsp;
+#[cfg(test)]
+mod gate_run;
 #[cfg(test)]
 mod gate_ui_ed;
 
