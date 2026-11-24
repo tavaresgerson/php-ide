@@ -13,6 +13,7 @@ const INDENTS: [&str; 4] = ["2 spaces", "4 spaces", "8 spaces", "Tab"];
 pub fn status_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let navigation_bottom = app.settings.navigation_bar == "Bottom";
     egui::Panel::bottom("status").show(ui, |ui| {
+        crate::design::components::ghost_controls(ui);
         ui.horizontal(|ui| {
             if app.files.indexing() {
                 ui.spinner();
@@ -211,7 +212,7 @@ fn debug_listen_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let label = if on { "Listen on" } else { "Listen off" };
     if ui
         .button(egui::RichText::new(label).color(if on {
-            egui::Color32::LIGHT_GREEN
+            crate::design::current(ui.ctx()).palette.success
         } else {
             ui.style().visuals.text_color()
         }))

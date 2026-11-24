@@ -25,7 +25,8 @@ fn harness(root: &Path, files: Vec<PathBuf>) -> Harness<'static, PhpIdeApp> {
     let root = root.to_path_buf();
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
-        .build_eframe(move |_cc| {
+        .build_eframe(move |cc| {
+            crate::design::install(&cc.egui_ctx, crate::design::Theme::default());
             let mut app = PhpIdeApp::new(root, false, files);
             // No language server in these tests: they exercise the shell.
             if let Some(lsp) = app.lsp.take() {
@@ -99,6 +100,9 @@ fn closing_a_modified_tab_from_the_menu_asks_first() {
 
     harness.get_by_label("Menu").click();
     harness.run_steps(2);
+    // Submenus carry an arrow in their accessible label.
+    harness.get_by_label("File ⏵").click();
+    harness.run_steps(2);
     harness.get_by_label_contains("Close Tab").click();
     harness.run_steps(2);
 
@@ -125,7 +129,12 @@ fn frozen_and_fake_status_items_are_not_shown() {
     let (_dir, root) = project();
     let mut harness = harness(&root, Vec::new());
     harness.run_steps(3);
-    for label in ["Processes", "Column", "Deploy"] {
+    let mut hidden = vec!["Processes", "Column"];
+    if !crate::scope::EXPERIMENTAL {
+        // Deployment is frozen, not fake: it only shows in experimental builds.
+        hidden.push("Deploy");
+    }
+    for label in hidden {
         assert!(
             harness.query_by_label_contains(label).is_none(),
             "{label} must not be in the default build"
@@ -140,7 +149,10 @@ fn starting_without_a_project_shows_welcome_and_starts_no_project_work() {
     let root = dir.path().to_path_buf();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
-        .build_eframe(move |_cc| PhpIdeApp::new(root, true, Vec::new()));
+        .build_eframe(move |cc| {
+            crate::design::install(&cc.egui_ctx, crate::design::Theme::default());
+            PhpIdeApp::new(root, true, Vec::new())
+        });
     harness.run_steps(3);
     assert!(harness.query_by_label("Projects").is_some());
     let app = harness.state();
@@ -156,4 +168,38 @@ fn starting_without_a_project_shows_welcome_and_starts_no_project_work() {
         app.ws.files.is_empty(),
         "no scan before a project is chosen"
     );
+}
+
+#[test]
+fn shortcuts_with_extra_modifiers_run_their_own_command() {
+    let (_dir, root) = project();
+    let file = root.join("src/App.php");
+    let mut harness = harness(&root, vec![file]);
+    harness.run_steps(2);
+    {
+        let buffer = harness.state_mut().ws.active_buffer_mut().unwrap();
+        buffer.insert(0, "// one\n");
+    }
+    let modifiers = |ctrl, shift| egui::Modifiers {
+        ctrl,
+        shift,
+        ..Default::default()
+    };
+    harness.key_press_modifiers(modifiers(true, false), egui::Key::Z);
+    harness.run_steps(2);
+    let text =
+        |h: &Harness<'static, PhpIdeApp>| h.state().ws.active_buffer().unwrap().document.text();
+    assert!(!text(&harness).starts_with("// one"), "Ctrl+Z undoes");
+    harness.key_press_modifiers(modifiers(true, true), egui::Key::Z);
+    harness.run_steps(2);
+    assert!(
+        text(&harness).starts_with("// one"),
+        "Ctrl+Shift+Z redoes (it used to run Undo)"
+    );
+
+    harness.key_press_modifiers(modifiers(true, true), egui::Key::N);
+    harness.run_steps(2);
+    let app = harness.state();
+    assert!(app.palette.open, "Ctrl+Shift+N opens Go to File");
+    assert_eq!(app.ws.buffers.len(), 1, "and does not create a new file");
 }

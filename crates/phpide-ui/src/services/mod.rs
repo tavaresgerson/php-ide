@@ -45,7 +45,12 @@ mod tests {
         rust_files(&src, &mut files);
         let mut offenders = Vec::new();
         for file in files {
-            if file.starts_with(src.join("services")) {
+            let name = file.file_name().unwrap().to_string_lossy();
+            // Services own the I/O; gate_* and ui_tests are test-only modules.
+            if file.starts_with(src.join("services"))
+                || name.starts_with("gate_")
+                || name == "ui_tests.rs"
+            {
                 continue;
             }
             let text = std::fs::read_to_string(&file).unwrap();

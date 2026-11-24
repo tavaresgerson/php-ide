@@ -3103,6 +3103,7 @@ dependencies = [
  "phpide-run",
  "phpide-syntax",
  "phpide-vcs",
+ "png",
  "serde_json",
  "tempfile",
 ]

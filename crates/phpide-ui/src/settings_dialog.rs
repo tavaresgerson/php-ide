@@ -4,7 +4,7 @@
 
 use eframe::egui;
 
-use crate::themes::ThemeId;
+use crate::design::ThemeId;
 use crate::PhpIdeApp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,8 +294,13 @@ fn appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     }
     ui.add_space(12.0);
     let mut changed = false;
-    changed |= ui
+    let mut restyle = false;
+    restyle |= ui
         .checkbox(&mut app.settings.compact_mode, "Compact Mode")
+        .changed();
+    restyle |= ui
+        .checkbox(&mut app.settings.reduced_motion, "Reduce Motion")
+        .on_hover_text("Turns off non-essential animations")
         .changed();
     ui.horizontal(|ui| {
         ui.label("Navigation Bar:");
@@ -315,8 +320,11 @@ fn appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     });
     ui.label("UI font: Inter");
     ui.label(egui::RichText::new("Themes apply to the window and the editor.").weak());
-    if changed {
+    if changed || restyle {
         app.persist_settings();
+    }
+    if restyle {
+        app.apply_design(ui.ctx());
     }
 }
 
@@ -364,7 +372,23 @@ fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn editor_font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Editor font: monospace");
+    ui.label("Editor font: JetBrains Mono");
+    ui.horizontal(|ui| {
+        ui.label("Size:");
+        let mut size = app.settings.editor_font_size;
+        if ui
+            .add(
+                egui::Slider::new(&mut size, 8.0..=32.0)
+                    .step_by(1.0)
+                    .suffix(" pt"),
+            )
+            .changed()
+        {
+            app.settings.editor_font_size = crate::settings::clamp_editor_font(size);
+            app.persist_settings();
+            app.apply_design(ui.ctx());
+        }
+    });
     ui.horizontal(|ui| {
         ui.label("IDE zoom:");
         let mut zoom = app.zoom;

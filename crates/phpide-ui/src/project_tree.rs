@@ -5,11 +5,12 @@
 
 use eframe::egui;
 
+use phpide_icons::{file_icon, IconId};
+
+use crate::design::components::TreeRow as RowWidget;
 use crate::services::files::TreeRow;
 use crate::toolwindows::ToolWindow;
 use crate::{tool_window_header, PhpIdeApp};
-
-const INDENT: f32 = 14.0;
 
 enum Action {
     Toggle(std::path::PathBuf),
@@ -22,7 +23,6 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .default_size(240.0)
         .show(ui, |ui| {
             tool_window_header(app, ui, ToolWindow::Project);
-            ui.separator();
             if let Some(error) = app.files.root_error() {
                 ui.colored_label(ui.visuals().error_fg_color, error.to_string());
                 return;
@@ -39,7 +39,8 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 ui.weak("This folder is empty.");
                 return;
             }
-            let row_height = ui.spacing().interact_size.y;
+            let row_height = crate::design::current(ui.ctx()).metrics.row;
+            ui.spacing_mut().item_spacing.y = 0.0;
             let mut action = None;
             egui::ScrollArea::both().auto_shrink([false; 2]).show_rows(
                 ui,
@@ -68,58 +69,37 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         });
 }
 
-/// Folder arrow: pointing right when collapsed, down when expanded. Files
-/// get the same empty space so names line up.
-fn disclosure_arrow(ui: &mut egui::Ui, expanded: Option<bool>) {
-    let size = egui::vec2(12.0, ui.spacing().interact_size.y);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let Some(expanded) = expanded else {
-        return;
-    };
-    let c = rect.center();
-    let r = 3.5;
-    let points = if expanded {
-        vec![
-            egui::pos2(c.x - r, c.y - r * 0.5),
-            egui::pos2(c.x + r, c.y - r * 0.5),
-            egui::pos2(c.x, c.y + r * 0.7),
-        ]
-    } else {
-        vec![
-            egui::pos2(c.x - r * 0.5, c.y - r),
-            egui::pos2(c.x + r * 0.7, c.y),
-            egui::pos2(c.x - r * 0.5, c.y + r),
-        ]
-    };
-    let color = ui.visuals().weak_text_color();
-    ui.painter().add(egui::Shape::convex_polygon(
-        points,
-        color,
-        egui::Stroke::NONE,
-    ));
-}
-
 fn draw_row(app: &PhpIdeApp, ui: &mut egui::Ui, row: &TreeRow) -> Option<Action> {
-    let mut action = None;
-    ui.horizontal(|ui| {
-        ui.add_space(INDENT * row.depth as f32);
-        disclosure_arrow(ui, row.entry.is_dir.then_some(row.expanded));
-        let selected = app.selected.as_deref() == Some(row.entry.path.as_path());
-        let response = ui.selectable_label(selected, row.entry.name.as_str());
-        if row.loading {
-            ui.spinner();
+    let p = crate::design::current(ui.ctx()).palette;
+    let entry = &row.entry;
+    let (icon, color) = if entry.is_dir {
+        let icon = if row.expanded {
+            IconId::FolderOpen
+        } else {
+            IconId::Folder
+        };
+        (icon, p.folder)
+    } else {
+        let (icon, kind) = file_icon(&entry.name);
+        (icon, p.file_color(kind))
+    };
+    let mut widget = RowWidget::new(entry.name.as_str())
+        .depth(row.depth)
+        .expanded(entry.is_dir.then_some(row.expanded))
+        .icon(icon, color)
+        .selected(app.selected.as_deref() == Some(entry.path.as_path()));
+    if row.loading {
+        widget = widget.detail("Loading…");
+    }
+    if let Some(error) = &row.error {
+        widget = widget.detail(error.as_str()).label_color(p.error);
+    }
+    let shown = widget.show(ui);
+    (shown.response.clicked() || shown.toggled).then(|| {
+        if entry.is_dir {
+            Action::Toggle(entry.path.clone())
+        } else {
+            Action::Open(entry.path.clone())
         }
-        if let Some(error) = &row.error {
-            ui.colored_label(ui.visuals().error_fg_color, "!")
-                .on_hover_text(error);
-        }
-        if response.clicked() {
-            action = Some(if row.entry.is_dir {
-                Action::Toggle(row.entry.path.clone())
-            } else {
-                Action::Open(row.entry.path.clone())
-            });
-        }
-    });
-    action
+    })
 }

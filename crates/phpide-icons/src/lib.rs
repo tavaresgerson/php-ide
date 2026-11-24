@@ -1,279 +1,231 @@
-//! Iconografia da IDE — `T-UI-ICON-001-01/02/03/04` (REQUISITOS UI-ICON-001).
+//! Icon set of PHP IDE: Tabler Icons 3.2.0 (outline, MIT) stored under
+//! semantic file names in `assets/`, plus the file-type mapping.
 //!
-//! Conjunto visual **próprio** (`assets/*.svg`, traço geométrico 24×24,
-//! `currentColor`) escolhido por coerência com a restrição offline: nenhuma
-//! dependência de Icones/Iconify em tempo de execução, licença do workspace
-//! (`MIT OR Apache-2.0`) e manifesto com nome/origem/autor/URL/licença por
-//! arquivo (`assets/manifest.json`).
-//!
-//! - Código referencia **significados semânticos** (`IconId::Run`,
-//!   `IconId::GitBranch`…), nunca nomes de arquivo espalhados;
-//! - [`Registry`] resolve semanticamente com **cache** por (tint, escala) e
-//!   **fallback** garantido para id desconhecido;
-//! - tint acontece por substituição de `currentColor` no SVG (UI-ICON-001-04);
-//! - tamanhos 16/20/24, HiDPI por `pixels_per_point` e **nome acessível** +
-//!   tooltip por ícone.
-
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+//! UI code refers to meanings (`IconId::Run`, `IconId::GitBranch`), never to
+//! file names. Each SVG is parsed once into stroke polylines ([`paths`]) that
+//! the UI paints with the theme color, so there is no runtime SVG renderer
+//! and no network access. `assets/manifest.json` records the Tabler name of
+//! every icon; `scripts/update-icons.sh` regenerates the files from npm.
 
 mod vector;
-pub use vector::{prims, Prim};
+pub use vector::{paths, IconPath};
 
-/// Identificadores semânticos do catálogo (UI-ICON-001-03).
+macro_rules! icons {
+    ($($variant:ident => $slug:literal, $tabler:literal, $name:literal;)*) => {
+        /// Semantic icon identifiers.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum IconId {
+            $($variant,)*
+            /// Missing or unknown icon: resolves to the neutral fallback.
+            Unknown,
+        }
+
+        impl IconId {
+            /// Stable slug, equal to the asset file name without extension.
+            pub const fn slug(self) -> &'static str {
+                match self {
+                    $(IconId::$variant => $slug,)*
+                    IconId::Unknown => "unknown",
+                }
+            }
+
+            /// Name of the source icon in Tabler Icons.
+            pub const fn tabler_name(self) -> &'static str {
+                match self {
+                    $(IconId::$variant => $tabler,)*
+                    IconId::Unknown => "",
+                }
+            }
+
+            /// Accessible name (screen readers and default tooltip).
+            pub const fn accessible_name(self) -> &'static str {
+                match self {
+                    $(IconId::$variant => $name,)*
+                    IconId::Unknown => "Icon",
+                }
+            }
+
+            /// Every icon of the catalog (without `Unknown`).
+            pub const fn catalog() -> &'static [IconId] {
+                &[$(IconId::$variant,)*]
+            }
+        }
+
+        /// Raw SVG of an icon (embedded; the fallback never fails).
+        pub fn svg(id: IconId) -> &'static str {
+            match id {
+                $(IconId::$variant => include_str!(concat!("../assets/", $slug, ".svg")),)*
+                IconId::Unknown => FALLBACK_SVG,
+            }
+        }
+    };
+}
+
+icons! {
+    Run => "run", "player-play", "Run";
+    Debug => "debug", "bug", "Debug";
+    Stop => "stop", "player-stop", "Stop";
+    Pause => "pause", "player-pause", "Pause";
+    Settings => "settings", "settings", "Settings";
+    Close => "close", "x", "Close";
+    Warning => "warning", "alert-triangle", "Warning";
+    Error => "error", "circle-x", "Error";
+    Info => "info", "info-circle", "Information";
+    Project => "project", "folders", "Project";
+    Folder => "folder", "folder", "Folder";
+    File => "file", "file", "File";
+    GitBranch => "git-branch", "git-branch", "Git branch";
+    Search => "search", "search", "Search";
+    Bookmark => "bookmark", "bookmark", "Bookmark";
+    Breakpoint => "breakpoint", "circle-dot", "Breakpoint";
+    ChevronRight => "chevron-right", "chevron-right", "Expand";
+    ChevronDown => "chevron-down", "chevron-down", "Collapse";
+    SplitRight => "split-right", "layout-columns", "Split right";
+    SplitDown => "split-down", "layout-rows", "Split down";
+    Switcher => "switcher", "switch-horizontal", "Tab switcher";
+    Eye => "eye", "eye", "Preview";
+    Blame => "blame", "history", "Blame";
+    Coverage => "coverage", "percentage", "Coverage";
+    Hint => "hint", "bulb", "Hint";
+    FolderOpen => "folder-open", "folder-open", "Open folder";
+    ChevronUp => "chevron-up", "chevron-up", "Up";
+    ChevronLeft => "chevron-left", "chevron-left", "Back";
+    Terminal => "terminal", "terminal-2", "Terminal";
+    Problems => "problems", "alert-circle", "Problems";
+    Structure => "structure", "list-tree", "Structure";
+    Commit => "commit", "git-commit", "Commit";
+    VersionControl => "version-control", "git-pull-request", "Version control";
+    Services => "services", "server", "Services";
+    Database => "database", "database", "Database";
+    Notifications => "notifications", "bell", "Notifications";
+    RemoteHost => "remote-host", "cloud", "Remote host";
+    Plus => "plus", "plus", "Add";
+    Minus => "minus", "minus", "Remove";
+    Refresh => "refresh", "refresh", "Refresh";
+    Filter => "filter", "filter", "Filter";
+    More => "more", "dots", "More";
+    Check => "check", "check", "Done";
+    Copy => "copy", "copy", "Copy";
+    ExternalLink => "external-link", "external-link", "Open externally";
+    Undo => "undo", "arrow-back-up", "Undo";
+    Redo => "redo", "arrow-forward-up", "Redo";
+    Rerun => "rerun", "reload", "Rerun";
+    Resume => "resume", "player-track-next", "Resume";
+    StepOver => "step-over", "arrow-bar-right", "Step over";
+    StepInto => "step-into", "arrow-bar-down", "Step into";
+    StepOut => "step-out", "arrow-bar-up", "Step out";
+    Pin => "pin", "pin", "Pin";
+    Package => "package", "package", "Package";
+    Test => "test", "flask", "Test";
+    Download => "download", "download", "Download";
+    Build => "build", "hammer", "Build";
+    SidebarLeft => "sidebar-left", "layout-sidebar", "Left sidebar";
+    SidebarRight => "sidebar-right", "layout-sidebar-right", "Right sidebar";
+    PanelBottom => "panel-bottom", "layout-bottombar", "Bottom panel";
+    Menu => "menu", "menu-2", "Main menu";
+    Moon => "moon", "moon", "Dark theme";
+    Sun => "sun", "sun", "Light theme";
+    Trash => "trash", "trash", "Delete";
+    Edit => "edit", "edit", "Edit";
+    Save => "save", "device-floppy", "Save";
+    Clock => "clock", "clock", "Time";
+    Success => "success", "circle-check", "Success";
+    Loader => "loader", "loader-2", "Loading";
+    Selector => "selector", "selector", "Choose";
+    Palette => "palette", "palette", "Theme";
+    Keyboard => "keyboard", "keyboard", "Keyboard";
+    Command => "command", "command", "Command";
+    Home => "home", "home", "Home";
+    FilePhp => "file-php", "file-type-php", "PHP file";
+    FileJs => "file-js", "file-type-js", "JavaScript file";
+    FileTs => "file-ts", "file-type-ts", "TypeScript file";
+    FileCss => "file-css", "file-type-css", "CSS file";
+    FileHtml => "file-html", "file-type-html", "HTML file";
+    FileXml => "file-xml", "file-type-xml", "XML file";
+    FileSql => "file-sql", "file-type-sql", "SQL file";
+    FileText => "file-text", "file-text", "Text file";
+    FileCode => "file-code", "file-code", "Code file";
+    FileJson => "file-json", "braces", "JSON file";
+    FileMarkdown => "file-markdown", "markdown", "Markdown file";
+    FileConfig => "file-config", "file-settings", "Configuration file";
+    FileGit => "file-git", "brand-git", "Git file";
+    FileLock => "file-lock", "lock", "Lock file";
+    FileDocker => "file-docker", "brand-docker", "Docker file";
+    FileImage => "file-image", "photo", "Image";
+    FileArchive => "file-archive", "file-zip", "Archive";
+    FileSvg => "file-svg", "file-type-svg", "SVG file";
+}
+
+/// Neutral fallback: a circle with a dot.
+const FALLBACK_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"8\"/><path d=\"M12 12h.01\"/></svg>";
+
+/// Broad file category, used to choose the icon and its tint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub enum IconId {
-    Run,
-    Debug,
-    Stop,
-    Pause,
-    Settings,
-    Close,
-    Warning,
-    Error,
-    Info,
-    Project,
-    Folder,
-    File,
-    GitBranch,
-    Search,
-    Bookmark,
-    Breakpoint,
-    ChevronRight,
-    ChevronDown,
-    SplitRight,
-    SplitDown,
-    Switcher,
-    Eye,
-    Blame,
-    Coverage,
-    Hint,
-    /// Id inexistente/fora do catálogo: resolve para o fallback.
-    Unknown,
+pub enum FileKind {
+    Php,
+    Script,
+    Style,
+    Markup,
+    Data,
+    Text,
+    Config,
+    Vcs,
+    Image,
+    Archive,
+    Other,
 }
 
-impl IconId {
-    /// Slug estável (igual ao nome de arquivo, sem extensão).
-    pub const fn slug(self) -> &'static str {
-        match self {
-            IconId::Run => "run",
-            IconId::Debug => "debug",
-            IconId::Stop => "stop",
-            IconId::Pause => "pause",
-            IconId::Settings => "settings",
-            IconId::Close => "close",
-            IconId::Warning => "warning",
-            IconId::Error => "error",
-            IconId::Info => "info",
-            IconId::Project => "project",
-            IconId::Folder => "folder",
-            IconId::File => "file",
-            IconId::GitBranch => "git-branch",
-            IconId::Search => "search",
-            IconId::Bookmark => "bookmark",
-            IconId::Breakpoint => "breakpoint",
-            IconId::ChevronRight => "chevron-right",
-            IconId::ChevronDown => "chevron-down",
-            IconId::SplitRight => "split-right",
-            IconId::SplitDown => "split-down",
-            IconId::Switcher => "switcher",
-            IconId::Eye => "eye",
-            IconId::Blame => "blame",
-            IconId::Coverage => "coverage",
-            IconId::Hint => "hint",
-            IconId::Unknown => "unknown",
+/// Icon and category for a file name (case-insensitive extension match).
+pub fn file_icon(file_name: &str) -> (IconId, FileKind) {
+    let lower = file_name.to_ascii_lowercase();
+    match lower.as_str() {
+        "composer.lock" | "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml" => {
+            return (IconId::FileLock, FileKind::Config)
         }
-    }
-
-    /// Nome acessível (leitor de tela / tooltip padrão).
-    pub const fn accessible_name(self) -> &'static str {
-        match self {
-            IconId::Run => "Run",
-            IconId::Debug => "Debug",
-            IconId::Stop => "Stop",
-            IconId::Pause => "Pause",
-            IconId::Settings => "Settings",
-            IconId::Close => "Close",
-            IconId::Warning => "Warning",
-            IconId::Error => "Error",
-            IconId::Info => "Information",
-            IconId::Project => "Project",
-            IconId::Folder => "Folder",
-            IconId::File => "File",
-            IconId::GitBranch => "Git branch",
-            IconId::Search => "Search",
-            IconId::Bookmark => "Bookmark",
-            IconId::Breakpoint => "Breakpoint",
-            IconId::ChevronRight => "Expand",
-            IconId::ChevronDown => "Collapse",
-            IconId::SplitRight => "Split right",
-            IconId::SplitDown => "Split down",
-            IconId::Switcher => "Tab switcher",
-            IconId::Eye => "Preview",
-            IconId::Blame => "Blame",
-            IconId::Coverage => "Coverage",
-            IconId::Hint => "Hint",
-            IconId::Unknown => "Icon",
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitkeep" => {
+            return (IconId::FileGit, FileKind::Vcs)
         }
-    }
-
-    /// Todos os ids do catálogo (sem `Unknown`): usado em testes e para
-    /// varrer o inventário contra o manifesto.
-    pub const fn catalog() -> &'static [IconId] {
-        &[
-            IconId::Run,
-            IconId::Debug,
-            IconId::Stop,
-            IconId::Pause,
-            IconId::Settings,
-            IconId::Close,
-            IconId::Warning,
-            IconId::Error,
-            IconId::Info,
-            IconId::Project,
-            IconId::Folder,
-            IconId::File,
-            IconId::GitBranch,
-            IconId::Search,
-            IconId::Bookmark,
-            IconId::Breakpoint,
-            IconId::ChevronRight,
-            IconId::ChevronDown,
-            IconId::SplitRight,
-            IconId::SplitDown,
-            IconId::Switcher,
-            IconId::Eye,
-            IconId::Blame,
-            IconId::Coverage,
-            IconId::Hint,
-        ]
-    }
-}
-
-/// SVG bruto de um id (embed; fallback nunca falha).
-pub fn svg(id: IconId) -> &'static str {
-    match id {
-        IconId::Run => include_str!("../assets/run.svg"),
-        IconId::Debug => include_str!("../assets/debug.svg"),
-        IconId::Stop => include_str!("../assets/stop.svg"),
-        IconId::Pause => include_str!("../assets/pause.svg"),
-        IconId::Settings => include_str!("../assets/settings.svg"),
-        IconId::Close => include_str!("../assets/close.svg"),
-        IconId::Warning => include_str!("../assets/warning.svg"),
-        IconId::Error => include_str!("../assets/error.svg"),
-        IconId::Info => include_str!("../assets/info.svg"),
-        IconId::Project => include_str!("../assets/project.svg"),
-        IconId::Folder => include_str!("../assets/folder.svg"),
-        IconId::File => include_str!("../assets/file.svg"),
-        IconId::GitBranch => include_str!("../assets/git-branch.svg"),
-        IconId::Search => include_str!("../assets/search.svg"),
-        IconId::Bookmark => include_str!("../assets/bookmark.svg"),
-        IconId::Breakpoint => include_str!("../assets/breakpoint.svg"),
-        IconId::ChevronRight => include_str!("../assets/chevron-right.svg"),
-        IconId::ChevronDown => include_str!("../assets/chevron-down.svg"),
-        IconId::SplitRight => include_str!("../assets/split-right.svg"),
-        IconId::SplitDown => include_str!("../assets/split-down.svg"),
-        IconId::Switcher => include_str!("../assets/switcher.svg"),
-        IconId::Eye => include_str!("../assets/eye.svg"),
-        IconId::Blame => include_str!("../assets/blame.svg"),
-        IconId::Coverage => include_str!("../assets/coverage.svg"),
-        IconId::Hint => include_str!("../assets/hint.svg"),
-        IconId::Unknown => FALLBACK_SVG,
-    }
-}
-
-/// Fallback embutido: círculo com ponto — neutro, sempre disponível.
-const FALLBACK_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"><circle cx=\"12\" cy=\"12\" r=\"7\"/><circle cx=\"12\" cy=\"12\" r=\"1.6\" fill=\"currentColor\" stroke=\"none\"/></svg>";
-
-/// Cor em `#RRGGBB` para injetar no `currentColor`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Rgb(pub u8, pub u8, pub u8);
-
-impl Rgb {
-    pub fn hex(self) -> String {
-        format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
-    }
-}
-
-/// Tamanhos canônicos do catálogo (UI-ICON-001-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum IconSize {
-    S16 = 16,
-    S20 = 20,
-    S24 = 24,
-}
-
-impl IconSize {
-    pub const fn px(self) -> f32 {
-        self as u16 as f32
-    }
-}
-
-/// SVG já resolvido para (tint, tamanho lógico, HiDPI).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedIcon {
-    /// SVG com a cor injetada e largura/altura ajustadas.
-    pub svg: String,
-    /// Lado em **pontos de tela** (tamanho lógico × pixels_per_point).
-    pub side_points: f32,
-}
-
-/// Registry com cache global: `(IconId, Rgb, IconSize, ppp × 100) → svg`.
-#[derive(Default)]
-pub struct Registry {
-    cache: Mutex<HashMap<(IconId, Rgb, IconSize, u32), ResolvedIcon>>,
-}
-
-static GLOBAL: OnceLock<Registry> = OnceLock::new();
-
-/// Registry compartilhado (UI referencia significados, não arquivos).
-pub fn global() -> &'static Registry {
-    GLOBAL.get_or_init(Registry::default)
-}
-
-impl Registry {
-    /// Resolve o ícone com tint, tamanho e HiDPI. `Unknown` (ou id futuro
-    /// sem asset) cai no fallback — nunca panica, nunca falha.
-    pub fn resolve(
-        &self,
-        id: IconId,
-        tint: Rgb,
-        size: IconSize,
-        pixels_per_point: f32,
-    ) -> ResolvedIcon {
-        let ppp_f = pixels_per_point.max(0.5);
-        let ppp = (ppp_f * 100.0) as u32;
-        let key = (id, tint, size, ppp);
-        if let Some(hit) = self.cache.lock().unwrap().get(&key) {
-            return hit.clone();
+        "dockerfile" | "docker-compose.yml" | "docker-compose.yaml" | "compose.yaml" => {
+            return (IconId::FileDocker, FileKind::Config)
         }
-        let resolved = ResolvedIcon {
-            svg: tint_svg(svg(id), &tint.hex(), (size.px() * ppp_f).round()),
-            side_points: size.px() * ppp_f,
-        };
-        self.cache.lock().unwrap().insert(key, resolved.clone());
-        resolved
+        "artisan" => return (IconId::FilePhp, FileKind::Php),
+        _ => {}
     }
-
-    /// Estatística do cache (testes/observabilidade).
-    pub fn cached_entries(&self) -> usize {
-        self.cache.lock().unwrap().len()
+    if lower.starts_with(".env") || lower.ends_with(".dist") && lower.contains("phpunit") {
+        return (IconId::FileConfig, FileKind::Config);
     }
-}
-
-/// Substitui `currentColor` pela cor e ajusta width/height do `<svg>` para
-/// o lado **físico** (pontos × pixels_per_point). Renderizadores que
-/// respeitam width/height usam o valor físico; viewBox preserva o desenho
-/// 24×24 em qualquer escala.
-fn tint_svg(svg: &str, color: &str, physical_side: f32) -> String {
-    let with_color = svg.replace("currentColor", color);
-    let side = format!("{physical_side}");
-    with_color.replacen(
-        "<svg ",
-        &format!("<svg width=\"{side}\" height=\"{side}\" "),
-        1,
-    )
+    if lower.ends_with(".blade.php") {
+        return (IconId::FileHtml, FileKind::Markup);
+    }
+    let extension = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    match extension {
+        "php" | "phtml" | "inc" | "phpt" => (IconId::FilePhp, FileKind::Php),
+        "js" | "mjs" | "cjs" | "jsx" => (IconId::FileJs, FileKind::Script),
+        "ts" | "mts" | "cts" | "tsx" => (IconId::FileTs, FileKind::Script),
+        "css" | "scss" | "sass" | "less" => (IconId::FileCss, FileKind::Style),
+        "html" | "htm" | "twig" | "vue" => (IconId::FileHtml, FileKind::Markup),
+        "xml" | "xsd" | "xsl" => (IconId::FileXml, FileKind::Markup),
+        "svg" => (IconId::FileSvg, FileKind::Image),
+        "sql" => (IconId::FileSql, FileKind::Data),
+        "json" => (IconId::FileJson, FileKind::Data),
+        "csv" | "tsv" => (IconId::FileText, FileKind::Data),
+        "md" | "markdown" => (IconId::FileMarkdown, FileKind::Text),
+        "txt" | "log" | "rst" => (IconId::FileText, FileKind::Text),
+        "yml" | "yaml" | "ini" | "toml" | "neon" | "conf" | "env" => {
+            (IconId::FileConfig, FileKind::Config)
+        }
+        "lock" => (IconId::FileLock, FileKind::Config),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" | "avif" => {
+            (IconId::FileImage, FileKind::Image)
+        }
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "phar" => {
+            (IconId::FileArchive, FileKind::Archive)
+        }
+        "sh" | "bash" | "zsh" | "py" | "rb" | "go" | "rs" | "java" | "c" | "h" | "cpp" => {
+            (IconId::FileCode, FileKind::Script)
+        }
+        _ => (IconId::File, FileKind::Other),
+    }
 }
 
 #[cfg(test)]
@@ -281,83 +233,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_covers_assets_and_manifest() {
-        // Todo id semântico resolve para SVG não vazio e bem formado.
-        for id in IconId::catalog() {
-            let s = svg(*id);
-            assert!(s.starts_with("<svg"), "{} sem tag svg", id.slug());
-            assert!(s.contains("</svg>"), "{} sem fechamento", id.slug());
-            assert!(
-                s.contains("viewBox=\"0 0 24 24\""),
-                "{} sem viewBox",
-                id.slug()
-            );
-        }
-        // Manifesto cobre o catálogo inteiro (UI-ICON-001-02): nome, origem,
-        // autor, URL e licença por entrada.
+    fn catalog_assets_are_tabler_svgs_listed_in_the_manifest() {
         let manifest = include_str!("../assets/manifest.json");
+        assert!(manifest.contains("\"version\": \"3.2.0\""));
+        assert!(manifest.contains("\"license\": \"MIT\""));
         for id in IconId::catalog() {
-            assert!(
-                manifest.contains(&format!("\"name\": \"{}\"", id.slug())),
-                "manifest sem {}",
-                id.slug()
+            let source = svg(*id);
+            assert!(source.starts_with("<svg"), "{}", id.slug());
+            assert!(source.contains("viewBox=\"0 0 24 24\""), "{}", id.slug());
+            assert!(source.contains("stroke=\"currentColor\""), "{}", id.slug());
+            let entry = format!(
+                "\"name\": \"{}\",\n      \"tabler\": \"{}\"",
+                id.slug(),
+                id.tabler_name()
             );
-        }
-        for campo in ["\"origin\"", "\"author\"", "\"url\"", "\"license\""] {
-            assert!(manifest.contains(campo), "manifest sem campo {campo}");
+            assert!(manifest.contains(&entry), "manifest misses {entry}");
+            assert!(!id.accessible_name().is_empty());
         }
     }
 
     #[test]
-    fn unknown_falls_back_and_cache_hits() {
-        let reg = Registry::default();
-        let a = reg.resolve(IconId::Unknown, Rgb(255, 0, 0), IconSize::S16, 1.0);
-        assert!(
-            a.svg.contains("#ff0000"),
-            "tint aplicada no fallback: {}",
-            a.svg
-        );
-        assert!(a.svg.contains("<circle"), "fallback é o círculo neutro");
-        let b = reg.resolve(IconId::Run, Rgb(255, 0, 0), IconSize::S16, 1.0);
-        assert_ne!(a.svg, b.svg, "run ≠ fallback");
-        // Cache: mesma chave devolve entrada sem crescer o mapa.
-        let before = reg.cached_entries();
-        let _ = reg.resolve(IconId::Run, Rgb(255, 0, 0), IconSize::S16, 1.0);
-        assert_eq!(reg.cached_entries(), before);
-        let _ = reg.resolve(IconId::Run, Rgb(0, 255, 0), IconSize::S16, 1.0);
-        assert_eq!(reg.cached_entries(), before + 1);
+    fn slugs_are_unique() {
+        let mut slugs: Vec<_> = IconId::catalog().iter().map(|id| id.slug()).collect();
+        slugs.sort_unstable();
+        let total = slugs.len();
+        slugs.dedup();
+        assert_eq!(slugs.len(), total);
     }
 
     #[test]
-    fn sizes_hidpi_and_tint() {
-        let reg = Registry::default();
-        let s16 = reg.resolve(IconId::Settings, Rgb(10, 20, 30), IconSize::S16, 1.0);
-        assert_eq!(s16.side_points, 16.0);
-        let s16_retina = reg.resolve(IconId::Settings, Rgb(10, 20, 30), IconSize::S16, 2.0);
-        assert_eq!(
-            s16_retina.side_points, 32.0,
-            "HiDPI dobra os pontos físicos"
-        );
-        assert_ne!(s16.svg, s16_retina.svg);
-        assert!(s16.svg.contains("#0a141e"), "tint injetada: {}", s16.svg);
-        assert!(
-            s16.svg.contains("width=\"16\""),
-            "lado físico 1x: {}",
-            s16.svg
-        );
-        let s24 = reg.resolve(IconId::Settings, Rgb(10, 20, 30), IconSize::S24, 1.0);
-        assert_eq!(s24.side_points, 24.0);
-    }
-
-    #[test]
-    fn accessible_names_present() {
-        for id in IconId::catalog() {
-            assert!(
-                !id.accessible_name().is_empty(),
-                "{} sem nome acessível",
-                id.slug()
-            );
-        }
-        assert_eq!(IconId::GitBranch.accessible_name(), "Git branch");
+    fn file_icons_by_name() {
+        assert_eq!(file_icon("Index.PHP"), (IconId::FilePhp, FileKind::Php));
+        assert_eq!(file_icon("app.blade.php").0, IconId::FileHtml);
+        assert_eq!(file_icon("composer.json").0, IconId::FileJson);
+        assert_eq!(file_icon("composer.lock").0, IconId::FileLock);
+        assert_eq!(file_icon(".env.local").0, IconId::FileConfig);
+        assert_eq!(file_icon("phpunit.xml.dist").0, IconId::FileConfig);
+        assert_eq!(file_icon(".gitignore").1, FileKind::Vcs);
+        assert_eq!(file_icon("README").0, IconId::File);
+        assert_eq!(file_icon("logo.svg").0, IconId::FileSvg);
     }
 }

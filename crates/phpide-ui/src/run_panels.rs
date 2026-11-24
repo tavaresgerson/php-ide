@@ -6,6 +6,8 @@
 //! lista de breakpoints com estados do backend.
 
 use eframe::egui;
+
+use crate::design::components::IconButton;
 use phpide_dbgp::session::{ContinueCommand, Watch};
 use phpide_run::session::{SessionId, SessionState};
 use phpide_run::{RunKind, TestNode, TestStatus};
@@ -280,12 +282,13 @@ fn render_test_node(app: &mut PhpIdeApp, ui: &mut egui::Ui, node: &TestNode) {
         });
         return;
     }
+    let p = crate::design::current(ui.ctx()).palette;
     let (icon, color) = match node.status {
-        Some(TestStatus::Passed) => ("✓", egui::Color32::from_rgb(0x6A, 0xC1, 0x6A)),
-        Some(TestStatus::Failed) => ("✗", egui::Color32::from_rgb(0xD9, 0x4A, 0x4A)),
-        Some(TestStatus::Skipped) => ("–", egui::Color32::GRAY),
-        Some(TestStatus::Incomplete) => ("○", egui::Color32::YELLOW),
-        _ => ("…", egui::Color32::GRAY),
+        Some(TestStatus::Passed) => ("✓", p.success),
+        Some(TestStatus::Failed) => ("✗", p.error),
+        Some(TestStatus::Skipped) => ("–", p.text_muted),
+        Some(TestStatus::Incomplete) => ("○", p.warning),
+        _ => ("…", p.text_muted),
     };
     let duration = node
         .duration
@@ -348,48 +351,31 @@ fn debug_toolbar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         // Ícones do catálogo semântico (UI-ICON-001-05) quando a sessão está
         // parada; os botões textuais abaixo permanecem (acessibilidade).
         if paused {
-            let tint = ui.visuals().text_color();
-            if crate::icons_ui::icon_button(
-                ui,
-                phpide_icons::IconId::Run,
-                15.0,
-                tint,
-                "Resume (F9)",
-            )
-            .clicked()
+            if IconButton::new(phpide_icons::IconId::Resume, "Resume")
+                .shortcut("F9")
+                .show(ui)
+                .clicked()
             {
                 app.rd.continue_debug(ContinueCommand::Resume);
             }
-            if crate::icons_ui::icon_button(
-                ui,
-                phpide_icons::IconId::ChevronRight,
-                15.0,
-                tint,
-                "Step Over (F8)",
-            )
-            .clicked()
+            if IconButton::new(phpide_icons::IconId::StepOver, "Step Over")
+                .shortcut("F8")
+                .show(ui)
+                .clicked()
             {
                 app.rd.continue_debug(ContinueCommand::StepOver);
             }
-            if crate::icons_ui::icon_button(
-                ui,
-                phpide_icons::IconId::ChevronDown,
-                15.0,
-                tint,
-                "Step Into (F7)",
-            )
-            .clicked()
+            if IconButton::new(phpide_icons::IconId::StepInto, "Step Into")
+                .shortcut("F7")
+                .show(ui)
+                .clicked()
             {
                 app.rd.continue_debug(ContinueCommand::StepInto);
             }
-            if crate::icons_ui::icon_button(
-                ui,
-                phpide_icons::IconId::Stop,
-                15.0,
-                tint,
-                "Stop (Ctrl+F2)",
-            )
-            .clicked()
+            if IconButton::new(phpide_icons::IconId::Stop, "Stop")
+                .shortcut("Ctrl+F2")
+                .show(ui)
+                .clicked()
             {
                 app.rd.stop();
             }
@@ -585,14 +571,11 @@ fn breakpoints_list(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 bp.line
             );
             ui.horizontal(|ui| {
+                let p = crate::design::current(ui.ctx()).palette;
                 let color = match &bp.status {
-                    phpide_dbgp::BreakpointStatus::Verified => {
-                        egui::Color32::from_rgb(0x6A, 0xC1, 0x6A)
-                    }
-                    phpide_dbgp::BreakpointStatus::Invalid(_) => {
-                        egui::Color32::from_rgb(0xD9, 0x4A, 0x4A)
-                    }
-                    _ => egui::Color32::GRAY,
+                    phpide_dbgp::BreakpointStatus::Verified => p.success,
+                    phpide_dbgp::BreakpointStatus::Invalid(_) => p.error,
+                    _ => p.text_muted,
                 };
                 if ui
                     .selectable_label(false, egui::RichText::new(label).color(color).small())

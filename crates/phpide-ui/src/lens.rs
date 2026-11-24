@@ -19,7 +19,31 @@ pub struct ScrollMarker {
     pub frac: f32,
     /// 0 = diagnóstico (error/warning), 1 = mudança git (added), 2 = modified/removed.
     pub category: u8,
-    pub color: (u8, u8, u8),
+    pub kind: MarkerKind,
+}
+
+/// What a scrollbar marker shows; the painter maps it to a theme color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerKind {
+    Error,
+    Warning,
+    Information,
+    Hint,
+    GitAdded,
+    GitModified,
+}
+
+impl MarkerKind {
+    pub fn color(self, palette: &crate::design::tokens::Palette) -> egui::Color32 {
+        match self {
+            MarkerKind::Error => palette.error,
+            MarkerKind::Warning => palette.warning,
+            MarkerKind::Information => palette.info,
+            MarkerKind::Hint => palette.text_muted,
+            MarkerKind::GitAdded => palette.git_added,
+            MarkerKind::GitModified => palette.git_modified,
+        }
+    }
 }
 
 /// Teto de faixas por categoria em arquivos grandes (UI-ED-006-01).
@@ -37,7 +61,7 @@ pub fn aggregate_scrollbar_markers(
     }
     let mut out = Vec::new();
     let mut per_cat = [0usize; 3];
-    let mut push = |frac: f32, category: u8, color: (u8, u8, u8), per_cat: &mut [usize; 3]| {
+    let mut push = |frac: f32, category: u8, kind: MarkerKind, per_cat: &mut [usize; 3]| {
         if per_cat[category as usize] >= MAX_MARKERS_PER_CATEGORY {
             return; // limite por categoria em arquivo grande
         }
@@ -45,7 +69,7 @@ pub fn aggregate_scrollbar_markers(
         out.push(ScrollMarker {
             frac,
             category,
-            color,
+            kind,
         });
     };
     for (line1, sev) in diagnostics {
@@ -56,13 +80,13 @@ pub fn aggregate_scrollbar_markers(
         if !(0.0..=1.0).contains(&frac) {
             continue; // diagnóstico fora do arquivo não quebra o scroll
         }
-        let color = match sev {
-            Severity::Error => (0xE5, 0x53, 0x4B),
-            Severity::Warning => (0xDB, 0xA9, 0x3C),
-            Severity::Information => (0x35, 0x74, 0xF0),
-            Severity::Hint => (0x6E, 0x6E, 0x6E),
+        let kind = match sev {
+            Severity::Error => MarkerKind::Error,
+            Severity::Warning => MarkerKind::Warning,
+            Severity::Information => MarkerKind::Information,
+            Severity::Hint => MarkerKind::Hint,
         };
-        push(frac, 0, color, &mut per_cat);
+        push(frac, 0, kind, &mut per_cat);
     }
     for (line1, added) in git_markers {
         if *line1 == 0 {
@@ -73,9 +97,9 @@ pub fn aggregate_scrollbar_markers(
             continue;
         }
         if *added {
-            push(frac, 1, (0x2E, 0x7D, 0x32), &mut per_cat);
+            push(frac, 1, MarkerKind::GitAdded, &mut per_cat);
         } else {
-            push(frac, 2, (0x21, 0x66, 0xA3), &mut per_cat);
+            push(frac, 2, MarkerKind::GitModified, &mut per_cat);
         }
     }
     out.sort_by(|a, b| a.frac.total_cmp(&b.frac));

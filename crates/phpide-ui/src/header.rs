@@ -4,12 +4,14 @@
 
 use eframe::egui;
 
+use crate::commands::{self, is_available, Category, Command, REGISTRY};
 use crate::toolwindows::ToolWindow;
-use crate::{PaletteMode, PhpIdeApp};
+use crate::PhpIdeApp;
 
 /// Desenha o header unificado. Deve ser chamado antes dos painéis laterais.
 pub fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     egui::Panel::top("header").show(ui, |ui| {
+        crate::design::components::ghost_controls(ui);
         ui.horizontal(|ui| {
             main_menu(app, ui);
             ui.separator();
@@ -52,106 +54,33 @@ pub fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 /// Main menu — modo hamburger (REQUISITOS 1.1: *Hamburger* `Alt+\``).
 fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.menu_button("Menu", |ui| {
-        ui.set_min_width(220.0);
-        ui.label(egui::RichText::new("File").weak().small());
-        if ui.button("New File\tCtrl+N").clicked() {
-            app.ws.new_file();
-            ui.close();
+        let mut chosen = None;
+        for category in Category::ALL {
+            ui.menu_button(category.label(), |ui| {
+                ui.set_min_width(260.0);
+                for spec in REGISTRY {
+                    if spec.category != category || !spec.in_menu || !is_available(spec.id) {
+                        continue;
+                    }
+                    let mut button = egui::Button::new(spec.label)
+                        .shortcut_text(commands::shortcut_text(spec.id));
+                    if let Command::ToggleToolWindow(tw) = spec.id {
+                        button = button.selected(app.tw.is_visible(tw));
+                    }
+                    if ui.add(button).clicked() {
+                        chosen = Some(spec.id);
+                        ui.close();
+                    }
+                }
+            });
         }
-        if ui.button("Save\tCtrl+S").clicked() {
-            app.save_active();
-            ui.close();
-        }
-        if ui.button("Close Tab\tCtrl+F4").clicked() {
-            // Same path as Ctrl+F4: a dirty buffer asks before closing.
-            app.request_close_active();
-            ui.close();
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("Edit").weak().small());
-        if ui.button("Undo\tCtrl+Z").clicked() {
-            if let Some(buf) = app.ws.active_buffer_mut() {
-                buf.undo();
-            }
-            ui.close();
-        }
-        if ui.button("Redo\tCtrl+Shift+Z").clicked() {
-            if let Some(buf) = app.ws.active_buffer_mut() {
-                buf.redo();
-            }
-            ui.close();
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("View").weak().small());
-        for tw in ToolWindow::ALL {
-            if !tw.is_available() {
-                continue;
-            }
-            let mut vis = app.tw.is_visible(tw);
-            let text = format!(
-                "{} Tool Window: {}\t{}",
-                tw.icon(),
-                tw.title(),
-                tw.shortcut_label()
-            );
-            if ui.checkbox(&mut vis, text).clicked() {
-                app.tw.set_visible(tw, vis);
-                ui.close();
-            }
-        }
-        if ui.button("Hide All Tool Windows\tCtrl+Shift+F12").clicked() {
-            app.tw.toggle_hide_all();
-            ui.close();
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("Navigate").weak().small());
-        if ui.button("Go to Definition\tF12").clicked() {
-            app.request_definition();
-            ui.close();
-        }
-        if ui.button("Next Problem\tF2").clicked() {
-            app.goto_problem(1);
-            ui.close();
-        }
-        if ui.button("Search Everywhere\tShift×2").clicked() {
-            app.open_palette(PaletteMode::All);
-            ui.close();
-        }
-        if ui.button("Find Action\tCtrl+Shift+A").clicked() {
-            app.open_palette(PaletteMode::Actions);
-            ui.close();
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("Run").weak().small());
-        if ui.button("Run Current File\tCtrl+R").clicked() {
-            app.run_current_php();
-            ui.close();
-        }
-        if ui.button("Debug Current File\tCtrl+D").clicked() {
-            app.debug_run();
-            ui.close();
-        }
-        ui.separator();
-        if ui.button("Quick Switch Scheme\tCtrl+`").clicked() {
-            app.scheme_open = true;
-            ui.close();
-        }
-        if ui.button("Settings\tCtrl+Alt+S").clicked() {
-            app.settings_dialog
-                .open(crate::settings_dialog::SettingsPage::Appearance);
-            ui.close();
-        }
-        if ui.button("Welcome Screen").clicked() {
-            app.welcome_open = true;
-            ui.close();
-        }
-        if ui.button("Theme (Quick Switch)").clicked() {
-            app.scheme_open = true;
-            ui.close();
+        if let Some(command) = chosen {
+            let ctx = ui.ctx().clone();
+            app.dispatch_command(command, &ctx);
         }
     })
     .response
-    .on_hover_text("Main menu (Alt+\\)");
+    .on_hover_text("Main menu");
 }
 
 /// Widget de projeto: nome da raiz + ações de projeto.

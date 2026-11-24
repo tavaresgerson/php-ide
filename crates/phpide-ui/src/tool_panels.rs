@@ -39,7 +39,6 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
 
 fn panel(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
     tool_window_header(app, ui, tw);
-    ui.separator();
     match tw {
         ToolWindow::Bookmarks => bookmarks(app, ui),
         ToolWindow::Services => services(app, ui),

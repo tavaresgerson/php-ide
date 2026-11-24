@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use crate::themes::ThemeId;
+use crate::design::ThemeId;
 use crate::PhpIdeApp;
 
 pub fn scheme_popup(app: &mut PhpIdeApp, ctx: &egui::Context) {

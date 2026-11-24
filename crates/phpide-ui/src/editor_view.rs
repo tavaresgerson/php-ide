@@ -11,8 +11,6 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 
-use phpide_core::Severity;
-
 pub use crate::geometry::{GUTTER_WIDTH, STICKY_MAX};
 
 /// Geometria do viewport do editor em espaço de TELA. O `galley_pos` do egui
@@ -112,7 +110,8 @@ pub fn paint_gutter(
     let mut action = GutterAction::default();
     let vp = geom.viewport;
     let painter = ui.painter();
-    let visuals = ui.visuals();
+    let theme = crate::design::current(ui.ctx());
+    let p = &theme.palette;
 
     // Fundo do gutter: faixa à esquerda da área de texto, dentro do painel
     // (o texto do editor é recuado em GUTTER_WIDTH para não ficar sob ela).
@@ -120,20 +119,13 @@ pub fn paint_gutter(
         egui::pos2(vp.left(), vp.top()),
         egui::vec2(GUTTER_WIDTH, vp.height()),
     );
-    painter.rect_filled(gutter_rect, egui::CornerRadius::ZERO, visuals.panel_fill);
-    painter.line_segment(
-        [
-            egui::pos2(gutter_rect.right(), gutter_rect.top()),
-            egui::pos2(gutter_rect.right(), gutter_rect.bottom()),
-        ],
-        egui::Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color),
-    );
+    painter.rect_filled(gutter_rect, egui::CornerRadius::ZERO, p.bg_editor);
 
     let lines_to_paint = total_lines.min(galley_rows);
     let (first, last) = geom.visible_line_range(lines_to_paint);
     let last = last.min(lines_to_paint.saturating_sub(1));
 
-    let num_font = egui::FontId::monospace(12.0);
+    let num_font = theme.gutter_font();
     let num_x = gutter_rect.right() - 7.0;
 
     // Destaque da linha do cursor (banda em todo o gutter).
@@ -146,7 +138,7 @@ pub fn paint_gutter(
                     egui::vec2(GUTTER_WIDTH, geom.row_height),
                 ),
                 egui::CornerRadius::ZERO,
-                visuals.selection.bg_fill.gamma_multiply(0.35),
+                p.editor_current_line_bg,
             );
         }
     }
@@ -162,9 +154,9 @@ pub fn paint_gutter(
         if let Some(cov) = coverage {
             if let Some(hits) = cov.line_hits(line1 as u32) {
                 let color = if hits > 0 {
-                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
+                    p.coverage_full
                 } else {
-                    egui::Color32::from_rgb(0xC6, 0x28, 0x28)
+                    p.coverage_none
                 };
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -180,26 +172,12 @@ pub fn paint_gutter(
         if breakpoints.contains(&line1) {
             // Breakpoint SOBRE o número (New UI): círculo vermelho na posição
             // do dígito; o número em si some atrás dele.
-            painter.circle_filled(
-                center,
-                geom.row_height * 0.32,
-                egui::Color32::from_rgb(0xD9, 0x4A, 0x4A),
-            );
-            painter.circle_stroke(
-                center,
-                geom.row_height * 0.32,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0xFF, 0x80, 0x80)),
-            );
+            painter.circle_filled(center, geom.row_height * 0.32, p.debug_breakpoint);
         } else {
             let color = if line1 == cursor_line1 {
-                visuals.strong_text_color()
+                p.editor_gutter_text_current
             } else {
-                visuals
-                    .widgets
-                    .noninteractive
-                    .fg_stroke
-                    .color
-                    .gamma_multiply(0.55)
+                p.editor_gutter_text
             };
             painter.text(
                 center,
@@ -211,14 +189,14 @@ pub fn paint_gutter(
         }
 
         if bookmarks.contains(&line1) {
-            // Marcador de bookmark: barra vertical amarela na borda esquerda.
+            // Bookmark marker: a bar on the left edge.
             painter.rect_filled(
                 egui::Rect::from_min_size(
                     egui::pos2(gutter_rect.left() + 1.0, y + 2.0),
                     egui::vec2(3.0, geom.row_height - 4.0),
                 ),
                 egui::CornerRadius::ZERO,
-                egui::Color32::from_rgb(0xE8, 0xC5, 0x4A),
+                p.warning,
             );
         }
     }
@@ -248,7 +226,7 @@ pub fn paint_gutter(
                         egui::vec2(GUTTER_WIDTH, geom.row_height),
                     ),
                     egui::CornerRadius::ZERO,
-                    visuals.widgets.hovered.weak_bg_fill.gamma_multiply(0.5),
+                    p.bg_hover,
                 );
                 resp.on_hover_text(format!(
                     "Ln {line1} — click to toggle a breakpoint (F9)",
@@ -301,10 +279,11 @@ pub fn paint_sticky_lines_max(
     }
     let vp = geom.viewport;
     let painter = ui.painter();
-    let visuals = ui.visuals();
+    let theme = crate::design::current(ui.ctx());
+    let p = &theme.palette;
     let mut jump: Option<usize> = None;
 
-    let font = egui::FontId::monospace(13.0);
+    let font = theme.editor_font();
     // Sticky pinam no topo da viewport; o mapeamento doc→visual só decide
     // QUAL bloco entra na trilha (feito antes via first_visible_doc) — a
     // posição de pin é sempre depth × row_height (UI-ED-004-04 com folding).
@@ -316,11 +295,7 @@ pub fn paint_sticky_lines_max(
             egui::pos2(vp.left() + GUTTER_WIDTH, y),
             egui::vec2(vp.width() - GUTTER_WIDTH, geom.row_height),
         );
-        painter.rect_filled(row, egui::CornerRadius::ZERO, visuals.panel_fill);
-        painter.line_segment(
-            [row.left_bottom(), row.right_bottom()],
-            egui::Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color),
-        );
+        painter.rect_filled(row, egui::CornerRadius::ZERO, p.editor_sticky_bg);
         // Linha de origem (cabeçalho da declaração), recuada por profundidade.
         let source = doc_lines
             .get(block.start_line0)
@@ -337,7 +312,7 @@ pub fn paint_sticky_lines_max(
             egui::Align2::LEFT_CENTER,
             source,
             font.clone(),
-            visuals.widgets.noninteractive.fg_stroke.color,
+            p.text_secondary,
         );
         if interact.clicked() {
             jump = Some(block.start_line0);
@@ -351,49 +326,9 @@ pub fn paint_sticky_lines_max(
             egui::pos2(vp.left(), bottom),
             egui::pos2(vp.right(), bottom),
         ],
-        egui::Stroke::new(1.5_f32, visuals.selection.bg_fill),
+        egui::Stroke::new(1.0_f32, p.border_subtle),
     );
     jump
-}
-
-/// Faixas de diagnósticos na scrollbar (legado — a superfície nova agrega
-/// diagnósticos + Git via `lens::aggregate_scrollbar_markers`).
-#[allow(dead_code)]
-pub fn paint_scrollbar_stripes(
-    ui: &egui::Ui,
-    geom: &EditorGeometry,
-    diagnostics: &[(u32, Severity)],
-    total_lines: usize,
-) {
-    if diagnostics.is_empty() || total_lines == 0 {
-        return;
-    }
-    let vp = geom.viewport;
-    let painter = ui.painter();
-    let stripe_w = 3.0;
-    let x = vp.right() - stripe_w;
-    for (line1, severity) in diagnostics {
-        if *line1 == 0 {
-            continue;
-        }
-        let frac = (*line1 as f32 - 0.5) / total_lines.max(1) as f32;
-        if !(0.0..=1.0).contains(&frac) {
-            continue;
-        }
-        let y = vp.top() + frac * vp.height();
-        let color = match severity {
-            Severity::Error => egui::Color32::from_rgb(0xE5, 0x53, 0x4B),
-            Severity::Warning => egui::Color32::from_rgb(0xDB, 0xA9, 0x3C),
-            Severity::Information => egui::Color32::from_rgb(0x35, 0x74, 0xF0),
-            Severity::Hint => egui::Color32::from_rgb(0x6E, 0x6E, 0x6E),
-        }
-        .gamma_multiply(0.85);
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(stripe_w, 4.0)),
-            egui::CornerRadius::ZERO,
-            color,
-        );
-    }
 }
 
 /// Pinta retângulos de fundo sob as ocorrências do símbolo (T-PHP-005-02),
@@ -410,7 +345,8 @@ pub fn paint_occurrences(
         return;
     }
     let painter = ui.painter();
-    let color = ui.visuals().selection.bg_fill.gamma_multiply(0.22);
+    // Occurrences of the symbol under the caret use the search match color.
+    let color = crate::design::current(ui.ctx()).palette.search_match_bg;
     // Base de char absoluta de cada linha: um glyph por char; o '\n' não é
     // glyph (flag `ends_with_newline`), mas conta no texto.
     let mut bases = Vec::with_capacity(galley.rows.len());

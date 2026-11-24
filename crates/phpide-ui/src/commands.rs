@@ -1,0 +1,619 @@
+//! The single list of IDE commands.
+//!
+//! Menu, Find Action (palette) and keyboard shortcuts all read from
+//! [`REGISTRY`]; behaviour lives in `PhpIdeApp::dispatch_command`. Adding a
+//! command means one entry here and one arm there.
+
+use eframe::egui::{Key, KeyboardShortcut, Modifiers};
+
+use crate::toolwindows::ToolWindow;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Command {
+    // File
+    NewFile,
+    Save,
+    CloseTab,
+    CloseOthers,
+    PinTab,
+    RefreshTree,
+    OpenSettings,
+    // Edit
+    Undo,
+    Redo,
+    UndoRefactor,
+    Complete,
+    // View
+    ToggleToolWindow(ToolWindow),
+    HideActiveToolWindow,
+    HideAllToolWindows,
+    ToggleTheme,
+    OpenScheme,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    ToggleBlame,
+    ToggleFolding,
+    SplitRight,
+    SplitDown,
+    // Navigate
+    SearchEverywhere,
+    GotoFile,
+    RecentFiles,
+    FindAction,
+    GotoSymbol,
+    GotoLine,
+    GotoDefinition,
+    GotoImplementation,
+    GotoTypeDeclaration,
+    FindUsages,
+    NavigateBack,
+    NavigateForward,
+    NextProblem,
+    PrevProblem,
+    BlockStart,
+    BlockEnd,
+    ToggleBookmark,
+    // Run
+    RunCurrent,
+    DebugCurrent,
+    Stop,
+    ToggleBreakpoint,
+    // Tools
+    RestartLsp,
+    OpenWelcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    File,
+    Edit,
+    View,
+    Navigate,
+    Run,
+    Tools,
+}
+
+impl Category {
+    pub const ALL: [Category; 6] = [
+        Category::File,
+        Category::Edit,
+        Category::View,
+        Category::Navigate,
+        Category::Run,
+        Category::Tools,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::File => "File",
+            Category::Edit => "Edit",
+            Category::View => "View",
+            Category::Navigate => "Navigate",
+            Category::Run => "Run",
+            Category::Tools => "Tools",
+        }
+    }
+}
+
+pub struct CommandSpec {
+    pub id: Command,
+    pub category: Category,
+    pub label: &'static str,
+    /// The first shortcut is the one shown in menus.
+    pub shortcuts: &'static [KeyboardShortcut],
+    /// Listed in the main menu (everything is listed in Find Action).
+    pub in_menu: bool,
+}
+
+impl CommandSpec {
+    /// Label used by Find Action: `Category: Label`.
+    pub fn palette_label(&self) -> String {
+        format!("{}: {}", self.category.label(), self.label)
+    }
+}
+
+const fn mods(ctrl: bool, shift: bool, alt: bool) -> Modifiers {
+    Modifiers {
+        alt,
+        ctrl,
+        shift,
+        mac_cmd: false,
+        command: false,
+    }
+}
+
+const fn key(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(false, false, false), key)
+}
+const fn ctrl(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(true, false, false), key)
+}
+const fn ctrl_shift(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(true, true, false), key)
+}
+const fn ctrl_alt(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(true, false, true), key)
+}
+const fn ctrl_alt_shift(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(true, true, true), key)
+}
+const fn alt(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(false, false, true), key)
+}
+const fn shift(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(false, true, false), key)
+}
+const fn alt_shift(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(mods(false, true, true), key)
+}
+
+const fn spec(
+    id: Command,
+    category: Category,
+    label: &'static str,
+    shortcuts: &'static [KeyboardShortcut],
+    in_menu: bool,
+) -> CommandSpec {
+    CommandSpec {
+        id,
+        category,
+        label,
+        shortcuts,
+        in_menu,
+    }
+}
+
+use Category as C;
+use Command as K;
+use ToolWindow as Tw;
+
+pub const REGISTRY: &[CommandSpec] = &[
+    // File
+    spec(K::NewFile, C::File, "New File", &[ctrl(Key::N)], true),
+    spec(K::Save, C::File, "Save", &[ctrl(Key::S)], true),
+    spec(K::CloseTab, C::File, "Close Tab", &[ctrl(Key::F4)], true),
+    spec(K::CloseOthers, C::File, "Close Other Tabs", &[], true),
+    spec(K::PinTab, C::File, "Pin/Unpin Tab", &[], false),
+    spec(K::RefreshTree, C::File, "Reload Project Tree", &[], false),
+    spec(
+        K::OpenSettings,
+        C::File,
+        "Settings",
+        &[ctrl_alt(Key::S)],
+        true,
+    ),
+    // Edit
+    spec(K::Undo, C::Edit, "Undo", &[ctrl(Key::Z)], true),
+    spec(K::Redo, C::Edit, "Redo", &[ctrl_shift(Key::Z)], true),
+    spec(
+        K::UndoRefactor,
+        C::Edit,
+        "Undo Last Refactoring",
+        &[],
+        false,
+    ),
+    spec(
+        K::Complete,
+        C::Edit,
+        "Code Completion",
+        &[ctrl(Key::Space)],
+        true,
+    ),
+    // View
+    spec(
+        K::ToggleToolWindow(Tw::Project),
+        C::View,
+        "Project",
+        &[alt(Key::Num1)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Bookmarks),
+        C::View,
+        "Bookmarks",
+        &[alt(Key::Num2)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Find),
+        C::View,
+        "Find",
+        &[alt(Key::Num3), ctrl_shift(Key::F)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Run),
+        C::View,
+        "Run",
+        &[alt(Key::Num4)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Debug),
+        C::View,
+        "Debug",
+        &[alt(Key::Num5)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Problems),
+        C::View,
+        "Problems",
+        &[alt(Key::Num6), ctrl_shift(Key::M)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Structure),
+        C::View,
+        "Structure",
+        &[alt(Key::Num7), ctrl(Key::F12)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Services),
+        C::View,
+        "Services",
+        &[alt(Key::Num8)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::VersionControl),
+        C::View,
+        "Version Control",
+        &[alt(Key::Num9)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Commit),
+        C::View,
+        "Commit",
+        &[alt(Key::Num0)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Terminal),
+        C::View,
+        "Terminal",
+        &[alt(Key::F12)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Database),
+        C::View,
+        "Database",
+        &[ctrl_alt(Key::Num3)],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::Notifications),
+        C::View,
+        "Notifications",
+        &[],
+        true,
+    ),
+    spec(
+        K::ToggleToolWindow(Tw::RemoteHost),
+        C::View,
+        "Remote Host",
+        &[],
+        true,
+    ),
+    spec(
+        K::HideActiveToolWindow,
+        C::View,
+        "Hide Active Tool Window",
+        &[shift(Key::Escape)],
+        false,
+    ),
+    spec(
+        K::HideAllToolWindows,
+        C::View,
+        "Hide All Tool Windows",
+        &[ctrl_shift(Key::F12)],
+        true,
+    ),
+    spec(
+        K::ToggleTheme,
+        C::View,
+        "Toggle Light/Dark Theme",
+        &[],
+        false,
+    ),
+    spec(
+        K::OpenScheme,
+        C::View,
+        "Quick Switch Scheme",
+        &[ctrl(Key::Backtick)],
+        true,
+    ),
+    spec(
+        K::ZoomIn,
+        C::View,
+        "Zoom In",
+        &[ctrl(Key::Equals), alt_shift(Key::Period)],
+        false,
+    ),
+    spec(
+        K::ZoomOut,
+        C::View,
+        "Zoom Out",
+        &[ctrl(Key::Minus), alt_shift(Key::Comma)],
+        false,
+    ),
+    spec(
+        K::ZoomReset,
+        C::View,
+        "Reset Zoom",
+        &[ctrl(Key::Num0)],
+        false,
+    ),
+    spec(K::ToggleBlame, C::View, "Toggle Blame Gutter", &[], false),
+    spec(K::ToggleFolding, C::View, "Toggle Folding", &[], false),
+    spec(K::SplitRight, C::View, "Split Right", &[], false),
+    spec(K::SplitDown, C::View, "Split Down", &[], false),
+    // Navigate
+    spec(
+        K::SearchEverywhere,
+        C::Navigate,
+        "Search Everywhere",
+        &[ctrl(Key::P)],
+        true,
+    ),
+    spec(
+        K::GotoFile,
+        C::Navigate,
+        "Go to File",
+        &[ctrl_shift(Key::N)],
+        true,
+    ),
+    spec(
+        K::RecentFiles,
+        C::Navigate,
+        "Recent Files",
+        &[ctrl(Key::E)],
+        true,
+    ),
+    spec(
+        K::FindAction,
+        C::Navigate,
+        "Find Action",
+        &[ctrl_shift(Key::A)],
+        true,
+    ),
+    spec(
+        K::GotoSymbol,
+        C::Navigate,
+        "Go to Symbol",
+        &[ctrl_alt_shift(Key::N)],
+        true,
+    ),
+    spec(
+        K::GotoLine,
+        C::Navigate,
+        "Go to Line",
+        &[ctrl(Key::G)],
+        true,
+    ),
+    spec(
+        K::GotoDefinition,
+        C::Navigate,
+        "Go to Definition",
+        &[ctrl(Key::B), key(Key::F12)],
+        true,
+    ),
+    spec(
+        K::GotoImplementation,
+        C::Navigate,
+        "Go to Implementation",
+        &[ctrl_alt(Key::B)],
+        true,
+    ),
+    spec(
+        K::GotoTypeDeclaration,
+        C::Navigate,
+        "Go to Type Declaration",
+        &[ctrl_shift(Key::B)],
+        true,
+    ),
+    spec(
+        K::FindUsages,
+        C::Navigate,
+        "Find Usages",
+        &[alt(Key::F7)],
+        true,
+    ),
+    spec(
+        K::NavigateBack,
+        C::Navigate,
+        "Back",
+        &[alt(Key::ArrowLeft)],
+        true,
+    ),
+    spec(
+        K::NavigateForward,
+        C::Navigate,
+        "Forward",
+        &[alt(Key::ArrowRight)],
+        true,
+    ),
+    spec(
+        K::NextProblem,
+        C::Navigate,
+        "Next Problem",
+        &[key(Key::F2)],
+        true,
+    ),
+    spec(
+        K::PrevProblem,
+        C::Navigate,
+        "Previous Problem",
+        &[shift(Key::F2)],
+        true,
+    ),
+    spec(
+        K::BlockStart,
+        C::Navigate,
+        "Go to Block Start",
+        &[ctrl(Key::OpenBracket)],
+        false,
+    ),
+    spec(
+        K::BlockEnd,
+        C::Navigate,
+        "Go to Block End",
+        &[ctrl(Key::CloseBracket)],
+        false,
+    ),
+    spec(
+        K::ToggleBookmark,
+        C::Navigate,
+        "Toggle Bookmark",
+        &[key(Key::F11)],
+        true,
+    ),
+    // Run
+    spec(
+        K::RunCurrent,
+        C::Run,
+        "Run Current File",
+        &[ctrl(Key::R)],
+        true,
+    ),
+    spec(
+        K::DebugCurrent,
+        C::Run,
+        "Debug Current File",
+        &[ctrl(Key::D)],
+        true,
+    ),
+    spec(K::Stop, C::Run, "Stop", &[ctrl(Key::F2)], true),
+    spec(
+        K::ToggleBreakpoint,
+        C::Run,
+        "Toggle Breakpoint",
+        &[key(Key::F9)],
+        true,
+    ),
+    // Tools
+    spec(
+        K::RestartLsp,
+        C::Tools,
+        "Restart Language Server",
+        &[],
+        true,
+    ),
+    spec(K::OpenWelcome, C::Tools, "Welcome Screen", &[], true),
+];
+
+/// The spec of `id`. Every command has one (checked by a test).
+pub fn spec_of(id: Command) -> &'static CommandSpec {
+    REGISTRY
+        .iter()
+        .find(|spec| spec.id == id)
+        .expect("command missing from REGISTRY")
+}
+
+/// Whether the command belongs to the build (frozen tool windows are only
+/// listed with the `experimental` feature).
+pub fn is_available(id: Command) -> bool {
+    match id {
+        Command::ToggleToolWindow(tw) => tw.is_available(),
+        _ => true,
+    }
+}
+
+/// Text of the primary shortcut, e.g. `Ctrl+Shift+Z`; empty when none.
+pub fn shortcut_text(id: Command) -> String {
+    spec_of(id)
+        .shortcuts
+        .first()
+        .map(|sc| sc.format(&eframe::egui::ModifierNames::NAMES, false))
+        .unwrap_or_default()
+}
+
+fn modifier_count(shortcut: &KeyboardShortcut) -> usize {
+    let m = shortcut.modifiers;
+    usize::from(m.ctrl) + usize::from(m.shift) + usize::from(m.alt)
+}
+
+/// Every `(shortcut, command)` pair, most specific first.
+///
+/// egui matches modifiers "logically": extra Shift and Alt are ignored, so
+/// Ctrl+Z also matches Ctrl+Shift+Z. Consuming the more specific shortcut
+/// first is what keeps Redo from running Undo.
+pub fn shortcuts_by_specificity() -> Vec<(KeyboardShortcut, Command)> {
+    let mut pairs: Vec<(KeyboardShortcut, Command)> = REGISTRY
+        .iter()
+        .filter(|spec| is_available(spec.id))
+        .flat_map(|spec| spec.shortcuts.iter().map(move |sc| (*sc, spec.id)))
+        .collect();
+    pairs.sort_by_key(|(sc, _)| std::cmp::Reverse(modifier_count(sc)));
+    pairs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn every_command_is_registered_once() {
+        let mut seen = HashMap::new();
+        for spec in REGISTRY {
+            assert!(
+                seen.insert(spec.id, spec.label).is_none(),
+                "{:?} registered twice",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn no_shortcut_is_bound_twice() {
+        let mut seen: HashMap<(bool, bool, bool, Key), Command> = HashMap::new();
+        for spec in REGISTRY {
+            for sc in spec.shortcuts {
+                let m = sc.modifiers;
+                let k = (m.ctrl, m.shift, m.alt, sc.logical_key);
+                if let Some(other) = seen.insert(k, spec.id) {
+                    panic!("{:?} and {:?} share a shortcut", other, spec.id);
+                }
+            }
+        }
+    }
+
+    /// Simulates egui's matching: the first pair whose modifiers match
+    /// "logically" (extra Shift/Alt ignored) wins.
+    fn resolve(pressed: KeyboardShortcut) -> Option<Command> {
+        shortcuts_by_specificity()
+            .into_iter()
+            .find(|(sc, _)| {
+                sc.logical_key == pressed.logical_key
+                    && pressed.modifiers.matches_logically(sc.modifiers)
+            })
+            .map(|(_, cmd)| cmd)
+    }
+
+    #[test]
+    fn specific_shortcuts_win_over_their_subsets() {
+        assert_eq!(resolve(ctrl_shift(Key::Z)), Some(Command::Redo));
+        assert_eq!(resolve(ctrl(Key::Z)), Some(Command::Undo));
+        assert_eq!(resolve(ctrl_shift(Key::N)), Some(Command::GotoFile));
+        assert_eq!(resolve(ctrl_alt_shift(Key::N)), Some(Command::GotoSymbol));
+        assert_eq!(resolve(ctrl(Key::N)), Some(Command::NewFile));
+        assert_eq!(resolve(ctrl_alt(Key::S)), Some(Command::OpenSettings));
+        assert_eq!(resolve(ctrl(Key::S)), Some(Command::Save));
+        assert_eq!(resolve(ctrl_alt(Key::B)), Some(Command::GotoImplementation));
+        assert_eq!(
+            resolve(ctrl_shift(Key::B)),
+            Some(Command::GotoTypeDeclaration)
+        );
+        assert_eq!(resolve(shift(Key::F2)), Some(Command::PrevProblem));
+        assert_eq!(resolve(key(Key::F2)), Some(Command::NextProblem));
+        assert_eq!(
+            resolve(ctrl_shift(Key::F12)),
+            Some(Command::HideAllToolWindows)
+        );
+    }
+}

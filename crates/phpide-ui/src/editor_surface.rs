@@ -12,7 +12,6 @@ use phpide_dbgp::breakpoint::BreakpointStatus;
 
 use crate::editor_view::EditorGeometry;
 use crate::folding::FoldVisuals;
-use crate::icons_ui;
 use crate::lens::ScrollMarker;
 
 /// Estado visual de breakpoint por linha (UI-ED-001-04): derivado do
@@ -44,31 +43,30 @@ pub fn paint_breakpoint_disc(
     center: egui::Pos2,
     radius: f32,
     visual: BpVisual,
+    palette: &crate::design::tokens::Palette,
 ) {
+    let p = &palette;
     let (fill, ring) = match visual {
-        BpVisual::Enabled => (
-            egui::Color32::from_rgb(0xD9, 0x4A, 0x4A),
-            egui::Color32::from_rgb(0xFF, 0x80, 0x80),
-        ),
-        BpVisual::Verified => (
-            egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
-            egui::Color32::from_rgb(0x7B, 0xC6, 0x7F),
-        ),
-        BpVisual::Disabled => (
-            egui::Color32::from_rgb(0x6E, 0x6E, 0x6E),
-            egui::Color32::from_rgb(0x9E, 0x9E, 0x9E),
-        ),
-        BpVisual::Invalid => (
-            egui::Color32::TRANSPARENT,
-            egui::Color32::from_rgb(0xD9, 0x4A, 0x4A),
-        ),
+        BpVisual::Enabled => (p.debug_breakpoint, p.debug_breakpoint),
+        BpVisual::Verified => (p.debug_breakpoint, p.debug_breakpoint),
+        BpVisual::Disabled => (egui::Color32::TRANSPARENT, p.debug_breakpoint),
+        BpVisual::Invalid => (egui::Color32::TRANSPARENT, p.text_muted),
         BpVisual::Muted => (
-            egui::Color32::from_rgb(0x9E, 0x9E, 0x9E).gamma_multiply(0.45_f32),
-            egui::Color32::from_rgb(0x9E, 0x9E, 0x9E).gamma_multiply(0.45_f32),
+            p.debug_breakpoint.gamma_multiply(0.35_f32),
+            p.debug_breakpoint.gamma_multiply(0.35_f32),
         ),
     };
     painter.circle_filled(center, radius, fill);
     painter.circle_stroke(center, radius, egui::Stroke::new(1.2_f32, ring));
+    if visual == BpVisual::Verified {
+        let side = radius * 1.5;
+        crate::design::components::paint_icon(
+            painter,
+            egui::Rect::from_center_size(center, egui::vec2(side, side)),
+            phpide_icons::IconId::Check,
+            p.text_on_accent,
+        );
+    }
     if visual == BpVisual::Invalid {
         // X no centro (invalidado pelo backend).
         let r = radius * 0.55_f32;
@@ -140,7 +138,12 @@ pub fn paint_fold_chevrons(
             } else {
                 phpide_icons::IconId::ChevronDown
             };
-            icons_ui::paint_icon(painter, row.shrink(geom.row_height * 0.22), icon, color);
+            crate::design::components::paint_icon(
+                painter,
+                row.shrink(geom.row_height * 0.22),
+                icon,
+                color,
+            );
         }
         let resp = ui.interact(row, egui::Id::new(("fold", idx)), egui::Sense::click());
         if resp.clicked() {
@@ -320,6 +323,7 @@ pub fn paint_code_vision(
 pub fn paint_scroll_markers(ui: &egui::Ui, geom: &EditorGeometry, markers: &[ScrollMarker]) {
     let vp = geom.viewport;
     let painter = ui.painter();
+    let palette = crate::design::current(ui.ctx()).palette;
     let stripe_w = 4.0;
     let x = vp.right() - stripe_w;
     for m in markers {
@@ -327,7 +331,7 @@ pub fn paint_scroll_markers(ui: &egui::Ui, geom: &EditorGeometry, markers: &[Scr
         painter.rect_filled(
             egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(stripe_w, 4.0)),
             egui::CornerRadius::ZERO,
-            egui::Color32::from_rgb(m.color.0, m.color.1, m.color.2).gamma_multiply(0.9),
+            m.kind.color(&palette).gamma_multiply(0.9),
         );
     }
 }

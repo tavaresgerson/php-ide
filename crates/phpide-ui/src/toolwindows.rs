@@ -2,6 +2,9 @@
 //! windows, Hide Active and Hide All.
 
 use eframe::egui;
+use phpide_icons::IconId;
+
+use crate::design::components::IconButton;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolWindow {
@@ -66,41 +69,28 @@ impl ToolWindow {
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    pub fn icon(self) -> IconId {
         match self {
-            ToolWindow::Project => "P",
-            ToolWindow::Bookmarks => "B",
-            ToolWindow::Find => "F",
-            ToolWindow::Run => "R",
-            ToolWindow::Debug => "D",
-            ToolWindow::Problems => "!",
-            ToolWindow::Structure => "S",
-            ToolWindow::Services => "Sv",
-            ToolWindow::VersionControl => "G",
-            ToolWindow::Commit => "C",
-            ToolWindow::Terminal => ">_",
-            ToolWindow::Database => "DB",
-            ToolWindow::Notifications => "N",
-            ToolWindow::RemoteHost => "RH",
+            ToolWindow::Project => IconId::Project,
+            ToolWindow::Bookmarks => IconId::Bookmark,
+            ToolWindow::Find => IconId::Search,
+            ToolWindow::Run => IconId::Run,
+            ToolWindow::Debug => IconId::Debug,
+            ToolWindow::Problems => IconId::Problems,
+            ToolWindow::Structure => IconId::Structure,
+            ToolWindow::Services => IconId::Services,
+            ToolWindow::VersionControl => IconId::VersionControl,
+            ToolWindow::Commit => IconId::Commit,
+            ToolWindow::Terminal => IconId::Terminal,
+            ToolWindow::Database => IconId::Database,
+            ToolWindow::Notifications => IconId::Notifications,
+            ToolWindow::RemoteHost => IconId::RemoteHost,
         }
     }
 
-    pub fn shortcut_label(self) -> &'static str {
-        match self {
-            ToolWindow::Project => "Alt+1",
-            ToolWindow::Bookmarks => "Alt+2",
-            ToolWindow::Find => "Alt+3",
-            ToolWindow::Run => "Alt+4",
-            ToolWindow::Debug => "Alt+5",
-            ToolWindow::Problems => "Alt+6",
-            ToolWindow::Structure => "Alt+7",
-            ToolWindow::Services => "Alt+8",
-            ToolWindow::VersionControl => "Alt+9",
-            ToolWindow::Commit => "Alt+0",
-            ToolWindow::Terminal => "Alt+F12",
-            ToolWindow::Database => "Ctrl+Alt+3",
-            ToolWindow::Notifications | ToolWindow::RemoteHost => "—",
-        }
+    /// Shortcut text from the command registry (empty when none).
+    pub fn shortcut_label(self) -> String {
+        crate::commands::shortcut_text(crate::commands::Command::ToggleToolWindow(self))
     }
 
     pub fn anchor(self) -> Anchor {
@@ -119,22 +109,6 @@ impl ToolWindow {
                 crate::scope::EXPERIMENTAL
             }
             _ => true,
-        }
-    }
-
-    pub fn from_digit(digit: u8) -> Option<ToolWindow> {
-        match digit {
-            0 => Some(ToolWindow::Commit),
-            1 => Some(ToolWindow::Project),
-            2 => Some(ToolWindow::Bookmarks),
-            3 => Some(ToolWindow::Find),
-            4 => Some(ToolWindow::Run),
-            5 => Some(ToolWindow::Debug),
-            6 => Some(ToolWindow::Problems),
-            7 => Some(ToolWindow::Structure),
-            8 => Some(ToolWindow::Services),
-            9 => Some(ToolWindow::VersionControl),
-            _ => None,
         }
     }
 }
@@ -218,37 +192,37 @@ impl ToolWindows {
         } else {
             egui::Panel::right(id)
         };
-        panel
-            .resizable(false)
-            .exact_size(if compact { 26.0 } else { 32.0 })
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(if compact { 2.0 } else { 5.0 });
+        let rail = crate::design::current(ui.ctx()).metrics.tool_window_rail;
+        panel.resizable(false).exact_size(rail).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(if compact { 4.0 } else { 6.0 });
+                for tw in ToolWindow::ALL {
+                    if tw.anchor() != side || !tw.is_available() {
+                        continue;
+                    }
+                    let response = IconButton::new(tw.icon(), tw.title())
+                        .shortcut(tw.shortcut_label())
+                        .selected(self.is_visible(tw))
+                        .show(ui);
+                    if response.clicked() {
+                        self.toggle(tw);
+                    }
+                }
+                let more = IconButton::new(IconId::More, "More tool windows").show(ui);
+                egui::Popup::menu(&more).show(|ui| {
+                    ui.label(egui::RichText::new("More tool windows").weak().small());
                     for tw in ToolWindow::ALL {
-                        if tw.anchor() != side || !tw.is_available() {
+                        if !tw.is_available() {
                             continue;
                         }
-                        let selected = self.is_visible(tw);
-                        let response = ui.selectable_label(selected, tw.icon());
-                        if response.clicked() {
-                            self.toggle(tw);
+                        let mut visible = self.is_visible(tw);
+                        if ui.checkbox(&mut visible, tw.title()).changed() {
+                            self.set_visible(tw, visible);
                         }
-                        response.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
                     }
-                    ui.menu_button("...", |ui| {
-                        ui.label(egui::RichText::new("More tool windows").weak().small());
-                        for tw in ToolWindow::ALL {
-                            if !tw.is_available() {
-                                continue;
-                            }
-                            let mut visible = self.is_visible(tw);
-                            if ui.checkbox(&mut visible, tw.title()).changed() {
-                                self.set_visible(tw, visible);
-                            }
-                        }
-                    });
                 });
             });
+        });
     }
 
     pub fn bottom_bar(&mut self, ui: &mut egui::Ui, compact: bool) {
@@ -262,11 +236,11 @@ impl ToolWindows {
         egui::Panel::bottom("tw-bar-bottom")
             .exact_size(if compact { 24.0 } else { 30.0 })
             .show(ui, |ui| {
+                crate::design::components::ghost_controls(ui);
                 ui.horizontal_centered(|ui| {
                     for tw in PRIMARY {
                         let selected = self.is_visible(tw);
-                        let response =
-                            ui.selectable_label(selected, format!("{} {}", tw.icon(), tw.title()));
+                        let response = ui.selectable_label(selected, tw.title());
                         if response.clicked() {
                             self.toggle(tw);
                         }
@@ -278,8 +252,7 @@ impl ToolWindows {
                                 continue;
                             }
                             let mut visible = self.is_visible(tw);
-                            let label =
-                                format!("{} {}\t{}", tw.icon(), tw.title(), tw.shortcut_label());
+                            let label = format!("{}\t{}", tw.title(), tw.shortcut_label());
                             if ui.checkbox(&mut visible, label).changed() {
                                 self.set_visible(tw, visible);
                             }
@@ -295,24 +268,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn digits_match_phpstorm_catalog() {
-        let expected = [
-            ToolWindow::Commit,
-            ToolWindow::Project,
-            ToolWindow::Bookmarks,
-            ToolWindow::Find,
-            ToolWindow::Run,
-            ToolWindow::Debug,
-            ToolWindow::Problems,
-            ToolWindow::Structure,
-            ToolWindow::Services,
-            ToolWindow::VersionControl,
-        ];
-        for (digit, tw) in expected.into_iter().enumerate() {
-            assert_eq!(ToolWindow::from_digit(digit as u8), Some(tw));
-        }
+    fn shortcut_labels_come_from_the_registry() {
+        assert_eq!(ToolWindow::Project.shortcut_label(), "Alt+1");
+        assert_eq!(ToolWindow::Commit.shortcut_label(), "Alt+0");
         assert_eq!(ToolWindow::Database.shortcut_label(), "Ctrl+Alt+3");
         assert_eq!(ToolWindow::Terminal.shortcut_label(), "Alt+F12");
+        assert_eq!(ToolWindow::Notifications.shortcut_label(), "");
     }
 
     #[test]

@@ -23,6 +23,12 @@ Services, Remote Host, Deployment) are hidden by default. To try them:
 cargo run --release -p phpide-ui --features experimental -- /path/to/project
 ```
 
+To see every UI component in every theme, density and state:
+
+```bash
+cargo run -p phpide-ui -- --gallery
+```
+
 ## PHP language server
 
 PHP IDE talks to an external language server. It looks for one in this order:
@@ -62,5 +68,7 @@ through tree-sitter.
 ## License
 
 MIT OR Apache-2.0 for the project's own code. Dependencies keep their own
-licenses (see `cargo tree`). Intelephense is freeware and is installed
+licenses (see `cargo tree`). Bundled assets: Tabler Icons (MIT), Inter and
+JetBrains Mono (SIL OFL 1.1) — see `crates/phpide-icons/assets/manifest.json`
+and `crates/phpide-ui/assets/fonts/README.md`. Intelephense is freeware and is installed
 locally through npm, never redistributed.

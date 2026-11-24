@@ -49,17 +49,25 @@ Size: S (days) · M (1–2 weeks) · L (3+ weeks).
 
 **Done when:** baseline recorded, old docs removed, frozen surfaces invisible.
 
-### Phase 1 — Application foundation (M) — in progress
+### Phase 1 — Application foundation (M) — done
 
 - [x] egui/eframe 0.31 → 0.36 (new `App::ui` entry point, unified `Panel`,
       menus). The default renderer is now wgpu.
 - [x] Every UI string in English, including errors from the other crates
       (frozen Database code excepted).
-- [ ] Single command registry (id, label, shortcut, enablement) feeding the
-      menu, palette, keymap and context menus.
-- [ ] Split `PhpIdeApp`: `AppState` (data), `services/` (I/O owners),
-      `ui/` (rendering only); `main.rs` under 800 lines.
-      Started: `services/git.rs`, `services/files.rs`, `project_tree.rs`.
+- [x] Single command registry (`commands.rs`) feeding the main menu, Find
+      Action and keyboard shortcuts. Shortcuts are consumed from the most to
+      the least specific: egui ignores extra Shift/Alt, so before this
+      Ctrl+Shift+Z ran Undo, Ctrl+Shift+N created a file, Ctrl+Alt+S saved,
+      Ctrl+Alt+B / Ctrl+Shift+B / Ctrl+Alt+Shift+N fell into Ctrl+B / Ctrl+N,
+      and Shift+F2 / Shift+F8 ran F2 / F8. Tests cover the conflicts and press
+      the keys for real.
+- [x] `main.rs` from 4,817 to under 500 lines: methods moved, unchanged, into
+      `app_project`, `app_lsp`, `app_actions`, `app_panels` and `app_editor`;
+      the gate tests into their own files. I/O owners live in `services/`.
+      Not done: a separate `AppState` — `PhpIdeApp` still holds ~115
+      fields. That split happens with the new editor (Phase 3) and shell
+      (Phase 4), which replace most of `app_editor` and `app_panels`.
 - [x] Git off the UI thread (`services/git.rs`): branch, line markers and
       blame run as jobs. Before, the header and status bar each ran
       `git rev-parse` on **every frame**. A test now fails if render code
@@ -85,22 +93,44 @@ Still synchronous on the UI thread, accepted for now: opening and saving a
 file, reading `composer.json` after it changes, the usages preview.
 
 **Done when:** no `git`/filesystem/process call on the UI thread, `main.rs`
-under 800 lines, menus and shortcuts come from the registry.
+under 800 lines, menus and shortcuts come from the registry. ✔
 
-### Phase 2 — Design system (M)
+### Phase 2 — Design system (M) — done
 
-1. `design/tokens.rs`: semantic colors, spacing, radii, typography, density
-   (starting values in [DESIGN_TOKENS.md](DESIGN_TOKENS.md)).
-2. Dark, Light and High Contrast themes with their own values, syntax included.
-3. Bundled fonts with validated fallback.
-4. Tabler Icons through the `phpide-icons` pipeline, plus file-type icons.
-5. Components: Button, IconButton, Input/SearchField, Select, Checkbox,
-   Tooltip, Menu, Tabs, Tree, ListRow, Panel, Splitter, StatusItem, Dialog,
-   Toast, EmptyState, Progress.
-6. Gallery example with every state × theme × density and automatic snapshots.
+- [x] `design/tokens.rs`: semantic colors (shell, Git, debug, coverage, diff,
+      search, editor, file types), spacing, radii, type scale, motion and the
+      Comfortable/Compact density table from [DESIGN_TOKENS.md](DESIGN_TOKENS.md).
+      Tests check WCAG contrast for text, status colors and every syntax role.
+- [x] Dark, Light and High Contrast with their own palettes and syntax colors.
+      The seven old theme ids (Islands, Darcula, classic) map to these three.
+      Resting widgets no longer get the accent color on every border.
+- [x] Syntax highlighting by semantic role (`phpide_php::SyntaxRole`): one
+      syntect pass, colors from the active theme; LSP semantic tokens use the
+      same roles. Editor font size is a setting, independent of IDE zoom.
+- [x] Bundled Inter (UI) and JetBrains Mono (code, ligatures removed), egui's
+      fonts as fallback; a test checks accents, Greek, Cyrillic, symbols and
+      box drawing in every family.
+- [x] Tabler Icons 3.2 in `phpide-icons` under semantic names, with a full
+      SVG path parser (arcs, curves, compact numbers) and file-type icons.
+      `scripts/update-icons.sh` regenerates them from npm.
+- [x] Components: Button (primary/secondary/ghost/danger), IconButton,
+      TextInput/search field, Select, Checkbox, tooltip, menu items, Tab,
+      TreeRow, ListRow, panel frame and header, splitter, StatusItem, Dialog,
+      Toasts, EmptyState, ProgressBar and Spinner. All take colors from the
+      theme and have a visible focus ring.
+- [x] Gallery (`phpide --gallery`) with every state × theme × density.
+      `design::gallery::tests::gallery_snapshots` renders it on the CPU (no
+      GPU needed) and compares with `crates/phpide-ui/tests/snapshots/`;
+      `UPDATE_SNAPSHOTS=1` rewrites them.
+- [x] Guard test: no color literal outside `design/tokens.rs`. All 50 literals
+      were migrated (gutter, breakpoints, coverage, scrollbar markers, test
+      tree, problems list, status bar, Welcome).
+- [x] First uses in the shell: tool window rails and headers with icons,
+      project tree with file icons and Git-ready rows, editor tabs with file
+      icons, quiet header/status bar buttons, frameless editor.
 
 **Done when:** gallery approved; no color literal outside `tokens.rs`
-(checked in CI).
+(checked in CI). Guard ✔ — gallery awaiting approval.
 
 ### Phase 3 — New editor `phpide-editor` (L)
 

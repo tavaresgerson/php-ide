@@ -56,8 +56,8 @@ pub fn migrations() -> store::MigrationChain {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
-    /// Id do tema (veja `themes.rs`): "islands-dark", "islands-light",
-    /// "darcula", "light". Aceita o legado "dark"/"light" na leitura.
+    /// Theme id (`design::ThemeId`): "dark", "light" or "high-contrast".
+    /// Ids of the old catalog (Islands, Darcula, classic) are mapped on load.
     pub theme: String,
     pub zoom: f32,
     /// Nível da linguagem PHP exibido/selecionável na status bar.
@@ -70,6 +70,10 @@ pub struct Settings {
     pub recent_projects: Vec<String>,
     /// New UI: reduz alturas de barras e espaçamentos.
     pub compact_mode: bool,
+    /// Editor font size in points (independent of the IDE zoom).
+    pub editor_font_size: f32,
+    /// Removes non-essential animations.
+    pub reduced_motion: bool,
     /// Posição da Navigation Bar: "Bottom" | "Top" | "Hidden".
     pub navigation_bar: String,
     /// Servidor de deployment exibido na status bar.
@@ -103,6 +107,14 @@ pub struct Settings {
     pub lens_mode: bool,
 }
 
+/// Editor font size limits; NaN falls back to the default.
+pub fn clamp_editor_font(size: f32) -> f32 {
+    if size.is_nan() {
+        return crate::design::tokens::typography::EDITOR;
+    }
+    size.clamp(8.0, 32.0)
+}
+
 /// Limites de zoom da IDE (UI-ED-010): NaN volta a 1.0; fora da faixa
 /// (inclusive ±infinito) cai nos extremos 0.5/3.0.
 pub fn clamp_zoom(zoom: f32) -> f32 {
@@ -115,7 +127,9 @@ pub fn clamp_zoom(zoom: f32) -> f32 {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            theme: "islands-dark".to_string(),
+            theme: "dark".to_string(),
+            editor_font_size: crate::design::tokens::typography::EDITOR,
+            reduced_motion: false,
             zoom: 1.0,
             php_level: "8.1".to_string(),
             line_ending: "LF".to_string(),
@@ -153,11 +167,8 @@ impl Settings {
         let mut s = Self::default();
         let v = &report.value;
         if let Some(t) = v["theme"].as_str() {
-            s.theme = match t {
-                "dark" => "islands-dark".to_string(),
-                "light" => "islands-light".to_string(),
-                other => other.to_string(),
-            };
+            // Ids of the old catalog (Islands, Darcula…) map to Dark/Light.
+            s.theme = crate::design::ThemeId::from_name(t).name().to_string();
         }
         if let Some(z) = v["zoom"].as_f64() {
             s.zoom = clamp_zoom(z as f32);
@@ -176,6 +187,12 @@ impl Settings {
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
+        }
+        if let Some(size) = v["editor_font_size"].as_f64() {
+            s.editor_font_size = clamp_editor_font(size as f32);
+        }
+        if let Some(value) = v["reduced_motion"].as_bool() {
+            s.reduced_motion = value;
         }
         if let Some(value) = v["compact_mode"].as_bool() {
             s.compact_mode = value;
@@ -260,6 +277,8 @@ impl Settings {
             "indent": self.indent,
             "recent_projects": self.recent_projects,
             "compact_mode": self.compact_mode,
+            "editor_font_size": self.editor_font_size,
+            "reduced_motion": self.reduced_motion,
             "navigation_bar": self.navigation_bar,
             "deployment_server": self.deployment_server,
             "column_selection": self.column_selection,
@@ -314,10 +333,11 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_islands_dark() {
+    fn defaults_are_dark() {
         let s = Settings::default();
-        assert_eq!(s.theme, "islands-dark");
-        assert!(s.theme != "islands-light");
+        assert_eq!(s.theme, "dark");
+        assert_eq!(s.editor_font_size, 14.0);
+        assert!(!s.reduced_motion);
         assert_eq!(s.php_level, "8.1");
     }
 
@@ -339,6 +359,14 @@ mod tests {
         let parsed = serde_json::from_str::<Value>(&v.to_string()).unwrap();
         assert_eq!(parsed["theme"], "dark");
         // Caminho de migração coberto por load(); aqui só o contrato do JSON.
+    }
+
+    #[test]
+    fn editor_font_size_is_clamped() {
+        assert_eq!(clamp_editor_font(f32::NAN), 14.0);
+        assert_eq!(clamp_editor_font(4.0), 8.0);
+        assert_eq!(clamp_editor_font(15.0), 15.0);
+        assert_eq!(clamp_editor_font(90.0), 32.0);
     }
 
     #[test]
@@ -386,7 +414,7 @@ mod tests {
         let (s, err) = with_xdg(&dir, || {
             let (s, err) = Settings::load_or_default();
             assert!(err.is_none(), "sem erro recuperável: {err:?}");
-            assert_eq!(s.theme, "islands-dark", "dark legado → islands-dark");
+            assert_eq!(s.theme, "dark", "legacy dark stays dark");
             assert!((s.zoom - 1.2).abs() < 1e-6);
             // Salvar grava a versão corrente.
             s.save();
@@ -410,7 +438,7 @@ mod tests {
         let (s, err) = with_xdg(&dir, Settings::load_or_default);
         let err = err.expect("diagnóstico recuperável");
         assert_eq!(err.kind, phpide_core::ErrorKind::InvalidConfig);
-        assert_eq!(s.theme, "islands-dark", "defaults em uso");
+        assert_eq!(s.theme, "dark", "defaults em uso");
         assert!(
             dir.join("phpide").join("settings.json.invalid").exists(),
             "arquivo original preservado"

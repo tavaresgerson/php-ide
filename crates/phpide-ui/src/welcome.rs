@@ -11,7 +11,7 @@ use eframe::egui;
 use phpide_core::jobs::{JobContext, JobHandle, JobOutcome};
 use phpide_core::{Component, ErrorKind, IdeError};
 
-use crate::themes::ThemeId;
+use crate::design::ThemeId;
 use crate::PhpIdeApp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,7 +345,10 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui, close: &mut bool) {
             });
             if !app.welcome.err.is_empty() {
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(&app.welcome.err).color(egui::Color32::RED));
+                ui.label(
+                    egui::RichText::new(&app.welcome.err)
+                        .color(crate::design::current(ui.ctx()).palette.error),
+                );
             }
         });
     });

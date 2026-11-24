@@ -66,7 +66,8 @@ fn layout_in_pass(ctx: &egui::Context, job: &egui::text::LayoutJob, warm: bool) 
 }
 
 fn main() {
-    let style = egui::Style::default();
+    let style =
+        phpide_php::SyntaxStyle::uniform(egui::FontId::monospace(14.0), egui::Color32::GRAY);
     let ctx = egui::Context::default();
     println!("editor pipeline baseline (median)");
     println!("{}", "-".repeat(72));

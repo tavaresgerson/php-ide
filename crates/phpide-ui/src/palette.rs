@@ -6,6 +6,8 @@
 use std::path::PathBuf;
 
 use eframe::egui;
+
+use crate::commands::Command;
 use phpide_core::Workspace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,51 +36,9 @@ impl PaletteMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaletteCommand {
-    Save,
-    NewFile,
-    CloseTab,
-    CloseOthers,
-    PinTab,
-    RefreshTree,
-    ToggleTheme,
-    ZoomIn,
-    ZoomOut,
-    ZoomReset,
-    ToggleProject,
-    ToggleFind,
-    ToggleRun,
-    ToggleDebug,
-    ToggleProblems,
-    ToggleStructure,
-    HideAllToolWindows,
-    NavigateBack,
-    NavigateForward,
-    NextProblem,
-    PrevProblem,
-    OpenWelcome,
-    OpenScheme,
-    OpenSettings,
-    GotoDefinition,
-    GotoImplementation,
-    GotoTypeDeclaration,
-    GotoSymbol,
-    FindUsages,
-    SplitRight,
-    UndoRefactor,
-    SplitDown,
-    ToggleBlame,
-    ToggleFolding,
-    RestartLsp,
-    RunCurrent,
-    DebugCurrent,
-    GotoLine,
-}
-
 pub enum PaletteAction {
     Open(PathBuf),
-    Run(PaletteCommand),
+    Run(Command),
     /// Comando dinâmico (composer script, phpunit, plugin externo).
     Plugin(String),
 }
@@ -120,66 +80,9 @@ struct Entry {
 
 enum PaletteActionKind {
     Open(PathBuf),
-    Run(PaletteCommand),
+    Run(Command),
     Plugin(String),
 }
-
-/// Comandos estáticos da IDE, com prefixo de categoria estilo JetBrains.
-const COMMANDS: &[(&str, PaletteCommand)] = &[
-    ("File: Save", PaletteCommand::Save),
-    ("File: New File", PaletteCommand::NewFile),
-    ("File: Close Tab", PaletteCommand::CloseTab),
-    ("File: Close Other Tabs", PaletteCommand::CloseOthers),
-    ("File: Pin/Unpin Tab", PaletteCommand::PinTab),
-    ("File: Reload Project Tree", PaletteCommand::RefreshTree),
-    ("View: Toggle Theme", PaletteCommand::ToggleTheme),
-    ("View: Zoom in", PaletteCommand::ZoomIn),
-    ("View: Zoom out", PaletteCommand::ZoomOut),
-    ("View: Zoom reset", PaletteCommand::ZoomReset),
-    ("View: Project Tool Window", PaletteCommand::ToggleProject),
-    ("View: Find Tool Window", PaletteCommand::ToggleFind),
-    ("View: Run Tool Window", PaletteCommand::ToggleRun),
-    ("View: Debug Tool Window", PaletteCommand::ToggleDebug),
-    ("View: Problems Tool Window", PaletteCommand::ToggleProblems),
-    (
-        "View: Structure Tool Window",
-        PaletteCommand::ToggleStructure,
-    ),
-    (
-        "View: Hide All Tool Windows",
-        PaletteCommand::HideAllToolWindows,
-    ),
-    ("Navigate: Back", PaletteCommand::NavigateBack),
-    ("Navigate: Forward", PaletteCommand::NavigateForward),
-    ("Navigate: Go to Definition", PaletteCommand::GotoDefinition),
-    (
-        "Navigate: Go to Implementation",
-        PaletteCommand::GotoImplementation,
-    ),
-    (
-        "Navigate: Go to Type Declaration",
-        PaletteCommand::GotoTypeDeclaration,
-    ),
-    ("Navigate: Go to Symbol", PaletteCommand::GotoSymbol),
-    ("Navigate: Find Usages", PaletteCommand::FindUsages),
-    ("Window: Split Right", PaletteCommand::SplitRight),
-    (
-        "Refactor: Undo Last Refactoring",
-        PaletteCommand::UndoRefactor,
-    ),
-    ("Window: Split Down", PaletteCommand::SplitDown),
-    ("Git: Toggle Blame Gutter", PaletteCommand::ToggleBlame),
-    ("Editor: Toggle Folding", PaletteCommand::ToggleFolding),
-    ("Navigate: Go to Line", PaletteCommand::GotoLine),
-    ("Navigate: Next Problem", PaletteCommand::NextProblem),
-    ("Navigate: Previous Problem", PaletteCommand::PrevProblem),
-    ("LSP: Restart Language Server", PaletteCommand::RestartLsp),
-    ("Run: Run Current File", PaletteCommand::RunCurrent),
-    ("Run: Debug Current File", PaletteCommand::DebugCurrent),
-    ("Help: Welcome Screen", PaletteCommand::OpenWelcome),
-    ("Help: Quick Switch Scheme", PaletteCommand::OpenScheme),
-    ("File: Settings", PaletteCommand::OpenSettings),
-];
 
 /// Fuzzy match por subsequência: retorna pontuação maior = melhor.
 /// Bônus: início da string, após separador, e caracteres consecutivos.
@@ -284,13 +187,17 @@ fn collect_entries(
     let want_files = matches!(mode, PaletteMode::All | PaletteMode::Files);
 
     if want_actions {
-        for (label, cmd) in COMMANDS {
-            if query.is_empty() || fuzzy_score(query, label).is_some() {
+        for spec in crate::commands::REGISTRY {
+            if !crate::commands::is_available(spec.id) {
+                continue;
+            }
+            let label = spec.palette_label();
+            if query.is_empty() || fuzzy_score(query, &label).is_some() {
                 out.push(Entry {
-                    label: label.to_string(),
-                    detail: "comando".to_string(),
-                    hint: String::new(),
-                    action: PaletteActionKind::Run(*cmd),
+                    label,
+                    detail: "action".to_string(),
+                    hint: crate::commands::shortcut_text(spec.id),
+                    action: PaletteActionKind::Run(spec.id),
                 });
             }
         }
@@ -298,7 +205,7 @@ fn collect_entries(
             if query.is_empty() || fuzzy_score(query, label).is_some() {
                 out.push(Entry {
                     label: label.clone(),
-                    detail: "externo".to_string(),
+                    detail: "external".to_string(),
                     hint: String::new(),
                     action: PaletteActionKind::Plugin(id.clone()),
                 });
@@ -322,7 +229,7 @@ fn collect_entries(
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_default(),
                             detail: rel,
-                            hint: "recente".to_string(),
+                            hint: "recent".to_string(),
                             action: PaletteActionKind::Open(path.clone()),
                         });
                     }

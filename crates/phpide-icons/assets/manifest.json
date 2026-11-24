@@ -1,206 +1,470 @@
 {
-  "set": "phpide-default",
-  "note": "SVGs produzidos para o projeto (UI-ICON-001-02). Uso e redistribuição permitidos pelas licenças do workspace. A aplicação não depende de Icones/Iconify em tempo de execução.",
+  "set": "tabler-icons",
+  "version": "3.2.0",
+  "license": "MIT",
+  "url": "https://tabler.io/icons",
+  "copyright": "Copyright (c) 2020-2024 Pawe\u0142 Kuna",
+  "note": "Outline icons from Tabler Icons 3.2.0, stored under semantic file names. Regenerate with scripts/update-icons.sh.",
   "icons": [
     {
-      "name": "blame",
-      "file": "assets/blame.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "bookmark",
-      "file": "assets/bookmark.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "breakpoint",
-      "file": "assets/breakpoint.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "chevron-down",
-      "file": "assets/chevron-down.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "chevron-right",
-      "file": "assets/chevron-right.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "close",
-      "file": "assets/close.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "coverage",
-      "file": "assets/coverage.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
+      "name": "run",
+      "tabler": "player-play",
+      "file": "assets/run.svg"
     },
     {
       "name": "debug",
-      "file": "assets/debug.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "error",
-      "file": "assets/error.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "eye",
-      "file": "assets/eye.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "file",
-      "file": "assets/file.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "folder",
-      "file": "assets/folder.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "git-branch",
-      "file": "assets/git-branch.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "hint",
-      "file": "assets/hint.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "info",
-      "file": "assets/info.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "pause",
-      "file": "assets/pause.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "project",
-      "file": "assets/project.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "run",
-      "file": "assets/run.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "search",
-      "file": "assets/search.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "settings",
-      "file": "assets/settings.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "split-down",
-      "file": "assets/split-down.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
-    },
-    {
-      "name": "split-right",
-      "file": "assets/split-right.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
+      "tabler": "bug",
+      "file": "assets/debug.svg"
     },
     {
       "name": "stop",
-      "file": "assets/stop.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
+      "tabler": "player-stop",
+      "file": "assets/stop.svg"
     },
     {
-      "name": "switcher",
-      "file": "assets/switcher.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
+      "name": "pause",
+      "tabler": "player-pause",
+      "file": "assets/pause.svg"
+    },
+    {
+      "name": "settings",
+      "tabler": "settings",
+      "file": "assets/settings.svg"
+    },
+    {
+      "name": "close",
+      "tabler": "x",
+      "file": "assets/close.svg"
     },
     {
       "name": "warning",
-      "file": "assets/warning.svg",
-      "origin": "conjunto próprio phpide (traço geométrico 24x24, currentColor)",
-      "author": "phpide contributors",
-      "url": "https://github.com/tavaresgerson/php-ide/tree/master/crates/phpide-icons/assets",
-      "license": "MIT OR Apache-2.0"
+      "tabler": "alert-triangle",
+      "file": "assets/warning.svg"
+    },
+    {
+      "name": "error",
+      "tabler": "circle-x",
+      "file": "assets/error.svg"
+    },
+    {
+      "name": "info",
+      "tabler": "info-circle",
+      "file": "assets/info.svg"
+    },
+    {
+      "name": "project",
+      "tabler": "folders",
+      "file": "assets/project.svg"
+    },
+    {
+      "name": "folder",
+      "tabler": "folder",
+      "file": "assets/folder.svg"
+    },
+    {
+      "name": "file",
+      "tabler": "file",
+      "file": "assets/file.svg"
+    },
+    {
+      "name": "git-branch",
+      "tabler": "git-branch",
+      "file": "assets/git-branch.svg"
+    },
+    {
+      "name": "search",
+      "tabler": "search",
+      "file": "assets/search.svg"
+    },
+    {
+      "name": "bookmark",
+      "tabler": "bookmark",
+      "file": "assets/bookmark.svg"
+    },
+    {
+      "name": "breakpoint",
+      "tabler": "circle-dot",
+      "file": "assets/breakpoint.svg"
+    },
+    {
+      "name": "chevron-right",
+      "tabler": "chevron-right",
+      "file": "assets/chevron-right.svg"
+    },
+    {
+      "name": "chevron-down",
+      "tabler": "chevron-down",
+      "file": "assets/chevron-down.svg"
+    },
+    {
+      "name": "split-right",
+      "tabler": "layout-columns",
+      "file": "assets/split-right.svg"
+    },
+    {
+      "name": "split-down",
+      "tabler": "layout-rows",
+      "file": "assets/split-down.svg"
+    },
+    {
+      "name": "switcher",
+      "tabler": "switch-horizontal",
+      "file": "assets/switcher.svg"
+    },
+    {
+      "name": "eye",
+      "tabler": "eye",
+      "file": "assets/eye.svg"
+    },
+    {
+      "name": "blame",
+      "tabler": "history",
+      "file": "assets/blame.svg"
+    },
+    {
+      "name": "coverage",
+      "tabler": "percentage",
+      "file": "assets/coverage.svg"
+    },
+    {
+      "name": "hint",
+      "tabler": "bulb",
+      "file": "assets/hint.svg"
+    },
+    {
+      "name": "folder-open",
+      "tabler": "folder-open",
+      "file": "assets/folder-open.svg"
+    },
+    {
+      "name": "chevron-up",
+      "tabler": "chevron-up",
+      "file": "assets/chevron-up.svg"
+    },
+    {
+      "name": "chevron-left",
+      "tabler": "chevron-left",
+      "file": "assets/chevron-left.svg"
+    },
+    {
+      "name": "terminal",
+      "tabler": "terminal-2",
+      "file": "assets/terminal.svg"
+    },
+    {
+      "name": "problems",
+      "tabler": "alert-circle",
+      "file": "assets/problems.svg"
+    },
+    {
+      "name": "structure",
+      "tabler": "list-tree",
+      "file": "assets/structure.svg"
+    },
+    {
+      "name": "commit",
+      "tabler": "git-commit",
+      "file": "assets/commit.svg"
+    },
+    {
+      "name": "version-control",
+      "tabler": "git-pull-request",
+      "file": "assets/version-control.svg"
+    },
+    {
+      "name": "services",
+      "tabler": "server",
+      "file": "assets/services.svg"
+    },
+    {
+      "name": "database",
+      "tabler": "database",
+      "file": "assets/database.svg"
+    },
+    {
+      "name": "notifications",
+      "tabler": "bell",
+      "file": "assets/notifications.svg"
+    },
+    {
+      "name": "remote-host",
+      "tabler": "cloud",
+      "file": "assets/remote-host.svg"
+    },
+    {
+      "name": "plus",
+      "tabler": "plus",
+      "file": "assets/plus.svg"
+    },
+    {
+      "name": "minus",
+      "tabler": "minus",
+      "file": "assets/minus.svg"
+    },
+    {
+      "name": "refresh",
+      "tabler": "refresh",
+      "file": "assets/refresh.svg"
+    },
+    {
+      "name": "filter",
+      "tabler": "filter",
+      "file": "assets/filter.svg"
+    },
+    {
+      "name": "more",
+      "tabler": "dots",
+      "file": "assets/more.svg"
+    },
+    {
+      "name": "check",
+      "tabler": "check",
+      "file": "assets/check.svg"
+    },
+    {
+      "name": "copy",
+      "tabler": "copy",
+      "file": "assets/copy.svg"
+    },
+    {
+      "name": "external-link",
+      "tabler": "external-link",
+      "file": "assets/external-link.svg"
+    },
+    {
+      "name": "undo",
+      "tabler": "arrow-back-up",
+      "file": "assets/undo.svg"
+    },
+    {
+      "name": "redo",
+      "tabler": "arrow-forward-up",
+      "file": "assets/redo.svg"
+    },
+    {
+      "name": "rerun",
+      "tabler": "reload",
+      "file": "assets/rerun.svg"
+    },
+    {
+      "name": "resume",
+      "tabler": "player-track-next",
+      "file": "assets/resume.svg"
+    },
+    {
+      "name": "step-over",
+      "tabler": "arrow-bar-right",
+      "file": "assets/step-over.svg"
+    },
+    {
+      "name": "step-into",
+      "tabler": "arrow-bar-down",
+      "file": "assets/step-into.svg"
+    },
+    {
+      "name": "step-out",
+      "tabler": "arrow-bar-up",
+      "file": "assets/step-out.svg"
+    },
+    {
+      "name": "pin",
+      "tabler": "pin",
+      "file": "assets/pin.svg"
+    },
+    {
+      "name": "package",
+      "tabler": "package",
+      "file": "assets/package.svg"
+    },
+    {
+      "name": "test",
+      "tabler": "flask",
+      "file": "assets/test.svg"
+    },
+    {
+      "name": "download",
+      "tabler": "download",
+      "file": "assets/download.svg"
+    },
+    {
+      "name": "build",
+      "tabler": "hammer",
+      "file": "assets/build.svg"
+    },
+    {
+      "name": "sidebar-left",
+      "tabler": "layout-sidebar",
+      "file": "assets/sidebar-left.svg"
+    },
+    {
+      "name": "sidebar-right",
+      "tabler": "layout-sidebar-right",
+      "file": "assets/sidebar-right.svg"
+    },
+    {
+      "name": "panel-bottom",
+      "tabler": "layout-bottombar",
+      "file": "assets/panel-bottom.svg"
+    },
+    {
+      "name": "menu",
+      "tabler": "menu-2",
+      "file": "assets/menu.svg"
+    },
+    {
+      "name": "moon",
+      "tabler": "moon",
+      "file": "assets/moon.svg"
+    },
+    {
+      "name": "sun",
+      "tabler": "sun",
+      "file": "assets/sun.svg"
+    },
+    {
+      "name": "trash",
+      "tabler": "trash",
+      "file": "assets/trash.svg"
+    },
+    {
+      "name": "edit",
+      "tabler": "edit",
+      "file": "assets/edit.svg"
+    },
+    {
+      "name": "save",
+      "tabler": "device-floppy",
+      "file": "assets/save.svg"
+    },
+    {
+      "name": "clock",
+      "tabler": "clock",
+      "file": "assets/clock.svg"
+    },
+    {
+      "name": "success",
+      "tabler": "circle-check",
+      "file": "assets/success.svg"
+    },
+    {
+      "name": "loader",
+      "tabler": "loader-2",
+      "file": "assets/loader.svg"
+    },
+    {
+      "name": "selector",
+      "tabler": "selector",
+      "file": "assets/selector.svg"
+    },
+    {
+      "name": "palette",
+      "tabler": "palette",
+      "file": "assets/palette.svg"
+    },
+    {
+      "name": "keyboard",
+      "tabler": "keyboard",
+      "file": "assets/keyboard.svg"
+    },
+    {
+      "name": "command",
+      "tabler": "command",
+      "file": "assets/command.svg"
+    },
+    {
+      "name": "home",
+      "tabler": "home",
+      "file": "assets/home.svg"
+    },
+    {
+      "name": "file-php",
+      "tabler": "file-type-php",
+      "file": "assets/file-php.svg"
+    },
+    {
+      "name": "file-js",
+      "tabler": "file-type-js",
+      "file": "assets/file-js.svg"
+    },
+    {
+      "name": "file-ts",
+      "tabler": "file-type-ts",
+      "file": "assets/file-ts.svg"
+    },
+    {
+      "name": "file-css",
+      "tabler": "file-type-css",
+      "file": "assets/file-css.svg"
+    },
+    {
+      "name": "file-html",
+      "tabler": "file-type-html",
+      "file": "assets/file-html.svg"
+    },
+    {
+      "name": "file-xml",
+      "tabler": "file-type-xml",
+      "file": "assets/file-xml.svg"
+    },
+    {
+      "name": "file-sql",
+      "tabler": "file-type-sql",
+      "file": "assets/file-sql.svg"
+    },
+    {
+      "name": "file-text",
+      "tabler": "file-text",
+      "file": "assets/file-text.svg"
+    },
+    {
+      "name": "file-code",
+      "tabler": "file-code",
+      "file": "assets/file-code.svg"
+    },
+    {
+      "name": "file-json",
+      "tabler": "braces",
+      "file": "assets/file-json.svg"
+    },
+    {
+      "name": "file-markdown",
+      "tabler": "markdown",
+      "file": "assets/file-markdown.svg"
+    },
+    {
+      "name": "file-config",
+      "tabler": "file-settings",
+      "file": "assets/file-config.svg"
+    },
+    {
+      "name": "file-git",
+      "tabler": "brand-git",
+      "file": "assets/file-git.svg"
+    },
+    {
+      "name": "file-lock",
+      "tabler": "lock",
+      "file": "assets/file-lock.svg"
+    },
+    {
+      "name": "file-docker",
+      "tabler": "brand-docker",
+      "file": "assets/file-docker.svg"
+    },
+    {
+      "name": "file-image",
+      "tabler": "photo",
+      "file": "assets/file-image.svg"
+    },
+    {
+      "name": "file-archive",
+      "tabler": "file-zip",
+      "file": "assets/file-archive.svg"
+    },
+    {
+      "name": "file-svg",
+      "tabler": "file-type-svg",
+      "file": "assets/file-svg.svg"
     }
   ]
 }
