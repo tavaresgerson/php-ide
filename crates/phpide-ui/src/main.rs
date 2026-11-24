@@ -13,6 +13,7 @@ mod app_panels;
 mod app_project;
 mod blame_gutter;
 mod close;
+mod color_scheme;
 mod commands;
 mod completion;
 mod database;
@@ -24,6 +25,7 @@ mod header;
 mod hints;
 mod intelligence;
 mod lens;
+mod notifications;
 mod palette;
 mod plugins;
 mod project_tree;
@@ -36,6 +38,7 @@ mod search;
 mod services;
 mod settings;
 mod settings_dialog;
+mod settings_editor;
 mod statusbar;
 mod switcher;
 mod tabs;
@@ -126,13 +129,25 @@ fn main() -> eframe::Result<()> {
     let mut arg = args.next();
     let files: Vec<PathBuf> = args.map(PathBuf::from).collect();
     let loaded = settings::Settings::load();
-    // Reopen the project that was open at exit (RF-PRJ-11).
-    if arg.is_none()
-        && loaded.reopen_last_project
-        && !loaded.last_project.is_empty()
-        && Path::new(&loaded.last_project).is_dir()
-    {
-        arg = Some(loaded.last_project.clone());
+    // Reopen the projects that were open at exit (RF-PRJ-11): this window
+    // takes the first, each other one gets its own window.
+    if arg.is_none() && loaded.reopen_last_project {
+        let mut projects: Vec<PathBuf> = services::windows::WindowRegistry::new()
+            .session()
+            .into_iter()
+            .filter(|p| p.is_dir())
+            .collect();
+        if projects.is_empty() && Path::new(&loaded.last_project).is_dir() {
+            projects.push(PathBuf::from(&loaded.last_project));
+        }
+        if let Some(first) = projects.first() {
+            arg = Some(first.display().to_string());
+            if let Ok(exe) = std::env::current_exe() {
+                for other in &projects[1..] {
+                    let _ = std::process::Command::new(&exe).arg(other).spawn();
+                }
+            }
+        }
     }
     let root = arg
         .clone()
@@ -174,6 +189,9 @@ fn settings_theme(settings: &settings::Settings) -> design::Theme {
     };
     let mut theme = design::Theme::new(ThemeId::from_name(&settings.theme), density);
     theme.editor_font_size = settings.editor_font_size;
+    theme.editor_font_family = settings.editor_font_family.clone();
+    theme.editor_line_height = settings.editor_line_height;
+    theme.color_changes = std::sync::Arc::new(settings.color_scheme.clone());
     theme.reduced_motion = settings.reduced_motion;
     theme
 }
@@ -189,6 +207,13 @@ struct PhpIdeApp {
     project_open: bool,
     /// Asking how to open a second project (RF-PRJ-08).
     open_prompt: Option<PathBuf>,
+    /// Select In popup (Alt+F1): selected row, when open.
+    select_in: Option<usize>,
+    /// Other PHP IDE windows and the session to reopen (RF-PRJ-10/11).
+    windows: services::windows::WindowRegistry,
+    /// Event Log behind the Notifications tool window (RF-UI-05).
+    event_log: notifications::EventLog,
+    toasts: design::components::Toasts,
     cursor_char: usize,
     palette: PaletteState,
     search: SearchState,
@@ -214,7 +239,7 @@ struct PhpIdeApp {
     pending_outline: Option<(PathBuf, mpsc::Receiver<Value>)>,
     last_outline_key: Option<(PathBuf, u64)>,
     /// Go to Symbol: resultados da última consulta workspace/symbol.
-    symbol_results: Vec<(String, PathBuf, usize, usize)>,
+    symbol_results: Vec<palette::SymbolHit>,
     pending_symbols: Option<mpsc::Receiver<Value>>,
     last_symbol_query: String,
     /// Semantic tokens por (path, revisão) — T-PHP-005-01. Os spans de byte
@@ -301,6 +326,7 @@ impl eframe::App for PhpIdeApp {
     /// LSP (NFR-001: "O encerramento da IDE deve terminar processos-filhos
     /// gerenciados por ela").
     fn on_exit(&mut self) {
+        self.windows.unregister();
         let report = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
         self.exec.stop_if_running();
@@ -416,12 +442,35 @@ impl eframe::App for PhpIdeApp {
             &self.symbol_results,
         ) {
             match action {
-                PaletteAction::Open(path) => self.ws.open_file(&path),
+                PaletteAction::Open(path) => self.open_file_tab(&path, false),
+                PaletteAction::OpenAt(path, line0, col0) => {
+                    self.ws.open_file_at(&path, line0, col0);
+                    self.editors.request_focus();
+                }
+                PaletteAction::Settings(page) => self.settings_dialog.open(page),
                 PaletteAction::Run(cmd) => self.dispatch_command(cmd, ctx),
                 PaletteAction::Plugin(id) => self.run_plugin(&id),
             }
         }
+        match self.windows.poll() {
+            Some(services::windows::WindowCommand::Focus) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            Some(services::windows::WindowCommand::Close) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            None => {}
+        }
+        // Keep reading the window mailbox while idle.
+        ctx.request_repaint_after(Duration::from_millis(600));
+        self.event_log.observe(&self.ws.message, &mut self.toasts);
+        if self.tw.is_visible(ToolWindow::Notifications) {
+            self.event_log.mark_read();
+        }
+        self.toasts.show(ctx);
         self.completion_popup(ctx);
+        project_tree::select_in_popup(self, ctx);
         welcome::poll_picker(self, ctx);
         welcome::open_prompt_dialog(self, ctx);
         scheme::scheme_popup(self, ctx);

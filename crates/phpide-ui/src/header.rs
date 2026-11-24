@@ -5,55 +5,105 @@
 use eframe::egui;
 
 use crate::commands::{self, is_available, Category, Command, REGISTRY};
+use crate::design::components::{IconButton, ToolbarWidget};
 use crate::toolwindows::ToolWindow;
 use crate::PhpIdeApp;
+use phpide_icons::IconId;
 
-/// Desenha o header unificado. Deve ser chamado antes dos painéis laterais.
+/// Draws the window header. Must run before the side panels.
 pub fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    egui::Panel::top("header").show(ui, |ui| {
-        crate::design::components::ghost_controls(ui);
-        ui.horizontal(|ui| {
-            main_menu(app, ui);
-            ui.separator();
-            project_widget(app, ui);
-            vcs_widget(app, ui);
-            run_widget(app, ui);
-
-            // À direita: estado do LSP + contagem de problemas (visão global).
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let errors = app
-                    .ws
-                    .diagnostics
-                    .iter()
-                    .filter(|d| d.severity == phpide_core::Severity::Error)
-                    .count();
-                let warnings = app
-                    .ws
-                    .diagnostics
-                    .iter()
-                    .filter(|d| d.severity == phpide_core::Severity::Warning)
-                    .count();
-                let diag_label = if errors + warnings == 0 {
-                    "0 problems".to_string()
-                } else {
-                    format!("E {errors} · W {warnings}")
-                };
-                if ui
-                    .selectable_label(app.tw.is_visible(ToolWindow::Problems), diag_label)
-                    .on_hover_text("Problems (Alt+6)")
-                    .clicked()
-                {
-                    app.tw.toggle(ToolWindow::Problems);
-                }
-                ui.label(egui::RichText::new(app.lsp_label()).weak().small());
+    let height = crate::design::theme::current(ui.ctx())
+        .metrics
+        .window_header;
+    egui::Panel::top("header")
+        .exact_size(height)
+        .show(ui, |ui| {
+            crate::design::components::ghost_controls(ui);
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = crate::design::tokens::space::S2;
+                main_menu(app, ui);
+                project_widget(app, ui);
+                vcs_widget(app, ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    right_actions(app, ui);
+                    run_widget(app, ui);
+                });
             });
         });
-    });
 }
 
-/// Main menu — modo hamburger (REQUISITOS 1.1: *Hamburger* `Alt+\``).
+/// Search, Settings, Notifications and the problems summary.
+fn right_actions(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    if IconButton::new(IconId::Settings, "Settings")
+        .shortcut(commands::shortcut_text(Command::OpenSettings))
+        .show(ui)
+        .clicked()
+    {
+        let ctx = ui.ctx().clone();
+        app.dispatch_command(Command::OpenSettings, &ctx);
+    }
+    if IconButton::new(IconId::Search, "Search Everywhere")
+        .shortcut("Double Shift")
+        .show(ui)
+        .clicked()
+    {
+        let ctx = ui.ctx().clone();
+        app.dispatch_command(Command::SearchEverywhere, &ctx);
+    }
+    let unread = app.event_log.unread();
+    let palette = crate::design::theme::current(ui.ctx()).palette;
+    let mut bell = IconButton::new(
+        IconId::Notifications,
+        if unread == 0 {
+            "Notifications".to_string()
+        } else {
+            format!("Notifications ({unread} new)")
+        },
+    )
+    .selected(app.tw.is_visible(ToolWindow::Notifications));
+    if unread > 0 {
+        bell = bell.tint(palette.warning);
+    }
+    if bell.show(ui).clicked() {
+        app.tw.toggle(ToolWindow::Notifications);
+    }
+    let errors = app
+        .ws
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == phpide_core::Severity::Error)
+        .count();
+    let warnings = app
+        .ws
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == phpide_core::Severity::Warning)
+        .count();
+    if errors + warnings > 0 {
+        let (icon, tint) = if errors > 0 {
+            (IconId::Error, palette.error)
+        } else {
+            (IconId::Warning, palette.warning)
+        };
+        if ToolbarWidget::new(format!("{}", errors + warnings))
+            .icon(icon)
+            .icon_tint(tint)
+            .chevron(false)
+            .tooltip(format!(
+                "{errors} errors, {warnings} warnings — Problems (Alt+6)"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            app.tw.toggle(ToolWindow::Problems);
+        }
+    }
+}
+
+/// Main menu — hamburger mode (REQUISITOS 1.1).
 fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.menu_button("Menu", |ui| {
+    let response = IconButton::new(IconId::Menu, "Main menu").show(ui);
+    egui::Popup::menu(&response).show(|ui| {
         let mut chosen = None;
         for category in Category::ALL {
             ui.menu_button(category.label(), |ui| {
@@ -75,15 +125,43 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         recent_projects_menu(app, ui);
                     }
                 }
+                if category == Category::Window {
+                    windows_menu(app, ui);
+                }
             });
         }
         if let Some(command) = chosen {
             let ctx = ui.ctx().clone();
             app.dispatch_command(command, &ctx);
         }
-    })
-    .response
-    .on_hover_text("Main menu");
+    });
+}
+
+/// Window menu: every open project window; this one is checked (RF-PRJ-10).
+fn windows_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let windows = app.windows.all_windows();
+    if windows.is_empty() {
+        return;
+    }
+    ui.separator();
+    let me = std::process::id();
+    for window in windows {
+        let name = window
+            .root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| window.root.display().to_string());
+        let button = egui::Button::new(name)
+            .selected(window.pid == me)
+            .shortcut_text(window.root.display().to_string());
+        if ui.add(button).clicked() {
+            if window.pid != me {
+                app.windows
+                    .send(window.pid, crate::services::windows::WindowCommand::Focus);
+            }
+            ui.close();
+        }
+    }
 }
 
 /// File › Recent Projects (RF-PRJ-03).
@@ -122,7 +200,12 @@ fn project_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| app.ws.root.display().to_string());
-    ui.menu_button(format!("Project: {name}"), |ui| {
+    let response = ToolbarWidget::new(name)
+        .icon(IconId::Project)
+        .tooltip(app.ws.root.display().to_string())
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(240.0);
         ui.label(
             egui::RichText::new(app.ws.root.display().to_string())
                 .weak()
@@ -152,9 +235,7 @@ fn project_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             app.welcome_open = true;
             ui.close();
         }
-    })
-    .response
-    .on_hover_text("Project widget");
+    });
 }
 
 /// VCS widget: current branch with a menu of Git actions.
@@ -163,41 +244,98 @@ fn vcs_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         return;
     }
     let branch = app.git_branch();
-    ui.menu_button(format!("Git: {branch}"), |ui| {
-        ui.label(egui::RichText::new("Git").weak().small());
+    let response = ToolbarWidget::new(branch)
+        .icon(IconId::GitBranch)
+        .tooltip("Git branch")
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(220.0);
         if ui.button("Refresh Branch").clicked() {
             app.git_refresh();
             ui.close();
         }
-        if ui.button("Branches / Log...\tAlt+9").clicked() {
+        let log = egui::Button::new("Branches / Log…").shortcut_text("Alt+9");
+        if ui.add(log).clicked() {
             app.tw.set_visible(ToolWindow::VersionControl, true);
             ui.close();
         }
-        if ui.button("Commit...\tAlt+0").clicked() {
+        let commit = egui::Button::new("Commit…").shortcut_text("Alt+0");
+        if ui.add(commit).clicked() {
             app.tw.set_visible(ToolWindow::Commit, true);
             ui.close();
         }
-    })
-    .response
-    .on_hover_text("VCS widget (Git)");
+    });
 }
 
-/// Widget Run: ações de execução/depuração do arquivo atual.
+/// Run widget: target selector plus Run, Debug and Stop buttons.
 fn run_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.menu_button("▶ Run", |ui| {
-        if ui.button("Run Current File\tShift+F10").clicked() {
+    let palette = crate::design::theme::current(ui.ctx()).palette;
+    let running = app.exec.running
+        || app.rd.debug_session.is_some()
+        || app.rd.manager.sessions().iter().any(|s| s.is_running());
+    // Right-to-left: the last button drawn is the leftmost.
+    if IconButton::new(IconId::Stop, "Stop")
+        .shortcut("Ctrl+F2")
+        .enabled(running)
+        .tint(palette.error)
+        .show(ui)
+        .clicked()
+    {
+        app.stop_execution();
+    }
+    if IconButton::new(IconId::Debug, "Debug")
+        .shortcut("Shift+F9")
+        .tint(palette.success)
+        .show(ui)
+        .clicked()
+    {
+        app.debug_run();
+    }
+    if IconButton::new(IconId::Run, "Run")
+        .shortcut("Shift+F10")
+        .tint(palette.success)
+        .show(ui)
+        .clicked()
+    {
+        app.run_current_php();
+    }
+    let target = app
+        .ws
+        .active_buffer()
+        .and_then(|b| b.path.as_ref())
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Current File".to_string());
+    let response = ToolbarWidget::new(target).tooltip("Run target").show(ui);
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(220.0);
+        ui.label(egui::RichText::new("Current file").weak().small());
+        if ui
+            .add(egui::Button::new("Run Current File").shortcut_text("Shift+F10"))
+            .clicked()
+        {
             app.run_current_php();
             ui.close();
         }
-        if ui.button("Debug Current File\tShift+F9").clicked() {
+        if ui
+            .add(egui::Button::new("Debug Current File").shortcut_text("Shift+F9"))
+            .clicked()
+        {
             app.debug_run();
             ui.close();
         }
-        if ui.button("Stop\tCtrl+F2").clicked() {
-            app.stop_execution();
-            ui.close();
+        if !app.rd.configs.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new("Configurations").weak().small());
+            let names: Vec<String> = app.rd.configs.iter().map(|c| c.name.clone()).collect();
+            for (index, name) in names.into_iter().enumerate() {
+                if ui.button(format!("Run '{name}'")).clicked() {
+                    app.rd.selected_config = index;
+                    app.tw.set_visible(ToolWindow::Run, true);
+                    crate::run_panels::run_selected_config(app);
+                    ui.close();
+                }
+            }
         }
-    })
-    .response
-    .on_hover_text("Run widget");
+    });
 }

@@ -58,7 +58,10 @@ Still synchronous on the UI thread: opening and saving a file, reading
 | `app_panels.rs` | Tool window panels and modal dialogs |
 | `app_editor.rs` | Editor panes: decorations from app state, breadcrumbs, split layout, editor output (breakpoints, Ctrl+click, completion triggers) |
 | `editor_area.rs` | Per-buffer `Syntax` and `EditorView`, the split pane, focus |
-| `services/` | Background I/O owners (`git`, `files`) |
+| `services/` | Background I/O and OS owners: `git` (status, branch, remote URL), `files` (tree, index, attached roots), `file_ops`, `desktop` (file manager, terminal), `windows` (registry of project windows and the session to reopen), `system_fonts` (monospaced families from fontconfig) |
+| `color_scheme.rs`, `settings_editor.rs` | Color scheme overrides (theme → Language Defaults → language) and the Color Scheme / Font settings pages |
+| `notifications.rs` | Event Log fed by `ws.message`; errors and warnings become toasts |
+| `toolwindows.rs` | Tool window registry, stripes and `dock()` (left/right/bottom panel or floating window per tool window) |
 | `design/` | Design system: `tokens.rs` (the only place with color literals), `theme.rs` (Dark/Light/High Contrast, density, applied to `egui::Style`; `design::current(ctx)` returns the active theme), `fonts.rs`, `components/`, `gallery.rs`, `snapshot.rs` (CPU renderer for snapshot tests) |
 | `project_tree.rs`, `header.rs`, `tabs.rs`, `statusbar.rs`, `welcome.rs`, … | Individual shell surfaces |
 | `ui_tests.rs`, `gate_*.rs` | Interaction tests (`egui_kittest`) and gates |

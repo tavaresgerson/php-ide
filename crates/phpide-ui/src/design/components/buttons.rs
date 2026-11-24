@@ -302,3 +302,150 @@ impl IconButton {
         tooltip(response, &self.tooltip, self.shortcut.as_deref())
     }
 }
+
+/// Header widget (New UI): icon, label and a dropdown chevron, quiet until
+/// hovered. Used by the Project, VCS and Run widgets of the window header.
+pub struct ToolbarWidget {
+    icon: Option<IconId>,
+    icon_tint: Option<Color32>,
+    text: String,
+    detail: Option<String>,
+    chevron: bool,
+    tooltip: Option<String>,
+    forced: Option<State>,
+}
+
+impl ToolbarWidget {
+    pub fn new(text: impl Into<String>) -> Self {
+        ToolbarWidget {
+            icon: None,
+            icon_tint: None,
+            text: text.into(),
+            detail: None,
+            chevron: true,
+            tooltip: None,
+            forced: None,
+        }
+    }
+
+    pub fn icon(mut self, icon: IconId) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn icon_tint(mut self, color: Color32) -> Self {
+        self.icon_tint = Some(color);
+        self
+    }
+
+    /// Secondary text after the label (for example the run target).
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn chevron(mut self, chevron: bool) -> Self {
+        self.chevron = chevron;
+        self
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub fn force(mut self, state: State) -> Self {
+        self.forced = Some(state);
+        self
+    }
+
+    pub fn show(self, ui: &mut egui::Ui) -> Response {
+        let theme = theme(ui);
+        let p = &theme.palette;
+        let height = theme.metrics.icon_button;
+        let font = super::label_font();
+        let text = galley(ui, self.text.clone(), font, p.text_primary);
+        let detail = self
+            .detail
+            .as_ref()
+            .map(|d| galley(ui, d.clone(), body_font(), p.text_secondary));
+        let icon_side = theme.metrics.icon;
+        let mut width = 2.0 * space::S3 + text.size().x;
+        if self.icon.is_some() {
+            width += icon_side + space::S2;
+        }
+        if let Some(detail) = &detail {
+            width += space::S2 + detail.size().x;
+        }
+        if self.chevron {
+            width += space::S1 + 12.0;
+        }
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+        let label = match &self.detail {
+            Some(detail) => format!("{} {detail}", self.text),
+            None => self.text.clone(),
+        };
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        let state = state_of(&response, true, self.forced);
+        if ui.is_rect_visible(rect) {
+            let fill = match state {
+                State::Pressed => p.bg_pressed,
+                State::Hovered => p.bg_hover,
+                _ => Color32::TRANSPARENT,
+            };
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(radius::CONTROL), fill);
+            let mut x = rect.left() + space::S3;
+            let cy = rect.center().y;
+            if let Some(icon) = self.icon {
+                let icon_rect = egui::Rect::from_center_size(
+                    egui::pos2(x + icon_side / 2.0, cy),
+                    egui::vec2(icon_side, icon_side),
+                );
+                paint_icon(
+                    ui.painter(),
+                    icon_rect,
+                    icon,
+                    self.icon_tint.unwrap_or(p.text_secondary),
+                );
+                x += icon_side + space::S2;
+            }
+            let text_width = text.size().x;
+            ui.painter().galley(
+                egui::pos2(x, cy - text.size().y / 2.0),
+                text,
+                p.text_primary,
+            );
+            x += text_width;
+            if let Some(detail) = detail {
+                x += space::S2;
+                let detail_width = detail.size().x;
+                ui.painter().galley(
+                    egui::pos2(x, cy - detail.size().y / 2.0),
+                    detail,
+                    p.text_secondary,
+                );
+                x += detail_width;
+            }
+            if self.chevron {
+                let chevron_rect = egui::Rect::from_center_size(
+                    egui::pos2(x + space::S1 + 6.0, cy),
+                    egui::vec2(12.0, 12.0),
+                );
+                paint_icon(
+                    ui.painter(),
+                    chevron_rect,
+                    IconId::ChevronDown,
+                    p.text_secondary,
+                );
+            }
+            if state == State::Focused {
+                focus_ring(ui.painter(), rect, radius::CONTROL, p);
+            }
+        }
+        match self.tooltip {
+            Some(tip) => tooltip(response, &tip, None),
+            None => response,
+        }
+    }
+}

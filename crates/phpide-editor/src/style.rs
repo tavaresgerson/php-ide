@@ -73,6 +73,7 @@ impl EditorStyle {
         for color in &self.syntax.colors {
             color.to_array().hash(&mut hasher);
         }
+        format!("{:?}{:?}", self.syntax.attributes, self.syntax.bold_font).hash(&mut hasher);
         self.colors.inlay_background.to_array().hash(&mut hasher);
         self.colors.inlay_text.to_array().hash(&mut hasher);
         hasher.finish()

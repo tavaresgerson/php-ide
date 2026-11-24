@@ -12,6 +12,20 @@ const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
+/// `#RRGGBB` → color (user colors in Settings › Color Scheme).
+pub fn parse_hex_color(text: &str) -> Option<Color32> {
+    let digits = text.trim().trim_start_matches('#');
+    if digits.len() != 6 {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok().map(hex)
+}
+
+/// Color → `#RRGGBB`.
+pub fn hex_color_string(color: Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b())
+}
+
 const fn hexa(rgb: u32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied_const((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, alpha)
 }

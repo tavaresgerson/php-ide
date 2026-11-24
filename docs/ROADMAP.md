@@ -171,7 +171,7 @@ keystroke costs under 16 ms (measured with `editor_pipeline`); interaction
 tests cover typing, grouped undo, multi-cursor, folding and split.
 ✔ Measured below ("Phase 3 results").
 
-### Phase 4 — Polished shell (M) — in progress
+### Phase 4 — Polished shell (M) — done (2026-11-24)
 
 Scope and status per requirement in [REQUIREMENTS.md](REQUIREMENTS.md)
 (PhpStorm reference list, MVP items first).
@@ -202,10 +202,29 @@ Done (2026-11-24):
       Ctrl+E twice for edited files; editor shortcuts only act when the
       editor (or nothing else) has focus.
 
-Still to do: switching between project windows (RF-PRJ-10), attach project,
-Color Scheme page with per-language overrides (RF-HL-10/11), clickable
-breadcrumbs, Search Everywhere scope tabs, window header and status bar
-polish, Settings rebuilt with the components, notifications as toasts.
+- [x] Project windows: Window menu, Ctrl+Alt+] / [ between windows, Close
+      Other Projects, every window reopened at startup (one process each,
+      registry under `$XDG_RUNTIME_DIR/phpide/windows`); opening a project
+      that is already open focuses its window. Attach a project as an
+      extra root of the Project view and Go to File.
+- [x] Search Everywhere with All / Classes / Files / Symbols / Actions tabs,
+      Settings pages as results, recent files first; Go to Class (Ctrl+N).
+- [x] Project view: dependency nodes for `vendor/` and `node_modules/`, New
+      popup filtered by typing, Copy Reference (`path:line`) and repository
+      URL, Select In popup (Project View, Files, Terminal).
+- [x] Color Scheme page: Language Defaults inherited per language;
+      foreground, background, bold/italic, underline/strikethrough per
+      element; live preview. Font page: any monospaced system font, line
+      height.
+- [x] Tool windows move to left, right, bottom or float; tabs in several
+      rows; pinned tabs first; clickable navigation bar.
+- [x] New UI header (main menu, Project, Git and Run widgets, Search,
+      Notifications, Settings, problems), quiet status bar, Event Log with
+      toasts for errors and warnings, Settings rebuilt with the components
+      and searchable pages.
+
+Left for later phases: attached projects get no language server of their
+own; font ligatures (the text engine does not shape them).
 
 **Done when:** every MVP item of REQUIREMENTS.md is ✅; "after" screenshots
 approved in all three themes; open project → edit → save → close works with

@@ -121,6 +121,7 @@ pub struct StatusItem {
     icon: Option<IconId>,
     tone: Tone,
     tooltip: Option<String>,
+    max_width: Option<f32>,
     forced: Option<State>,
 }
 
@@ -131,12 +132,19 @@ impl StatusItem {
             icon: None,
             tone: Tone::Neutral,
             tooltip: None,
+            max_width: None,
             forced: None,
         }
     }
 
     pub fn icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Truncates the text with an ellipsis beyond this width.
+    pub fn max_width(mut self, width: f32) -> Self {
+        self.max_width = Some(width);
         self
     }
 
@@ -161,16 +169,26 @@ impl StatusItem {
         let m = theme.metrics;
         let text_color = p.text_secondary;
         let icon_color = self.tone.color(&p);
-        let text = galley(ui, self.text.clone(), body_font(), text_color);
-        let icon_space = if self.icon.is_some() {
-            14.0 + space::S2
-        } else {
-            0.0
+        let text = match self.max_width {
+            Some(max) => {
+                super::galley_truncated(ui, self.text.clone(), body_font(), text_color, max)
+            }
+            None => galley(ui, self.text.clone(), body_font(), text_color),
+        };
+        let icon_space = match (self.icon.is_some(), self.text.is_empty()) {
+            (false, _) => 0.0,
+            (true, true) => 14.0,
+            (true, false) => 14.0 + space::S2,
         };
         let width = icon_space + text.size().x + 2.0 * space::S3;
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, m.status_bar - 4.0), Sense::click());
-        let label = self.text.clone();
+        // Icon-only items are announced by their tooltip.
+        let label = if self.text.is_empty() {
+            self.tooltip.clone().unwrap_or_default()
+        } else {
+            self.text.clone()
+        };
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
         let state = super::state_of(&response, true, self.forced);
         if ui.is_rect_visible(rect) {

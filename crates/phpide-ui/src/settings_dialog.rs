@@ -16,6 +16,7 @@ pub enum SettingsPage {
     PhpLanguageLevel,
     SystemSettings,
     EditorTabs,
+    ColorScheme,
     FileTypes,
     Named(&'static str),
 }
@@ -30,18 +31,20 @@ impl SettingsPage {
             SettingsPage::PhpLanguageLevel => "Language Level",
             SettingsPage::SystemSettings => "System Settings",
             SettingsPage::EditorTabs => "General | Editor Tabs",
+            SettingsPage::ColorScheme => "Color Scheme",
             SettingsPage::FileTypes => "File Types",
             SettingsPage::Named(label) => label,
         }
     }
 }
 
-#[derive(Debug)]
 pub struct SettingsDialogState {
     pub open: bool,
     pub page: SettingsPage,
     query: String,
     just_opened: bool,
+    /// Color Scheme and Font pages.
+    pub editor_pages: crate::settings_editor::EditorPagesState,
 }
 
 impl Default for SettingsDialogState {
@@ -51,6 +54,7 @@ impl Default for SettingsDialogState {
             page: SettingsPage::Appearance,
             query: String::new(),
             just_opened: false,
+            editor_pages: Default::default(),
         }
     }
 }
@@ -63,195 +67,209 @@ impl SettingsDialogState {
     }
 }
 
-const SECTIONS: &[(&str, &[&str])] = &[
-    (
-        "Appearance & Behavior",
-        &[
-            "Appearance",
-            "Menus and Toolbars",
-            "System Settings",
-            "File Colors",
-            "Scopes",
-            "Notifications",
-            "Quick Lists",
-            "Path Variables",
-        ],
-    ),
-    ("Keymap", &[]),
-    ("Plugins", &[]),
-    (
-        "Editor",
-        &[
-            "General | Appearance",
-            "General | Breadcrumbs",
-            "General | Code Completion",
-            "General | Editor Tabs",
-            "General | Sticky Lines",
-            "General | Smart Keys",
-            "General | Postfix Completion",
-            "General | Auto Import",
-            "Code Style | PHP",
-            "Code Style | JavaScript",
-            "Code Style | CSS",
-            "Code Style | HTML",
-            "Code Style | SQL",
-            "Code Style | HTTP Request",
-            "Inspections",
-            "Color Scheme",
-            "Font",
-            "Inlay Hints",
-            "File Types",
-            "Code Editing",
-            "Live Templates",
-        ],
-    ),
-    (
-        "PHP",
-        &[
-            "Language Level",
-            "CLI Interpreter",
-            "Composer",
-            "CLI Interpreters",
-            "Debug",
-            "Test Frameworks",
-            "Quality Tools",
-            "Frameworks | Symfony",
-            "Frameworks | Laravel",
-            "Frameworks | WordPress",
-            "Frameworks | Drupal",
-            "Frameworks | Joomla",
-            "Blade",
-            "Servers",
-            "Path Mappings",
-        ],
-    ),
-    (
-        "Languages & Frameworks",
-        &["JavaScript", "TypeScript", "Node.js", "CSS", "SQL", "Twig"],
-    ),
-    (
-        "Version Control",
-        &[
-            "Git",
-            "GitHub",
-            "GitLab",
-            "Mercurial",
-            "Subversion",
-            "Changelists",
-            "Commit",
-            "Confirmation",
-        ],
-    ),
-    (
-        "Build, Execution, Deployment",
-        &[
-            "Deployment",
-            "Debugger",
-            "Coverage",
-            "Docker",
-            "Vagrant",
-            "WSL",
-        ],
-    ),
-    (
-        "Tools",
-        &[
-            "Terminal",
-            "Web Browsers and Preview",
-            "Actions on Save",
-            "File Watchers",
-            "SSH Configurations",
-            "Tasks",
-            "HTTP Client",
-            "Database",
-        ],
-    ),
-    ("Project Structure", &["Project"]),
-    ("Advanced Settings", &[]),
+/// A page of the Settings tree.
+pub struct PageSpec {
+    pub page: SettingsPage,
+    pub section: &'static str,
+    pub label: &'static str,
+    /// Words the search also matches (RF-SEL-01: settings are searchable).
+    pub keywords: &'static str,
+}
+
+/// Every page with real settings, in tree order. Pages of frozen features
+/// only exist with the `experimental` feature.
+pub const PAGES: &[PageSpec] = &[
+    PageSpec {
+        page: SettingsPage::Appearance,
+        section: "Appearance & Behavior",
+        label: "Appearance",
+        keywords: "theme dark light high contrast compact density motion navigation bar",
+    },
+    PageSpec {
+        page: SettingsPage::SystemSettings,
+        section: "Appearance & Behavior",
+        label: "System Settings",
+        keywords: "project reopen startup new window current window ask open",
+    },
+    PageSpec {
+        page: SettingsPage::Keymap,
+        section: "Keymap",
+        label: "Keymap",
+        keywords: "shortcuts keys bindings",
+    },
+    PageSpec {
+        page: SettingsPage::EditorAppearance,
+        section: "Editor",
+        label: "Appearance",
+        keywords: "sticky lines inlay hints column selection zoom wheel",
+    },
+    PageSpec {
+        page: SettingsPage::EditorTabs,
+        section: "Editor",
+        label: "Editor Tabs",
+        keywords: "tabs limit closing policy open at end pinned rows",
+    },
+    PageSpec {
+        page: SettingsPage::ColorScheme,
+        section: "Editor",
+        label: "Color Scheme",
+        keywords: "colors syntax highlighting keyword string comment bold italic background language defaults",
+    },
+    PageSpec {
+        page: SettingsPage::EditorFont,
+        section: "Editor",
+        label: "Font",
+        keywords: "font family size line height ligatures zoom monospace",
+    },
+    PageSpec {
+        page: SettingsPage::FileTypes,
+        section: "Editor",
+        label: "File Types",
+        keywords: "file types patterns extensions associations override",
+    },
+    PageSpec {
+        page: SettingsPage::PhpLanguageLevel,
+        section: "PHP",
+        label: "Language Level",
+        keywords: "php version language level composer",
+    },
 ];
 
-fn page_for(label: &'static str) -> SettingsPage {
-    match label {
-        "Appearance" => SettingsPage::Appearance,
-        "Keymap" => SettingsPage::Keymap,
-        "General | Appearance" => SettingsPage::EditorAppearance,
-        "Font" => SettingsPage::EditorFont,
-        "Language Level" => SettingsPage::PhpLanguageLevel,
-        "System Settings" => SettingsPage::SystemSettings,
-        "General | Editor Tabs" => SettingsPage::EditorTabs,
-        "File Types" => SettingsPage::FileTypes,
-        other => SettingsPage::Named(other),
-    }
+/// Frozen pages, listed with the `experimental` feature.
+const EXPERIMENTAL_PAGES: &[PageSpec] = &[PageSpec {
+    page: SettingsPage::Named("Deployment"),
+    section: "Build, Execution, Deployment",
+    label: "Deployment",
+    keywords: "deployment server sftp ftp",
+}];
+
+fn pages() -> impl Iterator<Item = &'static PageSpec> {
+    PAGES.iter().chain(
+        EXPERIMENTAL_PAGES
+            .iter()
+            .filter(|_| crate::scope::EXPERIMENTAL),
+    )
+}
+
+fn spec_of(page: SettingsPage) -> Option<&'static PageSpec> {
+    pages().find(|spec| spec.page == page)
+}
+
+/// Page whose label (or `Section | Label`) is `label`.
+pub fn page_named(label: &str) -> Option<SettingsPage> {
+    pages()
+        .find(|spec| {
+            spec.label.eq_ignore_ascii_case(label)
+                || format!("{} | {}", spec.section, spec.label).eq_ignore_ascii_case(label)
+        })
+        .map(|spec| spec.page)
+}
+
+/// Pages matching the search: label, section or keywords.
+pub fn search(query: &str) -> Vec<&'static PageSpec> {
+    let query = query.trim().to_lowercase();
+    pages()
+        .filter(|spec| {
+            query.is_empty()
+                || query.split_whitespace().all(|word| {
+                    spec.label.to_lowercase().contains(word)
+                        || spec.section.to_lowercase().contains(word)
+                        || spec.keywords.contains(word)
+                })
+        })
+        .collect()
 }
 
 pub fn show(app: &mut PhpIdeApp, ctx: &egui::Context) {
+    use crate::design::components::{Dialog, IconButton, TextInput, TreeRow};
     if !app.settings_dialog.open {
         return;
     }
     let mut close = false;
-    egui::Window::new("Settings")
-        .collapsible(false)
-        .resizable(true)
-        .default_size([920.0, 610.0])
-        .min_size([680.0, 420.0])
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+    let screen = ctx.content_rect();
+    let size = egui::vec2(
+        (screen.width() - 80.0).clamp(640.0, 1060.0),
+        (screen.height() - 80.0).clamp(420.0, 700.0),
+    );
+    let theme = crate::design::current(ctx);
+    let p = theme.palette;
+    egui::Modal::new(egui::Id::new("settings-dialog"))
+        .backdrop_color(p.shadow)
+        .frame(egui::Frame::NONE)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Settings");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("X").on_hover_text("Close (Escape)").clicked() {
-                        close = true;
-                    }
+            Dialog::frame(ui).show(ui, |ui| {
+                ui.set_width(size.x);
+                ui.set_height(size.y);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Settings")
+                            .size(crate::design::tokens::typography::TITLE)
+                            .color(p.text_primary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if IconButton::new(phpide_icons::IconId::Close, "Close")
+                            .shortcut("Esc")
+                            .show(ui)
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
                 });
-            });
-            ui.separator();
-            ui.columns(2, |columns| {
-                columns[0].set_max_width(285.0);
-                let search = egui::TextEdit::singleline(&mut app.settings_dialog.query)
-                    .hint_text("Search settings")
-                    .desired_width(265.0)
-                    .show(&mut columns[0]);
-                if app.settings_dialog.just_opened {
-                    search.response.request_focus();
-                    app.settings_dialog.just_opened = false;
-                }
-                columns[0].separator();
-                egui::ScrollArea::vertical().show(&mut columns[0], |ui| {
-                    let query = app.settings_dialog.query.to_lowercase();
-                    for (section, children) in SECTIONS {
-                        let section_match =
-                            query.is_empty() || section.to_lowercase().contains(&query);
-                        if children.is_empty() {
-                            if section_match {
-                                let page = page_for(section);
-                                ui.selectable_value(&mut app.settings_dialog.page, page, *section);
-                            }
-                            continue;
+                ui.add_space(8.0);
+                ui.horizontal_top(|ui| {
+                    // Navigation: search and the page tree.
+                    ui.vertical(|ui| {
+                        ui.set_width(230.0);
+                        let field = TextInput::search(&mut app.settings_dialog.query)
+                            .hint("Search settings")
+                            .id_salt("settings-search")
+                            .show(ui);
+                        if app.settings_dialog.just_opened {
+                            field.request_focus();
+                            app.settings_dialog.just_opened = false;
                         }
-                        let visible_children: Vec<_> = children
-                            .iter()
-                            .filter(|child| section_match || child.to_lowercase().contains(&query))
-                            .collect();
-                        if visible_children.is_empty() {
-                            continue;
-                        }
-                        egui::CollapsingHeader::new(*section)
-                            .default_open(
-                                section_match && !query.is_empty()
-                                    || app.settings_dialog.page.label() == *section,
-                            )
+                        ui.add_space(6.0);
+                        let found = search(&app.settings_dialog.query);
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings-nav")
+                            .max_height(size.y - 90.0)
                             .show(ui, |ui| {
-                                for child in visible_children {
-                                    let page = page_for(child);
-                                    let label = child.rsplit(" | ").next().unwrap_or(child);
-                                    ui.selectable_value(&mut app.settings_dialog.page, page, label);
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                let mut last_section = "";
+                                for spec in &found {
+                                    let single = spec.section == spec.label;
+                                    if spec.section != last_section && !single {
+                                        TreeRow::new(spec.section).expanded(Some(true)).show(ui);
+                                    }
+                                    last_section = spec.section;
+                                    let row = TreeRow::new(spec.label)
+                                        .depth(usize::from(!single))
+                                        .selected(app.settings_dialog.page == spec.page)
+                                        .show(ui);
+                                    if row.response.clicked() {
+                                        app.settings_dialog.page = spec.page;
+                                    }
+                                }
+                                if found.is_empty() {
+                                    ui.weak("Nothing found.");
                                 }
                             });
-                    }
-                });
-                columns[1].separator();
-                egui::ScrollArea::vertical().show(&mut columns[1], |ui| {
-                    show_page(app, ui);
+                        // Enter opens the first match.
+                        if field.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if let Some(first) = found.first() {
+                                app.settings_dialog.page = first.page;
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings-page")
+                            .max_height(size.y - 50.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| show_page(app, ui));
+                    });
                 });
             });
         });
@@ -266,28 +284,25 @@ pub fn show(app: &mut PhpIdeApp, ctx: &egui::Context) {
 
 fn show_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let page = app.settings_dialog.page;
-    ui.heading(page.label().rsplit(" | ").next().unwrap_or(page.label()));
+    let (section, label) = spec_of(page).map_or(("", page.label()), |s| (s.section, s.label));
     ui.label(
-        egui::RichText::new(match page {
-            SettingsPage::EditorAppearance => "Editor | General | Appearance",
-            SettingsPage::EditorFont => "Editor | Font",
-            SettingsPage::PhpLanguageLevel => "PHP | Language Level",
-            SettingsPage::SystemSettings => "Appearance & Behavior | System Settings",
-            SettingsPage::EditorTabs => "Editor | General | Editor Tabs",
-            SettingsPage::FileTypes => "Editor | File Types",
-            _ => page.label(),
-        })
-        .weak(),
+        egui::RichText::new(label)
+            .size(crate::design::tokens::typography::TITLE)
+            .strong(),
     );
+    if !section.is_empty() && section != label {
+        ui.weak(format!("{section} › {label}"));
+    }
     ui.separator();
     match page {
         SettingsPage::Appearance => appearance_page(app, ui),
         SettingsPage::Keymap => keymap_page(app, ui),
         SettingsPage::EditorAppearance => editor_appearance_page(app, ui),
-        SettingsPage::EditorFont => editor_font_page(app, ui),
+        SettingsPage::EditorFont => crate::settings_editor::font_page(app, ui),
         SettingsPage::PhpLanguageLevel => php_page(app, ui),
         SettingsPage::SystemSettings => system_page(app, ui),
         SettingsPage::EditorTabs => tabs_page(app, ui),
+        SettingsPage::ColorScheme => crate::settings_editor::color_scheme_page(app, ui),
         SettingsPage::FileTypes => file_types_page(app, ui),
         SettingsPage::Named(name) => {
             ui.label(format!("{name} settings."));
@@ -337,6 +352,23 @@ fn tabs_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             "Open new tabs at the end",
         )
         .changed();
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Appearance").strong());
+    changed |= ui
+        .checkbox(
+            &mut app.settings.tabs_multiple_rows,
+            "Show tabs in multiple rows",
+        )
+        .changed();
+    if ui
+        .checkbox(&mut app.settings.tabs_pinned_left, "Show pinned tabs first")
+        .changed()
+    {
+        if app.settings.tabs_pinned_left {
+            app.ws.keep_pinned_first();
+        }
+        changed = true;
+    }
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Closing Policy").strong());
     ui.horizontal(|ui| {
@@ -513,37 +545,6 @@ fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     }
 }
 
-fn editor_font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Editor font: JetBrains Mono");
-    ui.horizontal(|ui| {
-        ui.label("Size:");
-        let mut size = app.settings.editor_font_size;
-        if ui
-            .add(
-                egui::Slider::new(&mut size, 8.0..=32.0)
-                    .step_by(1.0)
-                    .suffix(" pt"),
-            )
-            .changed()
-        {
-            app.settings.editor_font_size = crate::settings::clamp_editor_font(size);
-            app.persist_settings();
-            app.apply_design(ui.ctx());
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("IDE zoom:");
-        let mut zoom = app.zoom;
-        if ui
-            .add(egui::Slider::new(&mut zoom, 0.5..=3.0).suffix("×"))
-            .changed()
-        {
-            app.set_zoom(zoom);
-        }
-    });
-    ui.label("Shortcuts: Alt+Shift+. bigger · Alt+Shift+, smaller · Ctrl+0 reset");
-}
-
 fn php_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.label("PHP Language Level");
     let mut changed = false;
@@ -567,22 +568,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tree_contains_required_top_level_sections() {
-        let names: Vec<_> = SECTIONS.iter().map(|section| section.0).collect();
-        for required in [
-            "Appearance & Behavior",
-            "Keymap",
-            "Plugins",
-            "Editor",
-            "PHP",
-            "Languages & Frameworks",
-            "Version Control",
-            "Build, Execution, Deployment",
-            "Tools",
-            "Advanced Settings",
-        ] {
-            assert!(names.contains(&required), "seção ausente: {required}");
+    fn every_page_is_real_and_searchable() {
+        for spec in PAGES {
+            assert!(
+                !matches!(spec.page, SettingsPage::Named(_)),
+                "{} has no content",
+                spec.label
+            );
         }
+        let labels = |q: &str| search(q).iter().map(|s| s.label).collect::<Vec<_>>();
+        assert_eq!(labels("ligatures"), ["Font"]);
+        assert_eq!(labels("bold"), ["Color Scheme"]);
+        assert!(labels("tabs").contains(&"Editor Tabs"));
+        assert_eq!(page_named("Color Scheme"), Some(SettingsPage::ColorScheme));
+        assert_eq!(page_named("Editor | Font"), Some(SettingsPage::EditorFont));
     }
 
     #[test]

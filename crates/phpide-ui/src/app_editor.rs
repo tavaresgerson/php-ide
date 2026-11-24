@@ -265,6 +265,11 @@ impl PhpIdeApp {
             return;
         };
         self.file_type_notice(ui, index);
+        // The user's color scheme may change a language's colors.
+        let language = language_id(&self.editors.detect(&self.ws.buffers[index]));
+        let mut language_style = style.clone();
+        language_style.syntax = crate::design::current(ui.ctx()).syntax_style_for(Some(&language));
+        let style = &language_style;
         let deco_owned = self.decorations(index);
         let blame_on = self.settings.blame_gutter && index == self.ws.active;
         let blame_stale = self.ws.buffers[index].dirty;
@@ -297,7 +302,12 @@ impl PhpIdeApp {
         let options = self.editor_options();
         let buffer_id = self.ws.buffers[index].id;
         // Popups own the keyboard while open; the request waits for them.
-        let popup_open = self.completion.open || self.palette.open || self.goto_line_open;
+        let popup_open = self.completion.open
+            || self.palette.open
+            || self.goto_line_open
+            || self.select_in.is_some()
+            || self.settings_dialog.open
+            || self.tree.dialog.is_some();
         if !popup_open && self.editors.take_focus_request(pane) {
             let id = phpide_editor::Editor::widget_id((buffer_id, pane == Pane::Secondary));
             ui.memory_mut(|m| m.request_focus(id));
@@ -703,5 +713,14 @@ impl PhpIdeApp {
                 buffer.preview = false;
             }
         }
+    }
+}
+
+/// Color-scheme section of a detected file type (its id, or the grammar name).
+pub(crate) fn language_id(detected: &phpide_php::filetype::Detected) -> String {
+    match detected {
+        phpide_php::filetype::Detected::Known(file_type) => file_type.id.to_string(),
+        phpide_php::filetype::Detected::Grammar(name) => name.to_ascii_lowercase(),
+        phpide_php::filetype::Detected::Unknown => "text".to_string(),
     }
 }

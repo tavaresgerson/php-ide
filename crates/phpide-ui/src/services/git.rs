@@ -46,10 +46,89 @@ pub struct GitEvents {
 type MarkersJob = (PathBuf, u64, JobHandle<Vec<(u32, bool)>>);
 type BlameJob = (PathBuf, u64, u64, JobHandle<Vec<BlameEntry>>);
 
+/// Where the repository is hosted, for "Copy Repository URL" (RF-NAV-17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteInfo {
+    /// Web address of the repository (`https://github.com/owner/repo`).
+    pub web: String,
+    /// Repository top-level folder.
+    pub toplevel: PathBuf,
+    /// Branch or commit used in file links.
+    pub reference: String,
+}
+
+/// `git@github.com:o/r.git` or `https://github.com/o/r.git` → web address.
+pub fn web_address(remote: &str) -> Option<String> {
+    let remote = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    if let Some(rest) = remote.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        return Some(format!("https://{host}/{path}"));
+    }
+    if let Some(rest) = remote.strip_prefix("ssh://") {
+        let rest = rest.split_once('@').map_or(rest, |(_, r)| r);
+        let (host, path) = rest.split_once('/')?;
+        let host = host.split(':').next()?;
+        return Some(format!("https://{host}/{path}"));
+    }
+    if remote.starts_with("https://") || remote.starts_with("http://") {
+        // Drop credentials: https://user:token@host/…
+        let (scheme, rest) = remote.split_once("://")?;
+        let rest = rest.split_once('@').map_or(rest, |(_, r)| r);
+        return Some(format!("{scheme}://{rest}"));
+    }
+    None
+}
+
+impl RemoteInfo {
+    /// Link to `path` (and a line, 1-based) on the hosting site.
+    pub fn file_url(&self, path: &std::path::Path, line: Option<usize>) -> Option<String> {
+        let relative = path.strip_prefix(&self.toplevel).ok()?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let blob = if self.web.contains("gitlab") {
+            "-/blob"
+        } else {
+            "blob"
+        };
+        let mut url = format!("{}/{blob}/{}/{relative}", self.web, self.reference);
+        if let Some(line) = line {
+            url.push_str(&format!("#L{line}"));
+        }
+        Some(url)
+    }
+}
+
+fn detect_remote(root: &std::path::Path) -> Option<RemoteInfo> {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let web = web_address(&git(&["remote", "get-url", "origin"])?)?;
+    let toplevel = PathBuf::from(git(&["rev-parse", "--show-toplevel"])?);
+    let reference = git(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .filter(|r| r != "HEAD")
+        .or_else(|| git(&["rev-parse", "HEAD"]))?;
+    Some(RemoteInfo {
+        web,
+        toplevel,
+        reference,
+    })
+}
+
+type DetectResult = Option<(String, Option<RemoteInfo>)>;
+
 pub struct GitService {
     root: PathBuf,
     status: RepoStatus,
-    detect_job: Option<JobHandle<Option<String>>>,
+    remote: Option<RemoteInfo>,
+    detect_job: Option<JobHandle<DetectResult>>,
     last_detect: Option<Instant>,
     markers_job: Option<MarkersJob>,
     blame_job: Option<BlameJob>,
@@ -63,6 +142,7 @@ impl GitService {
         GitService {
             root,
             status: RepoStatus::Unknown,
+            remote: None,
             detect_job: None,
             last_detect: None,
             markers_job: None,
@@ -86,6 +166,11 @@ impl GitService {
             RepoStatus::Repo(label) => label.clone(),
             RepoStatus::Unknown | RepoStatus::NotRepo => "?".to_string(),
         }
+    }
+
+    /// Hosting site of the repository, when it has an `origin` remote.
+    pub fn remote(&self) -> Option<&RemoteInfo> {
+        self.remote.as_ref()
     }
 
     /// Forces a new detection on the next poll.
@@ -198,8 +283,16 @@ impl GitService {
         if let Some(job) = &mut self.detect_job {
             if let Some(outcome) = job.poll() {
                 self.status = match outcome {
-                    JobOutcome::Ok(Some(label)) => RepoStatus::Repo(label),
-                    JobOutcome::Ok(None) | JobOutcome::Err(_) => RepoStatus::NotRepo,
+                    JobOutcome::Ok(Some((label, remote))) => {
+                        if remote.is_some() {
+                            self.remote = remote;
+                        }
+                        RepoStatus::Repo(label)
+                    }
+                    JobOutcome::Ok(None) | JobOutcome::Err(_) => {
+                        self.remote = None;
+                        RepoStatus::NotRepo
+                    }
                     JobOutcome::Cancelled => self.status.clone(),
                 };
                 self.detect_job = None;
@@ -216,10 +309,17 @@ impl GitService {
         self.last_detect = Some(Instant::now());
         let root = self.root.clone();
         let ctx = ctx.clone();
+        let with_remote = self.remote.is_none();
         self.detect_job = Some(jobs.spawn(move |_| {
             let label = phpide_vcs::detect(&root).ok().map(|state| state.label());
+            // The remote rarely changes: read it until it is known.
+            let remote = if label.is_some() && with_remote {
+                detect_remote(&root)
+            } else {
+                None
+            };
             ctx.request_repaint();
-            Ok(label)
+            Ok(label.map(|l| (l, remote)))
         }));
     }
 
@@ -244,6 +344,34 @@ impl GitService {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remotes_become_web_addresses_and_file_links() {
+        assert_eq!(
+            web_address("git@github.com:tavaresgerson/php-ide.git").as_deref(),
+            Some("https://github.com/tavaresgerson/php-ide")
+        );
+        assert_eq!(
+            web_address("https://user:tok@gitlab.com/group/app.git").as_deref(),
+            Some("https://gitlab.com/group/app")
+        );
+        assert_eq!(
+            web_address("ssh://git@github.com:22/o/r.git").as_deref(),
+            Some("https://github.com/o/r")
+        );
+        assert_eq!(web_address("/srv/git/repo"), None);
+        let remote = RemoteInfo {
+            web: "https://github.com/o/r".into(),
+            toplevel: PathBuf::from("/p"),
+            reference: "main".into(),
+        };
+        assert_eq!(
+            remote
+                .file_url(std::path::Path::new("/p/src/A.php"), Some(12))
+                .as_deref(),
+            Some("https://github.com/o/r/blob/main/src/A.php#L12")
+        );
+    }
+
     use super::*;
     use std::process::Command;
 

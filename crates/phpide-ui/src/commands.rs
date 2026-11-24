@@ -31,6 +31,9 @@ pub enum Command {
     Redo,
     UndoRefactor,
     Complete,
+    CopyPath,
+    CopyReference,
+    CopyRepositoryUrl,
     /// Text commands routed to the focused editor pane.
     Editor(ViewCommand),
     // View
@@ -51,6 +54,7 @@ pub enum Command {
     // Navigate
     SearchEverywhere,
     GotoFile,
+    GotoClass,
     RecentFiles,
     FindAction,
     GotoSymbol,
@@ -73,6 +77,10 @@ pub enum Command {
     DebugCurrent,
     Stop,
     ToggleBreakpoint,
+    // Window
+    NextProjectWindow,
+    PreviousProjectWindow,
+    CloseOtherProjects,
     // Tools
     RestartLsp,
     OpenWelcome,
@@ -86,16 +94,18 @@ pub enum Category {
     Navigate,
     Run,
     Tools,
+    Window,
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [
+    pub const ALL: [Category; 7] = [
         Category::File,
         Category::Edit,
         Category::View,
         Category::Navigate,
         Category::Run,
         Category::Tools,
+        Category::Window,
     ];
 
     pub fn label(self) -> &'static str {
@@ -106,6 +116,7 @@ impl Category {
             Category::Navigate => "Navigate",
             Category::Run => "Run",
             Category::Tools => "Tools",
+            Category::Window => "Window",
         }
     }
 }
@@ -187,7 +198,7 @@ pub const REGISTRY: &[CommandSpec] = &[
     // File
     spec(K::OpenProject, C::File, "Open Project…", &[], true),
     spec(K::CloseProject, C::File, "Close Project", &[], true),
-    spec(K::NewFile, C::File, "New File", &[ctrl(Key::N)], true),
+    spec(K::NewFile, C::File, "New File", &[], true),
     spec(K::Save, C::File, "Save", &[ctrl(Key::S)], true),
     spec(K::CloseTab, C::File, "Close Tab", &[ctrl(Key::F4)], true),
     spec(K::CloseOthers, C::File, "Close Other Tabs", &[], true),
@@ -237,6 +248,27 @@ pub const REGISTRY: &[CommandSpec] = &[
         C::Edit,
         "Code Completion",
         &[ctrl(Key::Space)],
+        true,
+    ),
+    spec(
+        K::CopyPath,
+        C::Edit,
+        "Copy Absolute Path",
+        &[ctrl_shift(Key::C)],
+        true,
+    ),
+    spec(
+        K::CopyReference,
+        C::Edit,
+        "Copy Reference (path:line)",
+        &[ctrl_alt_shift(Key::C)],
+        true,
+    ),
+    spec(
+        K::CopyRepositoryUrl,
+        C::Edit,
+        "Copy Repository URL",
+        &[],
         true,
     ),
     spec(K::Editor(V::SelectAll), C::Edit, "Select All", &[], true),
@@ -533,6 +565,13 @@ pub const REGISTRY: &[CommandSpec] = &[
         true,
     ),
     spec(
+        K::GotoClass,
+        C::Navigate,
+        "Go to Class",
+        &[ctrl(Key::N)],
+        true,
+    ),
+    spec(
         K::RecentFiles,
         C::Navigate,
         "Recent Files",
@@ -683,12 +722,41 @@ pub const REGISTRY: &[CommandSpec] = &[
         true,
     ),
     spec(K::OpenWelcome, C::Tools, "Welcome Screen", &[], true),
+    // Window
+    spec(
+        K::NextProjectWindow,
+        C::Window,
+        "Next Project Window",
+        &[ctrl_alt(Key::CloseBracket)],
+        true,
+    ),
+    spec(
+        K::PreviousProjectWindow,
+        C::Window,
+        "Previous Project Window",
+        &[ctrl_alt(Key::OpenBracket)],
+        true,
+    ),
+    spec(
+        K::CloseOtherProjects,
+        C::Window,
+        "Close Other Projects",
+        &[],
+        true,
+    ),
 ];
 
 impl Command {
     /// Commands that act on the focused text (editor edits, undo, find).
     pub fn is_text_command(self) -> bool {
-        matches!(self, Command::Editor(_) | Command::Undo | Command::Redo)
+        matches!(
+            self,
+            Command::Editor(_)
+                | Command::Undo
+                | Command::Redo
+                | Command::CopyPath
+                | Command::CopyReference
+        )
     }
 }
 
@@ -787,7 +855,7 @@ mod tests {
         assert_eq!(resolve(ctrl(Key::Z)), Some(Command::Undo));
         assert_eq!(resolve(ctrl_shift(Key::N)), Some(Command::GotoFile));
         assert_eq!(resolve(ctrl_alt_shift(Key::N)), Some(Command::GotoSymbol));
-        assert_eq!(resolve(ctrl(Key::N)), Some(Command::NewFile));
+        assert_eq!(resolve(ctrl(Key::N)), Some(Command::GotoClass));
         assert_eq!(resolve(ctrl_alt(Key::S)), Some(Command::OpenSettings));
         assert_eq!(resolve(ctrl(Key::S)), Some(Command::Save));
         assert_eq!(resolve(ctrl_alt(Key::B)), Some(Command::GotoImplementation));

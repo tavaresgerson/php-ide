@@ -26,6 +26,7 @@ enum TabAction {
     Maximize,
     Reopen,
     CopyPath(usize, bool),
+    CopyUrl(usize),
     Reveal(usize),
     Split(usize, SplitAxis),
 }
@@ -73,17 +74,30 @@ pub fn tab_strip(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 let last_active: Option<u64> = ui.data(|d| d.get_temp(memory_key));
                 let reveal = last_active != active_id;
                 ui.data_mut(|d| d.insert_temp(memory_key, active_id));
-                egui::ScrollArea::horizontal()
-                    .id_salt("tab-scroll")
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .max_width((ui.available_width() - list_width).max(0.0))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                if app.settings.tabs_multiple_rows {
+                    // Several rows: every tab stays visible (RF-TAB-06).
+                    ui.allocate_ui_with_layout(
+                        egui::vec2((ui.available_width() - list_width).max(0.0), 0.0),
+                        egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                        |ui| {
                             for (i, label) in labels.iter().enumerate() {
-                                tab(app, ui, i, label, i == active && reveal, &mut actions);
+                                tab(app, ui, i, label, false, &mut actions);
                             }
+                        },
+                    );
+                } else {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tab-scroll")
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .max_width((ui.available_width() - list_width).max(0.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for (i, label) in labels.iter().enumerate() {
+                                    tab(app, ui, i, label, i == active && reveal, &mut actions);
+                                }
+                            });
                         });
-                    });
+                }
                 tab_list(app, ui, &labels, &mut actions);
             });
         });
@@ -189,6 +203,13 @@ fn tab(
         );
         item(
             ui,
+            "Copy Repository URL",
+            "",
+            has_path && app.git.remote().is_some(),
+            TabAction::CopyUrl(i),
+        );
+        item(
+            ui,
             "Select in Project View",
             "Alt+F1",
             has_path,
@@ -261,6 +282,9 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: TabAction) {
                 buffer.pinned = !buffer.pinned;
                 buffer.preview = false;
             }
+            if app.settings.tabs_pinned_left {
+                app.ws.keep_pinned_first();
+            }
         }
         TabAction::Promote(i) => {
             if let Some(buffer) = app.ws.buffers.get_mut(i) {
@@ -285,6 +309,18 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: TabAction) {
                 };
                 app.ws.message = format!("Copied {text}");
                 ctx.copy_text(text);
+            }
+        }
+        TabAction::CopyUrl(i) => {
+            let url = app
+                .ws
+                .buffers
+                .get(i)
+                .and_then(|b| b.path.clone())
+                .and_then(|p| app.git.remote().and_then(|r| r.file_url(&p, None)));
+            if let Some(url) = url {
+                app.ws.message = format!("Copied {url}");
+                ctx.copy_text(url);
             }
         }
         TabAction::Reveal(i) => {

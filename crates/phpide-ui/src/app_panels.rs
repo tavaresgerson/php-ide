@@ -8,64 +8,63 @@ impl PhpIdeApp {
     }
 
     pub(crate) fn search_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("search")
-            .resizable(true)
-            .show(ui, |ui| {
-                tool_window_header(self, ui, ToolWindow::Find);
-                ui.horizontal(|ui| {
-                    let edit = egui::TextEdit::singleline(&mut self.search.query)
-                        .hint_text("text (Enter to search)")
-                        .desired_width(280.0)
-                        .show(ui);
-                    if edit.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let files: Vec<PathBuf> = self
-                            .ws
-                            .files
-                            .iter()
-                            .filter(|e| !e.is_dir && search::is_searchable(&e.path))
-                            .map(|e| e.path.clone())
-                            .collect();
-                        self.search.start(files, &self.jobs);
-                    }
-                    ui.checkbox(&mut self.search.case_sensitive, "Aa");
-                    if ui.button("Search").clicked() {
-                        let files: Vec<PathBuf> = self
-                            .ws
-                            .files
-                            .iter()
-                            .filter(|e| !e.is_dir && search::is_searchable(&e.path))
-                            .map(|e| e.path.clone())
-                            .collect();
-                        self.search.start(files, &self.jobs);
-                    }
-                    if self.search.busy() {
-                        ui.spinner();
-                    }
-                    ui.label(&self.search.status);
-                });
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        let hits: Vec<(PathBuf, usize, String)> = self
-                            .search
-                            .results
-                            .iter()
-                            .map(|h| (h.path.clone(), h.line, h.preview.clone()))
-                            .collect();
-                        for (path, line, preview) in hits {
-                            let rel = path
-                                .strip_prefix(&self.ws.root)
-                                .unwrap_or(&path)
-                                .display()
-                                .to_string();
-                            let label = format!("{rel}:{line}:  {preview}");
-                            if ui.selectable_label(false, label).clicked() {
-                                self.ws.open_file_at(&path, line.saturating_sub(1), 0);
-                            }
-                        }
-                    });
+        let placement = self.tw.placement(ToolWindow::Find);
+        crate::toolwindows::dock(ui, ToolWindow::Find, placement, 190.0, |ui| {
+            tool_window_header(self, ui, ToolWindow::Find);
+            ui.horizontal(|ui| {
+                let edit = egui::TextEdit::singleline(&mut self.search.query)
+                    .hint_text("text (Enter to search)")
+                    .desired_width(280.0)
+                    .show(ui);
+                if edit.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let files: Vec<PathBuf> = self
+                        .ws
+                        .files
+                        .iter()
+                        .filter(|e| !e.is_dir && search::is_searchable(&e.path))
+                        .map(|e| e.path.clone())
+                        .collect();
+                    self.search.start(files, &self.jobs);
+                }
+                ui.checkbox(&mut self.search.case_sensitive, "Aa");
+                if ui.button("Search").clicked() {
+                    let files: Vec<PathBuf> = self
+                        .ws
+                        .files
+                        .iter()
+                        .filter(|e| !e.is_dir && search::is_searchable(&e.path))
+                        .map(|e| e.path.clone())
+                        .collect();
+                    self.search.start(files, &self.jobs);
+                }
+                if self.search.busy() {
+                    ui.spinner();
+                }
+                ui.label(&self.search.status);
             });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    let hits: Vec<(PathBuf, usize, String)> = self
+                        .search
+                        .results
+                        .iter()
+                        .map(|h| (h.path.clone(), h.line, h.preview.clone()))
+                        .collect();
+                    for (path, line, preview) in hits {
+                        let rel = path
+                            .strip_prefix(&self.ws.root)
+                            .unwrap_or(&path)
+                            .display()
+                            .to_string();
+                        let label = format!("{rel}:{line}:  {preview}");
+                        if ui.selectable_label(false, label).clicked() {
+                            self.ws.open_file_at(&path, line.saturating_sub(1), 0);
+                        }
+                    }
+                });
+        });
     }
 
     pub(crate) fn problems_panel(&mut self, ui: &mut egui::Ui) {
@@ -83,77 +82,73 @@ impl PhpIdeApp {
             let refs: Vec<&phpide_core::Diagnostic> = diags.iter().collect();
             intelligence::problems_by_source(&refs)
         };
-        egui::Panel::bottom("problems")
-            .resizable(true)
-            .show(ui, |ui| {
-                tool_window_header(self, ui, ToolWindow::Problems);
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} problems", diags.len()));
-                    ui.separator();
-                    let scope_label = if self.problems_scope == 0 {
-                        "Scope: Project"
-                    } else {
-                        "Scope: File"
-                    };
-                    if ui
-                        .button(scope_label)
-                        .on_hover_text("Toggle project/file")
-                        .clicked()
-                    {
-                        self.problems_scope = 1 - self.problems_scope;
-                    }
-                    for (source, critical, total) in &sources {
-                        ui.label(
-                            egui::RichText::new(format!("{source}: {critical}/{total}"))
-                                .small()
-                                .weak(),
-                        );
-                    }
-                });
+        let placement = self.tw.placement(ToolWindow::Problems);
+        crate::toolwindows::dock(ui, ToolWindow::Problems, placement, 190.0, |ui| {
+            tool_window_header(self, ui, ToolWindow::Problems);
+            ui.horizontal(|ui| {
+                ui.label(format!("{} problems", diags.len()));
                 ui.separator();
-                if diags.is_empty() {
-                    ui.label("No problems.");
+                let scope_label = if self.problems_scope == 0 {
+                    "Scope: Project"
                 } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            for d in &diags {
-                                let p = crate::design::current(ui.ctx()).palette;
-                                let color = match d.severity {
-                                    phpide_core::Severity::Error => p.error,
-                                    phpide_core::Severity::Warning => p.warning,
-                                    _ => p.info,
-                                };
-                                let rel = d
-                                    .path
-                                    .strip_prefix(&self.ws.root)
-                                    .unwrap_or(&d.path)
-                                    .display()
-                                    .to_string();
-                                let label = format!(
-                                    "[{}] {rel}:{}:{}  {}",
-                                    d.severity.marker(),
-                                    d.line,
-                                    d.col,
-                                    d.message.lines().next().unwrap_or("")
-                                );
-                                if ui
-                                    .selectable_label(
-                                        false,
-                                        egui::RichText::new(label).color(color),
-                                    )
-                                    .clicked()
-                                {
-                                    self.ws.open_file_at(
-                                        &d.path,
-                                        d.line.saturating_sub(1),
-                                        d.col.saturating_sub(1),
-                                    );
-                                }
-                            }
-                        });
+                    "Scope: File"
+                };
+                if ui
+                    .button(scope_label)
+                    .on_hover_text("Toggle project/file")
+                    .clicked()
+                {
+                    self.problems_scope = 1 - self.problems_scope;
+                }
+                for (source, critical, total) in &sources {
+                    ui.label(
+                        egui::RichText::new(format!("{source}: {critical}/{total}"))
+                            .small()
+                            .weak(),
+                    );
                 }
             });
+            ui.separator();
+            if diags.is_empty() {
+                ui.label("No problems.");
+            } else {
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for d in &diags {
+                            let p = crate::design::current(ui.ctx()).palette;
+                            let color = match d.severity {
+                                phpide_core::Severity::Error => p.error,
+                                phpide_core::Severity::Warning => p.warning,
+                                _ => p.info,
+                            };
+                            let rel = d
+                                .path
+                                .strip_prefix(&self.ws.root)
+                                .unwrap_or(&d.path)
+                                .display()
+                                .to_string();
+                            let label = format!(
+                                "[{}] {rel}:{}:{}  {}",
+                                d.severity.marker(),
+                                d.line,
+                                d.col,
+                                d.message.lines().next().unwrap_or("")
+                            );
+                            if ui
+                                .selectable_label(false, egui::RichText::new(label).color(color))
+                                .clicked()
+                            {
+                                self.ws.open_file_at(
+                                    &d.path,
+                                    d.line.saturating_sub(1),
+                                    d.col.saturating_sub(1),
+                                );
+                            }
+                        }
+                    });
+            }
+        });
     }
 
     /// Painéis Run e Debug (Estágio 8): a janela Run mostra as sessões
@@ -378,34 +373,32 @@ impl PhpIdeApp {
     // -----------------------------------------------------------------
 
     pub(crate) fn outline_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("outline")
-            .resizable(true)
-            .default_size(210.0)
-            .show(ui, |ui| {
-                tool_window_header(self, ui, ToolWindow::Structure);
-                if self.ws.outline.is_empty() {
-                    ui.label("—");
-                } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let entries = self.ws.outline.clone();
-                        for e in entries {
-                            let jump = ui
-                                .horizontal(|ui| {
-                                    ui.add_space(12.0 * e.depth as f32);
-                                    ui.selectable_label(false, format!("{}  {}", e.kind, e.name))
-                                        .clicked()
-                                })
-                                .inner;
-                            if jump {
-                                let path = self.ws.active_buffer().and_then(|b| b.path.clone());
-                                if let Some(path) = path {
-                                    self.ws.open_file_at(&path, e.line0, 0);
-                                }
+        let placement = self.tw.placement(ToolWindow::Structure);
+        crate::toolwindows::dock(ui, ToolWindow::Structure, placement, 210.0, |ui| {
+            tool_window_header(self, ui, ToolWindow::Structure);
+            if self.ws.outline.is_empty() {
+                ui.label("—");
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let entries = self.ws.outline.clone();
+                    for e in entries {
+                        let jump = ui
+                            .horizontal(|ui| {
+                                ui.add_space(12.0 * e.depth as f32);
+                                ui.selectable_label(false, format!("{}  {}", e.kind, e.name))
+                                    .clicked()
+                            })
+                            .inner;
+                        if jump {
+                            let path = self.ws.active_buffer().and_then(|b| b.path.clone());
+                            if let Some(path) = path {
+                                self.ws.open_file_at(&path, e.line0, 0);
                             }
                         }
-                    });
-                }
-            });
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -427,11 +420,30 @@ pub(crate) fn tool_window_header(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: Too
                 app.tw.set_visible(tw, false);
                 ui.close();
             }
+            move_to_menu(app, ui, tw);
             menu_separator(ui);
             if menu_item(ui, None, "Hide All Tool Windows", "Ctrl+Shift+F12", true).clicked() {
                 app.tw.toggle_hide_all();
                 ui.close();
             }
         });
+    });
+}
+
+/// "Move To" submenu of a tool window header (RF-UI-02).
+pub(crate) fn move_to_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
+    ui.menu_button("Move To", |ui| {
+        let current = app.tw.placement(tw);
+        for placement in crate::toolwindows::Placement::ALL {
+            if ui
+                .selectable_label(current == placement, placement.label())
+                .clicked()
+            {
+                app.tw.set_placement(tw, placement);
+                app.settings.tool_window_placements = app.tw.placements();
+                app.persist_settings();
+                ui.close();
+            }
+        }
     });
 }

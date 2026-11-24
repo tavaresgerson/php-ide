@@ -54,17 +54,22 @@ fn config_selector(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .on_hover_text("Run selected configuration")
         .clicked()
     {
-        let php = crate::exec::resolve_php(&app.settings)
-            .map_err(|e| format!("{} — {}", e.message, e.action));
-        match php {
-            Ok(php) => {
-                let ctx = crate::exec::build_context(&app.settings, &php);
-                if let Err(e) = app.rd.start_config(&app.ws.root, &ctx) {
-                    app.ws.message = e;
-                }
+        run_selected_config(app);
+    }
+}
+
+/// Starts the configuration chosen in the selector (panel or Run widget).
+pub(crate) fn run_selected_config(app: &mut PhpIdeApp) {
+    let php = crate::exec::resolve_php(&app.settings)
+        .map_err(|e| format!("{} — {}", e.message, e.action));
+    match php {
+        Ok(php) => {
+            let ctx = crate::exec::build_context(&app.settings, &php);
+            if let Err(e) = app.rd.start_config(&app.ws.root, &ctx) {
+                app.ws.message = e;
             }
-            Err(e) => app.ws.message = e,
         }
+        Err(e) => app.ws.message = e,
     }
 }
 
@@ -80,10 +85,13 @@ fn state_icon(state: SessionState) -> &'static str {
 
 /// Tool window Run: lista de processos (sessões) + conteúdo da sessão.
 pub fn run_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    egui::Panel::bottom("run-panel")
-        .resizable(true)
-        .default_size(230.0)
-        .show(ui, |ui| {
+    let placement = app.tw.placement(crate::toolwindows::ToolWindow::Run);
+    crate::toolwindows::dock(
+        ui,
+        crate::toolwindows::ToolWindow::Run,
+        placement,
+        230.0,
+        |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Run").strong());
@@ -127,7 +135,8 @@ pub fn run_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                     session_content(app, ui);
                 });
             });
-        });
+        },
+    );
 }
 
 fn session_list(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
@@ -314,10 +323,13 @@ fn render_test_node(app: &mut PhpIdeApp, ui: &mut egui::Ui, node: &TestNode) {
 
 /// Tool window Debug: toolbar de stepping + inspeção da sessão DBGp.
 pub fn debug_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    egui::Panel::bottom("debug-panel")
-        .resizable(true)
-        .default_size(260.0)
-        .show(ui, |ui| {
+    let placement = app.tw.placement(crate::toolwindows::ToolWindow::Debug);
+    crate::toolwindows::dock(
+        ui,
+        crate::toolwindows::ToolWindow::Debug,
+        placement,
+        260.0,
+        |ui| {
             debug_toolbar(app, ui);
             ui.separator();
             ui.horizontal(|ui| {
@@ -334,7 +346,8 @@ pub fn debug_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                     breakpoints_list(app, ui);
                 });
             });
-        });
+        },
+    );
 }
 
 fn debug_toolbar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

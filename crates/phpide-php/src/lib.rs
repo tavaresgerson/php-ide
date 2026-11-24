@@ -109,24 +109,48 @@ impl SyntaxRole {
     }
 }
 
+/// Font style, background and effect of a role (Settings › Color Scheme).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RoleAttributes {
+    pub background: Option<Color32>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: Option<Color32>,
+    pub strikethrough: Option<Color32>,
+}
+
 /// Colors and font used to build the layout job.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyntaxStyle {
     pub font: egui::FontId,
+    /// Bold face of `font` (same advance width), when there is one.
+    pub bold_font: Option<egui::FontId>,
     pub colors: [Color32; SyntaxRole::COUNT],
+    pub attributes: [RoleAttributes; SyntaxRole::COUNT],
 }
 
 impl SyntaxStyle {
     /// One color for every role (benchmarks and plain-text fallbacks).
+    /// Comments are italic and deprecated symbols struck through.
     pub fn uniform(font: egui::FontId, color: Color32) -> Self {
+        let mut attributes = [RoleAttributes::default(); SyntaxRole::COUNT];
+        attributes[SyntaxRole::Comment as usize].italic = true;
+        attributes[SyntaxRole::Documentation as usize].italic = true;
+        attributes[SyntaxRole::Deprecated as usize].strikethrough = Some(color);
         SyntaxStyle {
             font,
+            bold_font: None,
             colors: [color; SyntaxRole::COUNT],
+            attributes,
         }
     }
 
     pub fn color(&self, role: SyntaxRole) -> Color32 {
         self.colors[role as usize]
+    }
+
+    pub fn attributes(&self, role: SyntaxRole) -> RoleAttributes {
+        self.attributes[role as usize]
     }
 }
 

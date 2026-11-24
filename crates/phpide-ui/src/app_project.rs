@@ -43,6 +43,18 @@ impl PhpIdeApp {
             tree: Default::default(),
             project_open: !start_welcome,
             open_prompt: None,
+            select_in: None,
+            windows: if cfg!(test) {
+                let dir = std::env::temp_dir().join(format!("phpide-test-{}", std::process::id()));
+                services::windows::WindowRegistry::with_dirs(
+                    dir.join("windows"),
+                    dir.join("session.json"),
+                )
+            } else {
+                services::windows::WindowRegistry::new()
+            },
+            event_log: Default::default(),
+            toasts: Default::default(),
             cursor_char: 0,
             palette: PaletteState::new(),
             search: SearchState::new(),
@@ -114,6 +126,17 @@ impl PhpIdeApp {
             terminal_input: String::new(),
             commit_message: String::new(),
         };
+        if has_project {
+            app.windows.set_project(Some(&app.ws.root.clone()));
+        }
+        let placements = app.settings.tool_window_placements.clone();
+        app.tw.restore_placements(&placements);
+        // Screenshot hook: open Settings on a page.
+        if let Ok(page) = std::env::var("PHPIDE_SETTINGS_PAGE") {
+            if let Some(page) = settings_dialog::page_named(&page) {
+                app.settings_dialog.open(page);
+            }
+        }
         // Closing Policy configurável (UI-ED-003): limite vem do settings.
         app.ws.tab_limit = app.settings.tab_limit.max(1) as usize;
         // Descoberta do projeto Composer (T-PHP-030-01/02): informativa —
@@ -235,6 +258,7 @@ impl PhpIdeApp {
         self.refresh_composer(false);
         self.tree = Default::default();
         self.project_open = true;
+        self.windows.set_project(Some(&root));
         self.ws.open_tabs_at_end = self.settings.tabs_open_at_end;
         self.welcome_open = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
@@ -261,11 +285,46 @@ impl PhpIdeApp {
             self.request_load_project(root, ctx);
             return;
         }
+        // Already open in another window: bring that one forward.
+        if let Some(window) = self.windows.others().iter().find(|w| w.root == root) {
+            self.windows
+                .send(window.pid, services::windows::WindowCommand::Focus);
+            self.welcome_open = false;
+            return;
+        }
         match self.settings.open_project_mode.as_str() {
             "current" => self.request_load_project(root, ctx),
             "new" => self.open_in_new_window(&root),
             _ => self.open_prompt = Some(root),
         }
+    }
+
+    /// Adds `root` to this window's project tree and file index (RF-PRJ-08).
+    pub fn attach_project(&mut self, root: &Path) {
+        let main = self.ws.root.display().to_string();
+        let attached = root.display().to_string();
+        if !self
+            .settings
+            .attached_projects
+            .iter()
+            .any(|(m, a)| *m == main && *a == attached)
+        {
+            self.settings.attached_projects.push((main, attached));
+            self.persist_settings();
+        }
+        self.tw.set_visible(ToolWindow::Project, true);
+        self.ws.message = format!("Attached {}", root.display());
+    }
+
+    /// Removes an attached project from this window.
+    pub fn detach_project(&mut self, root: &Path) {
+        let main = self.ws.root.display().to_string();
+        let attached = root.display().to_string();
+        self.settings
+            .attached_projects
+            .retain(|(m, a)| !(*m == main && *a == attached));
+        self.persist_settings();
+        self.ws.message = format!("Detached {}", root.display());
     }
 
     /// Starts another PHP IDE process on `root`.
@@ -311,6 +370,8 @@ impl PhpIdeApp {
         self.editors = editor_area::EditorArea::default();
         self.project_open = false;
         self.welcome_open = true;
+        self.welcome.focus_search = true;
+        self.windows.project_closed();
         self.settings.last_project.clear();
         self.persist_settings();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title("PHP IDE".into()));
@@ -491,6 +552,8 @@ impl PhpIdeApp {
 
     /// Results of the file index and Git jobs.
     pub(crate) fn poll_project_services(&mut self, ctx: &egui::Context) {
+        let attached = self.settings.attached_to(&self.ws.root);
+        self.files.set_attached(&self.jobs, ctx, attached);
         if let Some(index) = self.files.poll(&self.jobs, ctx) {
             self.ws.files = index;
         }

@@ -9,7 +9,7 @@ use super::components::{
     menu_frame, menu_item, menu_separator, panel_frame, splitter, toast_card, tooltip_contents,
     Button, ButtonKind, Checkbox, Dialog, EmptyState, IconButton, ListRow, PanelHeader,
     ProgressBar, Select, Spinner, SplitAxis, State, StatusItem, Tab, TextInput, Toast, Tone,
-    TreeRow,
+    ToolbarWidget, TreeRow,
 };
 use super::theme::{current, install, Theme, ThemeId};
 use super::tokens::{space, typography, Density, Palette};
@@ -475,6 +475,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut GalleryState) -> f32 {
                         StatusItem::new("PHP 8.3").force(State::Hovered).show(ui);
                         StatusItem::new("UTF-8").show(ui);
                     });
+                });
+                ui.add_space(space::S5);
+                caption(ui, "Header widgets");
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::S2;
+                    ToolbarWidget::new("shop").icon(IconId::Project).show(ui);
+                    ToolbarWidget::new("main")
+                        .icon(IconId::GitBranch)
+                        .force(State::Hovered)
+                        .show(ui);
+                    ToolbarWidget::new("index.php").show(ui);
+                    ToolbarWidget::new("3")
+                        .icon(IconId::Error)
+                        .icon_tint(p.error)
+                        .chevron(false)
+                        .show(ui);
                 });
                 ui.add_space(space::S5);
                 caption(ui, "Progress");

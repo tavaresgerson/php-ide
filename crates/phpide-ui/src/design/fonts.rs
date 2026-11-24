@@ -24,8 +24,51 @@ pub fn family(name: &str) -> FontFamily {
     FontFamily::Name(name.into())
 }
 
+/// A font chosen for the editor instead of JetBrains Mono.
+pub struct EditorFont {
+    pub regular: Vec<u8>,
+    pub bold: Option<Vec<u8>>,
+}
+
+const CUSTOM: &str = "editor-custom";
+const CUSTOM_BOLD: &str = "editor-custom-bold";
+
 /// Font definitions with the bundled faces first and egui's defaults after.
+#[cfg(test)]
 pub fn definitions() -> FontDefinitions {
+    definitions_with(None)
+}
+
+/// [`definitions`] with another face first in the code families. Without a
+/// bold file, bold code uses the regular face so columns stay aligned.
+pub fn definitions_with(editor: Option<EditorFont>) -> FontDefinitions {
+    let mut fonts = base_definitions();
+    if let Some(editor) = editor {
+        fonts.font_data.insert(
+            CUSTOM.to_owned(),
+            Arc::new(FontData::from_owned(editor.regular)),
+        );
+        let bold = match editor.bold {
+            Some(bytes) => {
+                fonts.font_data.insert(
+                    CUSTOM_BOLD.to_owned(),
+                    Arc::new(FontData::from_owned(bytes)),
+                );
+                CUSTOM_BOLD
+            }
+            None => CUSTOM,
+        };
+        if let Some(list) = fonts.families.get_mut(&FontFamily::Monospace) {
+            list.insert(0, CUSTOM.to_owned());
+        }
+        if let Some(list) = fonts.families.get_mut(&family(MONO_BOLD)) {
+            list.insert(0, bold.to_owned());
+        }
+    }
+    fonts
+}
+
+fn base_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let bundled: [(&str, &'static [u8]); 5] = [
         (
@@ -96,8 +139,28 @@ pub fn definitions() -> FontDefinitions {
     fonts
 }
 
+#[cfg(test)]
 pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(definitions());
+}
+
+/// Name of the bundled code font.
+pub const BUNDLED_EDITOR_FAMILY: &str = "JetBrains Mono";
+
+/// Installs the fonts with `family` as the code font (an installed
+/// monospaced family; the bundled one when empty, bundled or missing).
+pub fn install_with_editor_family(ctx: &egui::Context, family: &str) {
+    let editor = if family.is_empty() || family == BUNDLED_EDITOR_FAMILY {
+        None
+    } else {
+        crate::services::system_fonts::find(family).and_then(|font| {
+            Some(EditorFont {
+                regular: std::fs::read(&font.regular).ok()?,
+                bold: font.bold.and_then(|p| std::fs::read(p).ok()),
+            })
+        })
+    };
+    ctx.set_fonts(definitions_with(editor));
 }
 
 #[cfg(test)]

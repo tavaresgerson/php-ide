@@ -192,15 +192,22 @@ fn build(ctx: &egui::Context, style: &EditorStyle, input: &LineInput) -> LineLay
         }
         let role = role.unwrap_or(SyntaxRole::Plain);
         let color = style.syntax.color(role);
+        let attrs = style.syntax.attributes(role);
+        let font_id = match (&style.syntax.bold_font, attrs.bold) {
+            (Some(bold), true) => bold.clone(),
+            _ => font.clone(),
+        };
         let format = TextFormat {
-            font_id: font.clone(),
+            font_id,
             color,
-            italics: matches!(role, SyntaxRole::Comment | SyntaxRole::Documentation),
-            strikethrough: if role == SyntaxRole::Deprecated {
-                egui::Stroke::new(1.0, color)
-            } else {
-                egui::Stroke::NONE
-            },
+            background: attrs.background.unwrap_or(egui::Color32::TRANSPARENT),
+            italics: attrs.italic,
+            underline: attrs
+                .underline
+                .map_or(egui::Stroke::NONE, |c| egui::Stroke::new(1.0, c)),
+            strikethrough: attrs
+                .strikethrough
+                .map_or(egui::Stroke::NONE, |c| egui::Stroke::new(1.0, c)),
             ..Default::default()
         };
         job.append(&std::mem::take(run), 0.0, format);

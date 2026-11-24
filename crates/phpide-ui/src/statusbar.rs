@@ -3,9 +3,11 @@
 
 use eframe::egui;
 
+use crate::design::components::{StatusItem, Tone};
 use crate::settings_dialog::SettingsPage;
 use crate::toolwindows::ToolWindow;
 use crate::PhpIdeApp;
+use phpide_icons::IconId;
 
 const PHP_LEVELS: [&str; 8] = ["5.3", "7.0", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4"];
 const INDENTS: [&str; 4] = ["2 spaces", "4 spaces", "8 spaces", "Tab"];
@@ -15,9 +17,10 @@ pub fn status_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     egui::Panel::bottom("status").show(ui, |ui| {
         crate::design::components::ghost_controls(ui);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
             if app.files.indexing() {
-                ui.spinner();
-                ui.weak("Indexing…");
+                crate::design::components::Spinner::show(ui, 14.0);
+                StatusItem::new("Indexing…").show(ui);
             }
             let msg = app.ws.message.clone();
             let message = if msg.is_empty() {
@@ -25,16 +28,33 @@ pub fn status_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             } else {
                 msg
             };
-            if ui.button(message).on_hover_text("Notifications").clicked() {
+            let tone = match crate::notifications::classify(&message) {
+                Tone::Info => Tone::Neutral,
+                tone => tone,
+            };
+            let icon = if tone == Tone::Neutral {
+                IconId::Notifications
+            } else {
+                tone.icon()
+            };
+            if StatusItem::new(message)
+                .icon(icon)
+                .max_width((ui.available_width() * 0.45).max(120.0))
+                .tone(tone)
+                .tooltip("Event Log — Notifications")
+                .show(ui)
+                .clicked()
+            {
                 app.tw.toggle(ToolWindow::Notifications);
             }
             // Widget de inspeções do arquivo ativo (UI-ED-006-03): abre o
             // Problems no escopo do arquivo.
             let insp = app.inspections.label();
             if !insp.is_empty()
-                && ui
-                    .button(insp)
-                    .on_hover_text("Inspections — open Problems for this file")
+                && StatusItem::new(insp)
+                    .icon(IconId::Problems)
+                    .tooltip("Inspections — open Problems for this file")
+                    .show(ui)
                     .clicked()
             {
                 app.problems_scope = 1;
@@ -91,10 +111,26 @@ fn navigation_bar_contents(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             app.tw.set_visible(ToolWindow::Project, true);
         }
         if let Some(path) = path {
+            // Each segment lists its folder: pick a file to open (RF-SEL-11).
             let relative = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
+            let mut dir = root.clone();
             for component in relative.components() {
-                ui.label(egui::RichText::new(">").weak());
-                ui.label(component.as_os_str().to_string_lossy());
+                ui.label(egui::RichText::new("›").weak());
+                let name = component.as_os_str().to_string_lossy().into_owned();
+                let parent = dir.clone();
+                dir = dir.join(&name);
+                let is_last = dir == path;
+                let response = ui.add(
+                    egui::Button::new(egui::RichText::new(&name).color(if is_last {
+                        ui.visuals().text_color()
+                    } else {
+                        ui.visuals().weak_text_color()
+                    }))
+                    .frame(false),
+                );
+                egui::Popup::menu(&response).show(|ui| {
+                    folder_menu(app, ui, &parent, &dir);
+                });
             }
         }
     });
@@ -112,7 +148,10 @@ fn file_type_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let detected = app.editors.detect(buffer);
     let overridden = app.file_type_override(&path).is_some();
     let current = detected.name().to_string();
-    ui.menu_button(current.clone(), |ui| {
+    let response = StatusItem::new(current.clone())
+        .tooltip("File type: highlighting and language support")
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(180.0);
         ui.label(egui::RichText::new("File type of this file").weak().small());
         if ui.selectable_label(!overridden, "Auto-detect").clicked() {
@@ -144,14 +183,63 @@ fn file_type_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 }
             }
         }
-    })
-    .response
-    .on_hover_text("File type: highlighting and language support");
+    });
+}
+
+/// Contents of `dir` in a navigation bar popup; folders open submenus.
+fn folder_menu(
+    app: &mut PhpIdeApp,
+    ui: &mut egui::Ui,
+    dir: &std::path::Path,
+    current: &std::path::Path,
+) {
+    ui.set_min_width(220.0);
+    let ctx = ui.ctx().clone();
+    let Some(mut entries) = app.files.children(&app.jobs, &ctx, dir) else {
+        ui.spinner();
+        return;
+    };
+    let options = crate::project_tree::tree_options(app);
+    entries.retain(|e| options.show_excluded || !e.excluded);
+    crate::services::files::sort_entries(&mut entries, &options);
+    egui::ScrollArea::vertical()
+        .max_height(420.0)
+        .show(ui, |ui| {
+            for entry in entries {
+                let (icon, color) = if entry.is_dir {
+                    (
+                        phpide_icons::IconId::Folder,
+                        crate::design::current(&ctx).palette.folder,
+                    )
+                } else {
+                    let (icon, kind) = phpide_icons::file_icon(&entry.name);
+                    (icon, crate::design::current(&ctx).palette.file_color(kind))
+                };
+                if entry.is_dir {
+                    ui.menu_button(format!("{}/", entry.name), |ui| {
+                        folder_menu(app, ui, &entry.path, current);
+                    });
+                } else {
+                    let row = crate::design::components::ListRow::new(entry.name.clone())
+                        .icon(icon, color)
+                        .selected(entry.path == current)
+                        .show(ui);
+                    if row.clicked() {
+                        app.open_file_tab(&entry.path, false);
+                        app.editors.request_focus();
+                        ui.close();
+                    }
+                }
+            }
+        });
 }
 
 fn php_level_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let current = app.settings.php_level.clone();
-    ui.menu_button(format!("PHP {current}"), |ui| {
+    let response = StatusItem::new(format!("PHP {current}"))
+        .tooltip("PHP Language Level")
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(120.0);
         for level in PHP_LEVELS {
             if ui
@@ -169,9 +257,7 @@ fn php_level_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 .weak()
                 .small(),
         );
-    })
-    .response
-    .on_hover_text("PHP Language Level");
+    });
 }
 
 fn caret_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
@@ -183,9 +269,9 @@ fn caret_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     } else {
         "—:—".to_string()
     };
-    if ui
-        .button(text)
-        .on_hover_text("Line:Column — Go to Line")
+    if StatusItem::new(text)
+        .tooltip("Line:Column — Go to Line (Ctrl+G)")
+        .show(ui)
         .clicked()
     {
         app.goto_line_open = true;
@@ -194,9 +280,9 @@ fn caret_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 
 fn line_ending_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let current = app.settings.line_ending.clone();
-    if ui
-        .button(&current)
-        .on_hover_text("Line endings — switch LF/CRLF")
+    if StatusItem::new(current.clone())
+        .tooltip("Line endings — switch LF/CRLF")
+        .show(ui)
         .clicked()
     {
         app.settings.line_ending = if current == "LF" { "CRLF" } else { "LF" }.to_string();
@@ -205,14 +291,21 @@ fn line_ending_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn encoding_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    if ui.button("UTF-8").on_hover_text("Encoding").clicked() {
+    if StatusItem::new("UTF-8")
+        .tooltip("File encoding")
+        .show(ui)
+        .clicked()
+    {
         app.ws.message = "File encoding: UTF-8".to_string();
     }
 }
 
 fn indent_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let current = app.settings.indent.clone();
-    ui.menu_button(current.clone(), |ui| {
+    let response = StatusItem::new(current.clone())
+        .tooltip("Indent style")
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
         for option in INDENTS {
             if ui.selectable_label(option == current, option).clicked() {
                 app.settings.indent = option.to_string();
@@ -220,9 +313,7 @@ fn indent_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 ui.close();
             }
         }
-    })
-    .response
-    .on_hover_text("Indent style");
+    });
 }
 
 fn branch_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
@@ -230,9 +321,10 @@ fn branch_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         return;
     }
     let branch = app.git_branch();
-    if ui
-        .button(format!("Git {branch}"))
-        .on_hover_text("VCS branch — Version Control (Alt+9)")
+    if StatusItem::new(branch)
+        .icon(IconId::GitBranch)
+        .tooltip("Git branch — Version Control (Alt+9)")
+        .show(ui)
         .clicked()
     {
         app.git_refresh();
@@ -245,12 +337,17 @@ fn readonly_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         return;
     };
     let readonly = buf.readonly;
-    let label = if readonly { "RO" } else { "RW" };
-    if ui
-        .button(label)
-        .on_hover_text("Read-only / Read-write")
-        .clicked()
-    {
+    let item = if readonly {
+        StatusItem::new("")
+            .icon(IconId::FileLock)
+            .tone(Tone::Warning)
+            .tooltip("Read-only — click to make writable")
+    } else {
+        StatusItem::new("")
+            .icon(IconId::Edit)
+            .tooltip("Writable — click to make read-only")
+    };
+    if item.show(ui).clicked() {
         if let Some(buf) = app.ws.active_buffer_mut() {
             buf.readonly = !buf.readonly;
         }
@@ -259,16 +356,15 @@ fn readonly_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 
 fn debug_listen_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let on = app.debug_listen;
-    let label = if on { "Listen on" } else { "Listen off" };
-    if ui
-        .button(egui::RichText::new(label).color(if on {
-            crate::design::current(ui.ctx()).palette.success
+    let item = StatusItem::new("")
+        .icon(IconId::Debug)
+        .tone(if on { Tone::Success } else { Tone::Neutral })
+        .tooltip(if on {
+            "Listening for PHP debug connections — click to stop"
         } else {
-            ui.style().visuals.text_color()
-        }))
-        .on_hover_text("Listen for PHP Debug Connections")
-        .clicked()
-    {
+            "Listen for PHP debug connections"
+        });
+    if item.show(ui).clicked() {
         app.debug_listen = !on;
         app.ws.message = if app.debug_listen {
             "listening for Xdebug connections"
@@ -281,7 +377,11 @@ fn debug_listen_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 
 fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let server = app.settings.deployment_server.clone();
-    ui.menu_button(format!("Deploy: {server}"), |ui| {
+    let response = StatusItem::new(format!("Deploy: {server}"))
+        .icon(IconId::RemoteHost)
+        .tooltip("Default deployment server")
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
         if ui.selectable_label(server == "None", "None").clicked() {
             app.settings.deployment_server = "None".to_string();
             app.persist_settings();
@@ -291,12 +391,11 @@ fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             app.settings_dialog.open(SettingsPage::Named("Deployment"));
             ui.close();
         }
-    })
-    .response
-    .on_hover_text("Default deployment server");
+    });
 }
 
 fn memory_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label(egui::RichText::new(format!("{} MB", app.rss_mb())).weak())
-        .on_hover_text("Memory used by PHP IDE (RSS)");
+    StatusItem::new(format!("{} MB", app.rss_mb()))
+        .tooltip("Memory used by PHP IDE (RSS)")
+        .show(ui);
 }

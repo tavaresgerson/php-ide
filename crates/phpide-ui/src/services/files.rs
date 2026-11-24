@@ -107,6 +107,8 @@ pub struct ProjectFiles {
     started: bool,
     /// Folders whose subfolders expand as they load ("Expand All").
     expanding: HashSet<PathBuf>,
+    /// Projects attached to this one, shown as extra roots (RF-PRJ-08).
+    attached: Vec<PathBuf>,
 }
 
 impl ProjectFiles {
@@ -123,11 +125,41 @@ impl ProjectFiles {
             index_stale: false,
             started: false,
             expanding: HashSet::new(),
+            attached: Vec::new(),
         }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Attached project roots.
+    pub fn attached(&self) -> &[PathBuf] {
+        &self.attached
+    }
+
+    /// Replaces the attached roots; new ones are read and indexed.
+    pub fn set_attached(&mut self, jobs: &JobSystem, ctx: &egui::Context, roots: Vec<PathBuf>) {
+        if roots == self.attached {
+            return;
+        }
+        for root in &roots {
+            if !self.attached.contains(root) {
+                self.expanded.insert(root.clone());
+                self.request_dir(jobs, ctx, root);
+            }
+        }
+        self.attached = roots;
+        self.request_index(jobs, ctx);
+    }
+
+    /// The root (main or attached) that contains `path`.
+    pub fn root_of(&self, path: &Path) -> Option<&Path> {
+        std::iter::once(&self.root)
+            .chain(self.attached.iter())
+            .filter(|r| path.starts_with(r))
+            .max_by_key(|r| r.components().count())
+            .map(PathBuf::as_path)
     }
 
     pub fn is_expanded(&self, dir: &Path) -> bool {
@@ -144,7 +176,13 @@ impl ProjectFiles {
     /// Collapses every folder (RF-NAV-07).
     pub fn collapse_all(&mut self) {
         self.expanding.clear();
-        self.expanded.retain(|dir| *dir == self.root);
+        let root = self.root.clone();
+        let only_root = self.attached.is_empty();
+        self.expanded.retain(|dir| only_root && *dir == root);
+        if !only_root {
+            // Root rows stay visible; the main one stays loaded.
+            self.expanded.insert(root);
+        }
     }
 
     /// Expands `dir` and its subfolders as they load, up to a limit, and
@@ -190,6 +228,22 @@ impl ProjectFiles {
         }
     }
 
+    /// Loaded contents of `dir` (asks for them when missing).
+    pub fn children(
+        &mut self,
+        jobs: &JobSystem,
+        ctx: &egui::Context,
+        dir: &Path,
+    ) -> Option<Vec<TreeEntry>> {
+        match self.loaded.get(dir) {
+            Some(children) => Some(children.clone()),
+            None => {
+                self.request_dir(jobs, ctx, dir);
+                None
+            }
+        }
+    }
+
     /// Re-reads one folder (after a file operation in it).
     pub fn reload_dir(&mut self, jobs: &JobSystem, ctx: &egui::Context, dir: &Path) {
         self.request_dir(jobs, ctx, dir);
@@ -210,9 +264,13 @@ impl ProjectFiles {
         for dir in dirs {
             self.request_dir(jobs, ctx, &dir);
         }
-        if !self.loaded.contains_key(&self.root) {
-            let root = self.root.clone();
-            self.request_dir(jobs, ctx, &root);
+        let roots: Vec<PathBuf> = std::iter::once(self.root.clone())
+            .chain(self.attached.iter().cloned())
+            .collect();
+        for root in roots {
+            if !self.loaded.contains_key(&root) {
+                self.request_dir(jobs, ctx, &root);
+            }
         }
     }
 
@@ -228,10 +286,13 @@ impl ProjectFiles {
 
     /// Expands every ancestor of `path` (reveal the active file).
     pub fn reveal(&mut self, jobs: &JobSystem, ctx: &egui::Context, path: &Path) {
+        let Some(root) = self.root_of(path).map(Path::to_path_buf) else {
+            return;
+        };
         let mut dirs: Vec<PathBuf> = path
             .ancestors()
             .skip(1)
-            .take_while(|dir| dir.starts_with(&self.root))
+            .take_while(|dir| dir.starts_with(&root))
             .map(Path::to_path_buf)
             .collect();
         dirs.reverse();
@@ -243,9 +304,35 @@ impl ProjectFiles {
     }
 
     /// Rows to draw, in order. Only expanded and loaded folders contribute.
+    /// With attached projects, every root is a row of its own.
     pub fn visible_rows(&self, options: &TreeOptions) -> Vec<TreeRow> {
         let mut rows = Vec::new();
-        self.push_children(&self.root, 0, options, &mut rows);
+        if self.attached.is_empty() {
+            self.push_children(&self.root, 0, options, &mut rows);
+            return rows;
+        }
+        for root in std::iter::once(&self.root).chain(self.attached.iter()) {
+            let expanded = self.expanded.contains(root);
+            rows.push(TreeRow {
+                entry: TreeEntry {
+                    path: root.clone(),
+                    name: root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| root.display().to_string()),
+                    is_dir: true,
+                    excluded: false,
+                    modified: None,
+                },
+                depth: 0,
+                expanded,
+                loading: expanded && self.pending.contains_key(root),
+                error: self.failed.get(root).cloned(),
+            });
+            if expanded {
+                self.push_children(root, 1, options, &mut rows);
+            }
+        }
         rows
     }
 
@@ -337,10 +424,15 @@ impl ProjectFiles {
             self.index_stale = true;
             return;
         }
-        let root = self.root.clone();
+        let roots: Vec<PathBuf> = std::iter::once(self.root.clone())
+            .chain(self.attached.iter().cloned())
+            .collect();
         let ctx = ctx.clone();
         self.index_job = Some(jobs.spawn(move |_| {
-            let files = phpide_core::scan(&root);
+            let files = roots
+                .iter()
+                .flat_map(|root| phpide_core::scan(root))
+                .collect();
             ctx.request_repaint();
             Ok(files)
         }));
@@ -546,6 +638,32 @@ mod tests {
             .visible_rows(&TreeOptions::default())
             .iter()
             .all(|r| !r.expanded));
+    }
+
+    #[test]
+    fn attached_projects_are_extra_roots_and_are_indexed() {
+        let dir = project();
+        let other = tempfile::tempdir().unwrap();
+        fs::write(other.path().join("lib.php"), "<?php").unwrap();
+        let root = dir.path().to_path_buf();
+        let jobs = JobSystem::new();
+        let ctx = egui::Context::default();
+        let mut files = ProjectFiles::new(root.clone());
+        files.refresh(&jobs, &ctx);
+        settle(&mut files, &jobs, &ctx);
+        files.set_attached(&jobs, &ctx, vec![other.path().to_path_buf()]);
+        let index = settle(&mut files, &jobs, &ctx).expect("index");
+        assert!(index > 12);
+        let rows = files.visible_rows(&TreeOptions::default());
+        let roots: Vec<&TreeRow> = rows.iter().filter(|r| r.depth == 0).collect();
+        assert_eq!(roots.len(), 2);
+        assert!(rows
+            .iter()
+            .any(|r| r.entry.name == "lib.php" && r.depth == 1));
+        assert_eq!(
+            files.root_of(&other.path().join("lib.php")),
+            Some(other.path())
+        );
     }
 
     #[test]

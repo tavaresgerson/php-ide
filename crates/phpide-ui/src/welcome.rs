@@ -41,6 +41,10 @@ pub struct WelcomeState {
     err: String,
     /// Filter of the recent projects list (RF-PRJ-04).
     search: String,
+    /// Recent project under the keyboard cursor.
+    selected: usize,
+    /// Put the keyboard in the search field on the next frame.
+    pub focus_search: bool,
     dialog: Option<HomeDialog>,
     /// Native folder chooser running, and what the folder is for.
     picker: Option<(PickFor, JobHandle<Picked>)>,
@@ -81,6 +85,8 @@ impl WelcomeState {
             import_path: String::new(),
             err: String::new(),
             search: String::new(),
+            selected: 0,
+            focus_search: true,
             dialog: None,
             picker: None,
             listing: None,
@@ -332,6 +338,7 @@ pub fn open_prompt_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
             ctx,
             |ui| {
                 ui.label(format!("Where should \"{name}\" open?"));
+                ui.weak("Attach adds it to this window's Project view and Go to File.");
                 ui.add_space(6.0);
                 crate::design::components::Checkbox::new(&mut remember, "Remember my choice")
                     .show(ui);
@@ -343,6 +350,9 @@ pub fn open_prompt_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
                 }
                 if Button::new("This Window").show(ui).clicked() {
                     choice = Some("current");
+                }
+                if Button::new("Attach").show(ui).clicked() {
+                    choice = Some("attach");
                 }
                 if Button::new("Cancel").show(ui).clicked() {
                     choice = Some("cancel");
@@ -357,13 +367,17 @@ pub fn open_prompt_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
         return;
     };
     app.open_prompt = None;
-    if remember && choice != "cancel" {
+    if remember && choice != "cancel" && choice != "attach" {
         app.settings.open_project_mode = choice.to_string();
         app.persist_settings();
     }
     match choice {
         "new" => app.open_in_new_window(&target),
         "current" => app.request_load_project(target, ctx),
+        "attach" => {
+            app.attach_project(&target);
+            app.welcome_open = false;
+        }
         _ => {}
     }
 }
@@ -374,11 +388,30 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let p = theme.palette;
     ui.horizontal(|ui| {
         let search_width = (ui.available_width() - 330.0).max(160.0);
-        TextInput::search(&mut app.welcome.search)
+        let search = TextInput::search(&mut app.welcome.search)
             .hint("Search projects")
             .width(search_width)
             .id_salt("home-search")
             .show(ui);
+        // Keyboard: type to filter, ↑/↓ to pick, Enter to open.
+        if app.welcome.focus_search && app.welcome.dialog.is_none() {
+            search.request_focus();
+            app.welcome.focus_search = false;
+        }
+        if search.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    search.id,
+                    egui::EventFilter {
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+        }
+        if search.changed() {
+            app.welcome.selected = 0;
+        }
         ui.add_space(8.0);
         if Button::new("Get from VCS").show(ui).clicked() {
             app.welcome.err.clear();
@@ -427,8 +460,21 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         ui.weak("No project matches the search.");
         return;
     }
+    let keyboard = app.welcome.dialog.is_none() && app.open_prompt.is_none();
+    if keyboard {
+        ui.input(|i| {
+            if i.key_pressed(egui::Key::ArrowDown) {
+                app.welcome.selected = (app.welcome.selected + 1).min(shown.len() - 1);
+            }
+            if i.key_pressed(egui::Key::ArrowUp) {
+                app.welcome.selected = app.welcome.selected.saturating_sub(1);
+            }
+        });
+    }
+    app.welcome.selected = app.welcome.selected.min(shown.len() - 1);
+    let enter = keyboard && ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut action: Option<RecentAction> = None;
-    for (i, path) in shown {
+    for (row, (i, path)) in shown.into_iter().enumerate() {
         let exists = exists_flags
             .as_ref()
             .and_then(|flags| flags.get(i).copied())
@@ -438,8 +484,12 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
         let current = app.project_open && Path::new(path) == app.ws.root;
-        if let Some(a) = recent_row(ui, path, &name, exists, current) {
+        let selected = row == app.welcome.selected;
+        if let Some(a) = recent_row(ui, path, &name, exists, current, selected) {
             action = Some(a);
+        }
+        if selected && enter && exists {
+            action = Some(RecentAction::Open(path.clone()));
         }
     }
     match action {
@@ -475,6 +525,7 @@ fn recent_row(
     name: &str,
     exists: bool,
     current: bool,
+    selected: bool,
 ) -> Option<RecentAction> {
     let theme = crate::design::current(ui.ctx());
     let p = theme.palette;
@@ -504,7 +555,9 @@ fn recent_row(
     });
     let hovered = response.hovered() || remove.hovered();
     if ui.is_rect_visible(rect) {
-        if hovered {
+        if selected {
+            ui.painter().rect_filled(rect, 6.0, p.bg_selected);
+        } else if hovered {
             ui.painter().rect_filled(rect, 6.0, p.bg_hover);
         }
         let icon_rect = egui::Rect::from_center_size(

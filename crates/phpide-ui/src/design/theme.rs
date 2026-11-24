@@ -77,6 +77,12 @@ pub struct Theme {
     pub syntax: SyntaxPalette,
     pub metrics: Metrics,
     pub editor_font_size: f32,
+    /// Code font family (empty: the bundled JetBrains Mono).
+    pub editor_font_family: String,
+    /// Row height as a multiple of the font height.
+    pub editor_line_height: f32,
+    /// User changes to the color scheme (see `crate::color_scheme`).
+    pub color_changes: std::sync::Arc<serde_json::Value>,
     pub reduced_motion: bool,
 }
 
@@ -89,6 +95,9 @@ impl Theme {
             syntax: id.syntax(),
             metrics: density.metrics(),
             editor_font_size: typography::EDITOR,
+            editor_font_family: String::new(),
+            editor_line_height: 1.2,
+            color_changes: Default::default(),
             reduced_motion: false,
         }
     }
@@ -101,8 +110,29 @@ impl Theme {
         FontId::monospace(typography::GUTTER)
     }
 
+    /// Theme colors of code, before the user's changes.
+    pub fn base_syntax_style(&self) -> phpide_php::SyntaxStyle {
+        let mut style = self.syntax.style(self.editor_font());
+        style.bold_font = Some(FontId::new(
+            self.editor_font_size,
+            super::fonts::family(super::fonts::MONO_BOLD),
+        ));
+        style
+    }
+
+    /// Code colors for `language` (a file type id): theme, then the user's
+    /// Language Defaults, then the user's changes for that language.
+    pub fn syntax_style_for(&self, language: Option<&str>) -> phpide_php::SyntaxStyle {
+        crate::color_scheme::resolve(
+            &self.base_syntax_style(),
+            &self.color_changes,
+            self.id.name(),
+            language,
+        )
+    }
+
     pub fn syntax_style(&self) -> phpide_php::SyntaxStyle {
-        self.syntax.style(self.editor_font())
+        self.syntax_style_for(None)
     }
 
     /// Colors and fonts of the code editor.
@@ -112,7 +142,7 @@ impl Theme {
             syntax: self.syntax_style(),
             gutter_font: self.gutter_font(),
             ui_font: FontId::proportional(typography::BODY),
-            line_spacing: 1.2,
+            line_spacing: self.editor_line_height.clamp(1.0, 2.0),
             colors: phpide_editor::EditorColors {
                 background: p.bg_editor,
                 gutter_background: p.bg_editor,
@@ -187,9 +217,10 @@ pub fn current(ctx: &egui::Context) -> Arc<Theme> {
 /// Installs fonts once and applies the theme to the context style.
 pub fn install(ctx: &egui::Context, theme: Theme) {
     let fonts_installed = egui::Id::new("phpide-design-fonts");
-    if !ctx.data(|data| data.get_temp::<bool>(fonts_installed).unwrap_or(false)) {
-        fonts::install(ctx);
-        ctx.data_mut(|data| data.insert_temp(fonts_installed, true));
+    let installed: Option<String> = ctx.data(|data| data.get_temp(fonts_installed));
+    if installed.as_deref() != Some(theme.editor_font_family.as_str()) {
+        fonts::install_with_editor_family(ctx, &theme.editor_font_family);
+        ctx.data_mut(|data| data.insert_temp(fonts_installed, theme.editor_font_family.clone()));
     }
     let egui_theme = if theme.id.is_dark() {
         egui::Theme::Dark

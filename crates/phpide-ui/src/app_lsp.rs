@@ -199,7 +199,7 @@ impl PhpIdeApp {
     /// Go to Symbol (T-PHP-004-02): dispara workspace/symbol quando a
     /// consulta da palette muda.
     pub(crate) fn poll_symbol_query(&mut self) {
-        if !self.palette.open || self.palette.mode != palette::PaletteMode::Symbols {
+        if !self.palette.open || !self.palette.mode.wants_symbols() {
             return;
         }
         let query = self.palette.query.clone();
@@ -431,9 +431,33 @@ impl PhpIdeApp {
         if let Some(rx) = &self.pending_symbols {
             if let Ok(result) = rx.try_recv() {
                 self.pending_symbols = None;
+                let kinds: Vec<(u64, String)> = result
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|s| {
+                                (
+                                    s["kind"].as_u64().unwrap_or(0),
+                                    s["containerName"].as_str().unwrap_or("").to_string(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut kinds = kinds.into_iter();
                 self.symbol_results = intelligence::parse_workspace_symbols(&result)
                     .into_iter()
-                    .map(|(name, loc)| (name, loc.path, loc.line0, loc.col0))
+                    .map(|(name, loc)| {
+                        let (kind, container) = kinds.next().unwrap_or_default();
+                        palette::SymbolHit {
+                            name,
+                            container,
+                            path: loc.path,
+                            line0: loc.line0,
+                            col0: loc.col0,
+                            kind,
+                        }
+                    })
                     .collect();
             }
         }

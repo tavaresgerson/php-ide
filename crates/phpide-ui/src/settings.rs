@@ -127,6 +127,20 @@ pub struct Settings {
     pub reopen_last_project: bool,
     /// Project open when the IDE quit (empty after Close Project).
     pub last_project: String,
+    /// Projects attached to another one: `(main root, attached root)`.
+    pub attached_projects: Vec<(String, String)>,
+    /// Code font family (empty: bundled JetBrains Mono) (RF-UI-05).
+    pub editor_font_family: String,
+    /// Editor row height, 1.0–2.0 times the font height.
+    pub editor_line_height: f32,
+    /// Changes to the color scheme, per theme (RF-HL-10/11).
+    pub color_scheme: Value,
+    /// Tool windows moved by the user: `(title, "Left" | "Right" | "Bottom" | "Floating")`.
+    pub tool_window_placements: Vec<(String, String)>,
+    /// Editor tabs wrap onto several rows (RF-TAB-06).
+    pub tabs_multiple_rows: bool,
+    /// Pinned tabs come first (RF-TAB-16).
+    pub tabs_pinned_left: bool,
 }
 
 fn pairs(value: &Value) -> Option<Vec<(String, String)>> {
@@ -205,6 +219,13 @@ impl Default for Settings {
             open_project_mode: "ask".to_string(),
             reopen_last_project: true,
             last_project: String::new(),
+            attached_projects: Vec::new(),
+            editor_font_family: String::new(),
+            editor_line_height: 1.2,
+            color_scheme: Value::Null,
+            tool_window_placements: Vec::new(),
+            tabs_multiple_rows: false,
+            tabs_pinned_left: true,
         }
     }
 }
@@ -339,6 +360,32 @@ impl Settings {
         if let Some(value) = v["last_project"].as_str() {
             s.last_project = value.to_string();
         }
+        if let Some(value) = v["editor_font_family"].as_str() {
+            s.editor_font_family = value.to_string();
+        }
+        if let Some(value) = v["editor_line_height"].as_f64() {
+            s.editor_line_height = (value as f32).clamp(1.0, 2.0);
+        }
+        if v["color_scheme"].is_object() {
+            s.color_scheme = v["color_scheme"].clone();
+        }
+        if let Some(value) = pairs(&v["tool_window_placements"]) {
+            s.tool_window_placements = value;
+        }
+        if let Some(value) = v["tabs_multiple_rows"].as_bool() {
+            s.tabs_multiple_rows = value;
+        }
+        if let Some(value) = v["tabs_pinned_left"].as_bool() {
+            s.tabs_pinned_left = value;
+        }
+        if let Some(arr) = v["attached_projects"].as_array() {
+            s.attached_projects = arr
+                .iter()
+                .filter_map(|pair| {
+                    Some((pair[0].as_str()?.to_string(), pair[1].as_str()?.to_string()))
+                })
+                .collect();
+        }
         if let Some(value) = v["tab_limit"].as_u64() {
             // Limites seguros: pelo menos 1 aba, no máximo 99.
             s.tab_limit = value.clamp(1, 99) as u32;
@@ -358,7 +405,7 @@ impl Settings {
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
-        let v = json!({
+        let mut v = json!({
             "theme": self.theme,
             "zoom": self.zoom,
             "php_level": self.php_level,
@@ -385,24 +432,45 @@ impl Settings {
             "hint_exclude": self.hint_exclude,
             "blame_gutter": self.blame_gutter,
             "lens_mode": self.lens_mode,
-            "file_type_patterns": pairs_json(&self.file_type_patterns),
-            "file_type_overrides": pairs_json(&self.file_type_overrides),
-            "tree_autoscroll_from_source": self.tree_autoscroll_from_source,
-            "tree_single_click_open": self.tree_single_click_open,
-            "tree_sort": self.tree_sort,
-            "tree_folders_first": self.tree_folders_first,
-            "tree_show_excluded": self.tree_show_excluded,
-            "tabs_open_at_end": self.tabs_open_at_end,
-            "open_project_mode": self.open_project_mode,
-            "reopen_last_project": self.reopen_last_project,
-            "last_project": self.last_project,
         });
+        v["file_type_patterns"] = json!(pairs_json(&self.file_type_patterns));
+        v["file_type_overrides"] = json!(pairs_json(&self.file_type_overrides));
+        v["tree_autoscroll_from_source"] = json!(self.tree_autoscroll_from_source);
+        v["tree_single_click_open"] = json!(self.tree_single_click_open);
+        v["tree_sort"] = json!(self.tree_sort);
+        v["tree_folders_first"] = json!(self.tree_folders_first);
+        v["tree_show_excluded"] = json!(self.tree_show_excluded);
+        v["tabs_open_at_end"] = json!(self.tabs_open_at_end);
+        v["open_project_mode"] = json!(self.open_project_mode);
+        v["reopen_last_project"] = json!(self.reopen_last_project);
+        v["last_project"] = json!(self.last_project);
+        v["editor_font_family"] = json!(self.editor_font_family);
+        v["editor_line_height"] = json!(self.editor_line_height);
+        v["color_scheme"] = json!(self.color_scheme);
+        v["tool_window_placements"] = pairs_json(&self.tool_window_placements);
+        v["tabs_multiple_rows"] = json!(self.tabs_multiple_rows);
+        v["tabs_pinned_left"] = json!(self.tabs_pinned_left);
+        v["attached_projects"] = json!(self
+            .attached_projects
+            .iter()
+            .map(|(a, b)| json!([a, b]))
+            .collect::<Vec<_>>());
         if let Err(e) = store::save(&dir.join("settings.json"), &v) {
             eprintln!("{}", e.log_line());
         }
     }
 
     /// Registra projeto aberto no topo do MRU (sem duplicatas, máx. 12).
+    /// Roots attached to the project at `root`.
+    pub fn attached_to(&self, root: &Path) -> Vec<PathBuf> {
+        let key = root.display().to_string();
+        self.attached_projects
+            .iter()
+            .filter(|(main, _)| *main == key)
+            .map(|(_, attached)| PathBuf::from(attached))
+            .collect()
+    }
+
     /// Removes a project from the recent list (RF-PRJ-05). Files stay.
     pub fn forget_project(&mut self, path: &str) {
         self.recent_projects.retain(|p| p != path);

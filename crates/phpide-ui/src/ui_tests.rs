@@ -100,7 +100,7 @@ fn closing_a_modified_tab_from_the_menu_asks_first() {
         .unwrap()
         .insert(0, "// unsaved\n");
 
-    harness.get_by_label("Menu").click();
+    harness.get_by_label("Main menu").click();
     harness.run_steps(2);
     // Submenus carry an arrow in their accessible label.
     harness.get_by_label("File ⏵").click();
@@ -462,10 +462,12 @@ fn tabs_open_beside_the_active_one_switch_with_alt_arrows_and_reopen() {
         .open_file_tab(&root.join("vendor/acme/Lib.php"), true);
     harness.run_steps(2);
     assert!(harness.state().ws.active_buffer().unwrap().preview);
-    // The tab, not the tree row or the breadcrumb with the same name.
+    // The tab, not the Run widget, the tree row or the breadcrumb with the
+    // same name: the topmost label below the window header.
     let pos = harness
         .get_all_by_label("Lib.php")
         .map(|n| n.rect())
+        .filter(|r| r.top() > 40.0)
         .min_by(|a, b| a.top().total_cmp(&b.top()))
         .unwrap()
         .center();
@@ -560,4 +562,221 @@ fn opening_a_second_project_asks_where() {
     harness.run_steps(2);
     let app = harness.state();
     assert!(app.welcome_open && !app.project_open);
+}
+
+#[test]
+fn attached_project_joins_the_tree_and_go_to_file() {
+    let (_dir, root) = project();
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(other.path().join("Helper.php"), "<?php\n").unwrap();
+    let mut harness = harness(&root, Vec::new());
+    harness.run_steps(2);
+    let ctx = harness.ctx.clone();
+    harness
+        .state_mut()
+        .open_project_at(other.path().to_path_buf(), &ctx);
+    harness.run_steps(2);
+    harness.get_by_label("Attach").click();
+    let other_name = other
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    step_until(&mut harness, "the attached root in the tree", |h| {
+        tree_rows(h).contains(&other_name) && tree_rows(h).contains(&"  Helper.php".to_string())
+    });
+    assert_eq!(
+        harness.state().ws.root,
+        root,
+        "the window keeps its project"
+    );
+    step_until(
+        &mut harness,
+        "the index to include the attached files",
+        |h| {
+            h.state()
+                .ws
+                .files
+                .iter()
+                .any(|f| f.path.ends_with("Helper.php"))
+        },
+    );
+}
+
+#[test]
+fn search_everywhere_tabs_recent_files_and_settings() {
+    let (_dir, root) = project();
+    let file = root.join("src/App.php");
+    let mut harness = harness(&root, vec![file]);
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::P);
+    harness.run_steps(2);
+    assert!(harness.state().palette.open);
+    assert!(
+        harness.query_all_by_label("App.php").count() >= 3,
+        "recent files show before typing (tab, tree, palette)"
+    );
+    harness.key_press(egui::Key::Tab);
+    harness.run_steps(1);
+    assert_eq!(
+        harness.state().palette.mode,
+        crate::palette::PaletteMode::Classes
+    );
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    harness.run_steps(1);
+    assert_eq!(
+        harness.state().palette.mode,
+        crate::palette::PaletteMode::All
+    );
+    for c in ">color scheme".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(2);
+    let app = harness.state();
+    assert!(!app.palette.open);
+    assert!(app.settings_dialog.open);
+    assert_eq!(
+        app.settings_dialog.page,
+        crate::settings_dialog::SettingsPage::ColorScheme
+    );
+}
+
+#[test]
+fn select_in_offers_targets_and_reveals_the_file() {
+    let (_dir, root) = project();
+    let file = root.join("src/App.php");
+    let mut harness = harness(&root, vec![file.clone()]);
+    harness.run_steps(2);
+    harness.state_mut().settings.tree_autoscroll_from_source = false;
+    harness.state_mut().tree.selection.clear();
+    harness.key_press_modifiers(
+        egui::Modifiers {
+            alt: true,
+            ..Default::default()
+        },
+        egui::Key::F1,
+    );
+    harness.run_steps(2);
+    assert!(harness.query_by_label("2. Files (file manager)").is_some());
+    harness.key_press(egui::Key::Num1);
+    harness.run_steps(3);
+    assert!(harness.state().select_in.is_none());
+    assert_eq!(harness.state().tree.selection, vec![file]);
+}
+
+/// Phase 4 gate: open project → edit → save → close, keyboard only.
+#[test]
+fn keyboard_only_open_edit_save_close() {
+    let (_dir, root) = project();
+    let mut harness = home_harness(&root, vec![root.display().to_string()]);
+    harness.run_steps(3);
+    // Home: the search field has the keyboard; Enter opens the first project.
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    assert!(
+        harness.state().project_open,
+        "Enter opens the selected project"
+    );
+    step_until(&mut harness, "the file index", |h| {
+        !h.state().ws.files.is_empty()
+    });
+
+    // Go to File, type, Enter.
+    harness.key_press_modifiers(
+        egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        },
+        egui::Key::N,
+    );
+    harness.run_steps(2);
+    for c in "App".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let file = root.join("src/App.php");
+    assert_eq!(
+        harness.state().ws.active_buffer().unwrap().path.as_deref(),
+        Some(file.as_path())
+    );
+
+    // The editor has the keyboard: type and save.
+    for c in "// ok\n".chars() {
+        if c == '\n' {
+            harness.key_press(egui::Key::Enter);
+        } else {
+            harness.event(egui::Event::Text(c.to_string()));
+        }
+        harness.run_steps(1);
+    }
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::S);
+    harness.run_steps(2);
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.starts_with("// ok\n"), "{saved:?}");
+
+    // Esc from a tool window gives the keyboard back to the editor.
+    harness.key_press_modifiers(
+        egui::Modifiers {
+            alt: true,
+            ..Default::default()
+        },
+        egui::Key::Num6,
+    );
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(3);
+    assert!(harness.state().editors.editor_focused);
+
+    // Find Action → Close Project.
+    harness.key_press_modifiers(
+        egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        },
+        egui::Key::A,
+    );
+    harness.run_steps(2);
+    for c in "close project".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let app = harness.state();
+    assert!(app.welcome_open && !app.project_open);
+}
+
+/// RF-UI-05: failures pop up as a toast and stay in the Event Log.
+#[test]
+fn failures_become_toasts_and_land_in_the_event_log() {
+    let (_dir, root) = project();
+    let mut harness = harness(&root, Vec::new());
+    harness.run_steps(2);
+    harness.state_mut().ws.message = "Could not rename: permission denied".to_string();
+    harness.run_steps(2);
+    assert_eq!(harness.state().toasts.len(), 1);
+    assert_eq!(harness.state().event_log.unread(), 1);
+    assert!(harness.query_by_label("Notifications (1 new)").is_some());
+
+    harness.get_by_label("Notifications (1 new)").click();
+    harness.run_steps(2);
+    assert!(harness
+        .state()
+        .tw
+        .is_visible(crate::toolwindows::ToolWindow::Notifications));
+    assert_eq!(harness.state().event_log.unread(), 0);
+    assert!(!harness
+        .query_all_by_label("Could not rename: permission denied")
+        .collect::<Vec<_>>()
+        .is_empty());
+    harness.get_by_label("Clear All").click();
+    harness.run_steps(2);
+    assert!(harness.state().event_log.is_empty());
 }

@@ -83,8 +83,10 @@ pub struct TreeState {
     pub dialog: Option<TreeDialog>,
     /// Cut or copied paths (`true` = cut).
     clipboard: Option<(Vec<PathBuf>, bool)>,
-    /// "New" popup opened from the keyboard (Alt+Insert).
+    /// "New" popup opened from the keyboard (Alt+Insert) or the + button.
     new_popup: bool,
+    new_filter: String,
+    new_selected: usize,
     focus_dialog: bool,
 }
 
@@ -154,6 +156,7 @@ enum Action {
     ExpandAll,
     CollapseAll,
     SelectOpened,
+    Detach(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -161,38 +164,37 @@ enum PathKind {
     Absolute,
     Name,
     Relative,
+    Repository,
 }
 
 pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    egui::Panel::left("tree")
-        .resizable(true)
-        .default_size(260.0)
-        .show(ui, |ui| {
-            let mut actions = Vec::new();
-            header(app, ui, &mut actions);
-            if let Some(error) = app.files.root_error() {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-                return;
-            }
-            if app.files.root_loading() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.weak("Loading…");
-                });
-                return;
-            }
-            follow_active_file(app, ui.ctx(), false);
-            let options = tree_options(app);
-            let rows = app.files.visible_rows(&options);
-            if rows.is_empty() {
-                ui.weak("This folder is empty.");
-                return;
-            }
-            body(app, ui, &rows, &mut actions);
-            for action in actions {
-                run(app, ui.ctx(), action);
-            }
-        });
+    let placement = app.tw.placement(ToolWindow::Project);
+    crate::toolwindows::dock(ui, ToolWindow::Project, placement, 260.0, |ui| {
+        let mut actions = Vec::new();
+        header(app, ui, &mut actions);
+        if let Some(error) = app.files.root_error() {
+            ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+            return;
+        }
+        if app.files.root_loading() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.weak("Loading…");
+            });
+            return;
+        }
+        follow_active_file(app, ui.ctx(), false);
+        let options = tree_options(app);
+        let rows = app.files.visible_rows(&options);
+        if rows.is_empty() {
+            ui.weak("This folder is empty.");
+            return;
+        }
+        body(app, ui, &rows, &mut actions);
+        for action in actions {
+            run(app, ui.ctx(), action);
+        }
+    });
     dialogs(app, ui.ctx());
 }
 
@@ -279,6 +281,7 @@ fn options_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .checkbox(&mut app.settings.tree_show_excluded, "Show Excluded Files")
         .changed();
     ui.separator();
+    crate::app_panels::move_to_menu(app, ui, ToolWindow::Project);
     if menu_item(ui, None, "Hide All Tool Windows", "Ctrl+Shift+F12", true).clicked() {
         app.tw.toggle_hide_all();
         ui.close();
@@ -301,7 +304,7 @@ pub fn follow_active_file(app: &mut PhpIdeApp, ctx: &egui::Context, force: bool)
         return;
     }
     app.tree.followed = Some(path.clone());
-    if !path.starts_with(app.files.root()) {
+    if app.files.root_of(&path).is_none() {
         return;
     }
     app.files.reveal(&app.jobs, ctx, &path);
@@ -328,8 +331,10 @@ fn body(app: &mut PhpIdeApp, ui: &mut egui::Ui, rows: &[TreeRow], actions: &mut 
                 },
             )
         });
-        keyboard(app, ui, rows, actions);
-    } else if app.tree.speed.is_some() {
+        if !app.tree.new_popup {
+            keyboard(app, ui, rows, actions);
+        }
+    } else if app.tree.speed.is_some() && !app.tree.new_popup {
         app.tree.speed = None;
     }
     if app.tree.new_popup {
@@ -424,6 +429,22 @@ fn draw_row(
         .highlight(highlight);
     if entry.excluded || cut {
         widget = widget.label_color(p.text_muted);
+    }
+    // Dependency roots read as libraries (RF-NAV-01).
+    let library = entry.is_dir
+        && entry
+            .path
+            .parent()
+            .is_some_and(|parent| app.files.root_of(parent) == Some(parent))
+        && matches!(entry.name.as_str(), "vendor" | "node_modules");
+    if library {
+        widget = widget
+            .icon(IconId::Package, p.text_secondary)
+            .detail(if entry.name == "vendor" {
+                "Composer packages"
+            } else {
+                "npm packages"
+            });
     }
     if row.loading {
         widget = widget.detail("Loading…");
@@ -555,6 +576,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
                 "Path From Project Root",
                 "Ctrl+Alt+Shift+C",
             ),
+            (PathKind::Repository, "Repository URL", ""),
         ] {
             if menu_item(ui, None, label, shortcut, true).clicked() {
                 actions.push(Action::CopyPath(kind));
@@ -609,6 +631,19 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
             ui.close();
         }
     });
+    if let Some(lead) = app.tree.lead.clone() {
+        if app.files.attached().contains(&lead) {
+            menu_separator(ui);
+            item(
+                actions,
+                ui,
+                "Detach Project",
+                "",
+                true,
+                Action::Detach(lead),
+            );
+        }
+    }
     if is_dir {
         menu_separator(ui);
         item(
@@ -630,34 +665,98 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
     }
 }
 
+const NEW_KINDS: [(CreateKind, IconId, &str); 6] = [
+    (CreateKind::File, IconId::File, "File"),
+    (CreateKind::Directory, IconId::Folder, "Directory"),
+    (CreateKind::Php("class"), IconId::FilePhp, "PHP Class"),
+    (
+        CreateKind::Php("interface"),
+        IconId::FilePhp,
+        "PHP Interface",
+    ),
+    (CreateKind::Php("trait"), IconId::FilePhp, "PHP Trait"),
+    (CreateKind::Php("enum"), IconId::FilePhp, "PHP Enum"),
+];
+
+/// The New popup (Alt+Insert, +): typing filters it (RF-NAV-15).
 fn new_popup(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    use crate::design::components::ListRow;
     let mut open = true;
-    egui::Window::new("New")
-        .title_bar(false)
-        .resizable(false)
-        .collapsible(false)
+    let query = app.tree.new_filter.to_lowercase();
+    let shown: Vec<(CreateKind, IconId, &str)> = NEW_KINDS
+        .into_iter()
+        .filter(|(_, _, label)| {
+            query.is_empty() || crate::palette::fuzzy_score(&query, label).is_some()
+        })
+        .collect();
+    if app.tree.new_selected >= shown.len() {
+        app.tree.new_selected = shown.len().saturating_sub(1);
+    }
+    let p = crate::design::current(ui.ctx()).palette;
+    let area = egui::Area::new(egui::Id::new("tree-new"))
+        .order(egui::Order::Foreground)
         .fixed_pos(ui.max_rect().left_top() + egui::vec2(24.0, 48.0))
         .show(ui.ctx(), |ui| {
-            ui.label(egui::RichText::new("New").strong());
-            for (kind, label) in [
-                (CreateKind::File, "File"),
-                (CreateKind::Directory, "Directory"),
-                (CreateKind::Php("class"), "PHP Class"),
-                (CreateKind::Php("interface"), "PHP Interface"),
-                (CreateKind::Php("trait"), "PHP Trait"),
-                (CreateKind::Php("enum"), "PHP Enum"),
-            ] {
-                if menu_item(ui, None, label, "", true).clicked() {
-                    actions.push(Action::Create(kind));
-                    open = false;
+            Dialog::frame(ui).show(ui, |ui| {
+                ui.set_width(240.0);
+                ui.label(egui::RichText::new("New").strong());
+                let input = TextInput::new(&mut app.tree.new_filter)
+                    .hint("Type to filter")
+                    .id_salt("tree-new-filter")
+                    .show(ui);
+                if !input.has_focus() {
+                    input.request_focus();
                 }
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                open = false;
-            }
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        input.id,
+                        egui::EventFilter {
+                            vertical_arrows: true,
+                            escape: true,
+                            ..Default::default()
+                        },
+                    )
+                });
+                ui.add_space(4.0);
+                for (n, (kind, icon, label)) in shown.iter().enumerate() {
+                    let row = ListRow::new(*label)
+                        .icon(*icon, p.text_secondary)
+                        .selected(n == app.tree.new_selected)
+                        .show(ui);
+                    if row.clicked() {
+                        actions.push(Action::Create(*kind));
+                        open = false;
+                    }
+                }
+            });
         });
+    ui.input(|i| {
+        if i.key_pressed(egui::Key::ArrowDown) && !shown.is_empty() {
+            app.tree.new_selected = (app.tree.new_selected + 1) % shown.len();
+        }
+        if i.key_pressed(egui::Key::ArrowUp) && !shown.is_empty() {
+            app.tree.new_selected = (app.tree.new_selected + shown.len() - 1) % shown.len();
+        }
+        if i.key_pressed(egui::Key::Enter) {
+            if let Some((kind, _, _)) = shown.get(app.tree.new_selected) {
+                actions.push(Action::Create(*kind));
+            }
+            open = false;
+        }
+        if i.key_pressed(egui::Key::Escape) {
+            open = false;
+        }
+    });
+    if ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() {
+        open = false;
+    }
     if !open {
         app.tree.new_popup = false;
+        app.tree.new_filter.clear();
+        app.tree.new_selected = 0;
+        if app.tree.dialog.is_none() {
+            ui.memory_mut(|m| m.request_focus(tree_id()));
+        }
     }
 }
 
@@ -917,6 +1016,11 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: Action) {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                     PathKind::Relative => p.strip_prefix(&root).unwrap_or(p).display().to_string(),
+                    PathKind::Repository => app
+                        .git
+                        .remote()
+                        .and_then(|r| r.file_url(p, None))
+                        .unwrap_or_default(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -969,6 +1073,7 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: Action) {
                 }
             }
         }
+        Action::Detach(root) => app.detach_project(&root),
         Action::SelectOpened => {
             app.tw.set_visible(ToolWindow::Project, true);
             follow_active_file(app, ctx, true);
@@ -1336,6 +1441,103 @@ impl PhpIdeApp {
             }
         }
         self.ws.recent_files.retain(|p| !p.starts_with(deleted));
+    }
+}
+
+/// Select In (Alt+F1): where to show the active file (RF-SEL-10).
+pub fn select_in_popup(app: &mut PhpIdeApp, ctx: &egui::Context) {
+    use crate::design::components::ListRow;
+    let Some(mut selected) = app.select_in else {
+        return;
+    };
+    let Some(path) = app.ws.active_buffer().and_then(|b| b.path.clone()) else {
+        app.select_in = None;
+        return;
+    };
+    let targets = [
+        (IconId::Project, "Project View"),
+        (IconId::Folder, "Files (file manager)"),
+        (IconId::Terminal, "Terminal"),
+    ];
+    let mut chosen = None;
+    let mut close = false;
+    ctx.input(|i| {
+        for (n, key) in [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3]
+            .into_iter()
+            .enumerate()
+        {
+            if i.key_pressed(key) {
+                chosen = Some(n);
+            }
+        }
+        if i.key_pressed(egui::Key::ArrowDown) {
+            selected = (selected + 1) % targets.len();
+        }
+        if i.key_pressed(egui::Key::ArrowUp) {
+            selected = (selected + targets.len() - 1) % targets.len();
+        }
+        if i.key_pressed(egui::Key::Enter) {
+            chosen = Some(selected);
+        }
+        if i.key_pressed(egui::Key::Escape) {
+            close = true;
+        }
+    });
+    let p = crate::design::current(ctx).palette;
+    let area = egui::Area::new(egui::Id::new("select-in"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 120.0))
+        .show(ctx, |ui| {
+            crate::design::components::Dialog::frame(ui).show(ui, |ui| {
+                ui.set_width(300.0);
+                // Holds the keyboard so digits do not reach the editor.
+                let focus = ui.interact(
+                    ui.max_rect(),
+                    egui::Id::new("select-in-focus"),
+                    egui::Sense::focusable_noninteractive(),
+                );
+                if !focus.has_focus() {
+                    focus.request_focus();
+                }
+                ui.label(egui::RichText::new("Select In").strong());
+                ui.add_space(4.0);
+                for (n, (icon, label)) in targets.iter().enumerate() {
+                    let row = ListRow::new(format!("{}. {label}", n + 1))
+                        .icon(*icon, p.text_secondary)
+                        .selected(n == selected)
+                        .show(ui);
+                    if row.clicked() {
+                        chosen = Some(n);
+                    }
+                }
+            });
+        });
+    if ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() {
+        close = true;
+    }
+    app.select_in = (!close && chosen.is_none()).then_some(selected);
+    if app.select_in.is_none() && chosen != Some(0) {
+        app.editors.request_focus();
+    }
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    match chosen {
+        Some(0) => {
+            app.tw.set_visible(ToolWindow::Project, true);
+            follow_active_file(app, ctx, true);
+            ctx.memory_mut(|m| m.request_focus(tree_id()));
+        }
+        Some(1) => {
+            if let Err(e) = crate::services::desktop::open_folder(&dir) {
+                app.ws.message = e;
+            }
+        }
+        Some(2) => {
+            app.ws.message = match crate::services::desktop::open_terminal(&dir) {
+                Ok(name) => format!("Opened {name} in {}", dir.display()),
+                Err(e) => e,
+            };
+        }
+        _ => {}
     }
 }
 

@@ -48,12 +48,15 @@ through tree-sitter.
 | Keys | Action |
 |---|---|
 | Shift Shift / Ctrl+P | Search Everywhere |
-| Ctrl+Shift+N / Ctrl+E (twice: edited only) / Ctrl+Shift+A | Go to File / Recent Files / Find Action |
+| Ctrl+N / Ctrl+Shift+N / Ctrl+Alt+Shift+N | Go to Class / File / Symbol |
+| Ctrl+E (twice: edited only) / Ctrl+Shift+A | Recent Files / Find Action |
 | Ctrl+S / Ctrl+Z / Ctrl+Shift+Z | Save / Undo / Redo |
-| Ctrl+N / Ctrl+F4 / Ctrl+Shift+T | New file / Close tab / Reopen closed tab |
+| Ctrl+F4 / Ctrl+Shift+T | Close tab / Reopen closed tab |
 | Alt+←/→ / Ctrl+Tab | Previous/next tab / Switcher |
 | Ctrl+Alt+←/→ / Ctrl+Shift+Backspace | Back / Forward / Last edit location |
-| Alt+F1 | Select the open file in the Project view |
+| Alt+F1 | Select In: Project view, file manager, terminal |
+| Ctrl+Shift+C / Ctrl+Alt+Shift+C | Copy path / Copy reference (`path:line`) |
+| Ctrl+Alt+] / Ctrl+Alt+[ | Next / previous project window |
 | Ctrl+Space | Completion |
 | Ctrl+B | Go to definition |
 | Ctrl+F / Ctrl+R / F3 | Find / Replace / Find next in the editor |

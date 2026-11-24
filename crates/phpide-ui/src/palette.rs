@@ -1,46 +1,103 @@
-//! Command palette / Search Everywhere (Estágio 2 → 6): `Ctrl+P` ou `Shift×2`
-//! abrem tudo, `Ctrl+E` Recent Files, `Ctrl+Shift+A` Find Action (modo ações).
-//! Fuzzy match por subsequência; prefixo `>` força o modo ações (convenção
-//! JetBrains dentro do Search Everywhere).
+//! Search Everywhere (Shift Shift / Ctrl+P), Go to File (Ctrl+Shift+N),
+//! Go to Class (Ctrl+N), Go to Symbol, Find Action (Ctrl+Shift+A) and
+//! Recent Files (Ctrl+E), one popup with scope tabs (RF-SEL-01..07).
+//!
+//! Tab and Shift+Tab switch scope. An empty query lists recent files
+//! first; `>` forces actions. Actions include Settings pages.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use phpide_icons::{file_icon, IconId};
 
 use crate::commands::Command;
+use crate::settings_dialog::SettingsPage;
 use phpide_core::Workspace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteMode {
-    /// Search Everywhere: arquivos + ações + extras.
+    /// Search Everywhere: files, classes, symbols, actions.
     All,
-    /// Só arquivos do projeto.
+    /// Classes, interfaces, traits and enums (workspace symbols).
+    Classes,
     Files,
-    /// Find Action: só comandos da IDE + extras.
-    Actions,
-    /// Recent Files (MRU).
-    Recent,
-    /// Go to Symbol: símbolos do workspace via LSP (T-PHP-004-02).
+    /// Every workspace symbol.
     Symbols,
+    Actions,
+    /// Recent Files (MRU), not one of the tabs.
+    Recent,
 }
+
+/// Scope tabs, in order.
+pub const TABS: [PaletteMode; 5] = [
+    PaletteMode::All,
+    PaletteMode::Classes,
+    PaletteMode::Files,
+    PaletteMode::Symbols,
+    PaletteMode::Actions,
+];
 
 impl PaletteMode {
     pub fn title(self) -> &'static str {
         match self {
-            PaletteMode::All => "Search Everywhere",
-            PaletteMode::Files => "Go to File",
-            PaletteMode::Actions => "Find Action",
+            PaletteMode::All => "All",
+            PaletteMode::Classes => "Classes",
+            PaletteMode::Files => "Files",
+            PaletteMode::Symbols => "Symbols",
+            PaletteMode::Actions => "Actions",
             PaletteMode::Recent => "Recent Files",
-            PaletteMode::Symbols => "Go to Symbol",
+        }
+    }
+
+    /// Whether the mode asks the language server for symbols.
+    pub fn wants_symbols(self) -> bool {
+        matches!(
+            self,
+            PaletteMode::All | PaletteMode::Classes | PaletteMode::Symbols
+        )
+    }
+}
+
+/// A workspace symbol from the language server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolHit {
+    pub name: String,
+    pub container: String,
+    pub path: PathBuf,
+    pub line0: usize,
+    pub col0: usize,
+    /// LSP `SymbolKind`.
+    pub kind: u64,
+}
+
+impl SymbolHit {
+    /// Class, interface, enum or struct (PHP traits arrive as classes or
+    /// interfaces, depending on the server).
+    pub fn is_class(&self) -> bool {
+        matches!(self.kind, 5 | 10 | 11 | 23)
+    }
+
+    fn kind_label(&self) -> &'static str {
+        match self.kind {
+            5 => "class",
+            10 => "enum",
+            11 => "interface",
+            6 => "method",
+            12 => "function",
+            13 | 14 => "constant",
+            7 | 8 => "property",
+            _ => "symbol",
         }
     }
 }
 
 pub enum PaletteAction {
     Open(PathBuf),
+    OpenAt(PathBuf, usize, usize),
     Run(Command),
     /// Comando dinâmico (composer script, phpunit, plugin externo).
     Plugin(String),
+    Settings(SettingsPage),
 }
 
 pub struct PaletteState {
@@ -80,17 +137,23 @@ impl PaletteState {
     }
 }
 
+#[derive(Clone)]
 struct Entry {
+    icon: IconId,
+    kind: Option<phpide_icons::FileKind>,
     label: String,
     detail: String,
     hint: String,
-    action: PaletteActionKind,
+    action: ActionKind,
 }
 
-enum PaletteActionKind {
+#[derive(Clone)]
+enum ActionKind {
     Open(PathBuf),
+    OpenAt(PathBuf, usize, usize),
     Run(Command),
     Plugin(String),
+    Settings(SettingsPage),
 }
 
 /// Fuzzy match por subsequência: retorna pontuação maior = melhor.
@@ -137,18 +200,19 @@ pub fn fuzzy_score(needle: &str, hay: &str) -> Option<i32> {
     Some(score)
 }
 
+/// Files ranked by name first (so `UC` finds `UserController.php`), then
+/// by path.
 fn project_files(ws: &Workspace, query: &str, cap: usize) -> Vec<(i32, PathBuf)> {
     let mut files: Vec<(i32, PathBuf)> = ws
         .files
         .iter()
         .filter(|e| !e.is_dir)
         .filter_map(|e| {
-            let rel = e
-                .path
-                .strip_prefix(&ws.root)
-                .unwrap_or(&e.path)
-                .to_string_lossy()
-                .into_owned();
+            let name = e.path.file_name()?.to_string_lossy();
+            if let Some(score) = fuzzy_score(query, &name) {
+                return Some((score + 20, e.path.clone()));
+            }
+            let rel = relative(ws, &e.path);
             fuzzy_score(query, &rel).map(|s| (s, e.path.clone()))
         })
         .collect();
@@ -157,217 +221,449 @@ fn project_files(ws: &Workspace, query: &str, cap: usize) -> Vec<(i32, PathBuf)>
     files
 }
 
+fn relative(ws: &Workspace, path: &Path) -> String {
+    path.strip_prefix(&ws.root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn file_entry(ws: &Workspace, path: &Path, hint: &str) -> Entry {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (icon, kind) = file_icon(&name);
+    let detail = relative(ws, path);
+    let detail = detail
+        .rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default();
+    Entry {
+        icon,
+        kind: Some(kind),
+        label: name,
+        detail,
+        hint: hint.to_string(),
+        action: ActionKind::Open(path.to_path_buf()),
+    }
+}
+
+fn symbol_entry(ws: &Workspace, hit: &SymbolHit) -> Entry {
+    let place = format!("{}:{}", relative(ws, &hit.path), hit.line0 + 1);
+    Entry {
+        icon: if hit.is_class() {
+            IconId::Structure
+        } else {
+            IconId::Command
+        },
+        kind: None,
+        label: hit.name.clone(),
+        detail: if hit.container.is_empty() {
+            place
+        } else {
+            format!("{} · {place}", hit.container)
+        },
+        hint: hit.kind_label().to_string(),
+        action: ActionKind::OpenAt(hit.path.clone(), hit.line0, hit.col0),
+    }
+}
+
 fn collect_entries(
     ws: &Workspace,
     state: &PaletteState,
     extra: &[(String, String)],
-    symbols: &[(String, PathBuf, usize, usize)],
+    symbols: &[SymbolHit],
 ) -> Vec<Entry> {
     let mut out = Vec::new();
-    // Convenção JetBrains: `>` dentro do Search Everywhere força ações.
     let mut query = state.query.trim_start();
     let mut mode = state.mode;
-    if query.starts_with('>') {
+    if let Some(rest) = query.strip_prefix('>') {
         mode = PaletteMode::Actions;
-        query = query[1..].trim_start();
+        query = rest.trim_start();
     }
+    let query = query.trim();
 
-    // Go to Symbol: resultados do workspace/symbol assíncrono.
-    if mode == PaletteMode::Symbols {
-        for (name, path, line0, _col) in symbols {
-            if query.is_empty() || fuzzy_score(query, name).is_some() {
-                let rel = path
-                    .strip_prefix(&ws.root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned();
-                out.push(Entry {
-                    label: name.clone(),
-                    detail: rel,
-                    hint: format!("Ln {}", line0 + 1),
-                    action: PaletteActionKind::Open(path.clone()),
-                });
+    // Recent files first when nothing is typed (RF-SEL-01).
+    if mode == PaletteMode::Recent
+        || query.is_empty() && matches!(mode, PaletteMode::All | PaletteMode::Files)
+    {
+        let list = if mode == PaletteMode::Recent && state.edited_only {
+            &ws.edited_files
+        } else {
+            &ws.recent_files
+        };
+        for path in list {
+            if query.is_empty() || fuzzy_score(query, &relative(ws, path)).is_some() {
+                out.push(file_entry(ws, path, "recent"));
             }
         }
-        return out;
+        if mode == PaletteMode::Recent || mode == PaletteMode::Files {
+            return out;
+        }
     }
 
-    let want_actions = matches!(mode, PaletteMode::All | PaletteMode::Actions);
-    let want_files = matches!(
-        mode,
-        PaletteMode::All | PaletteMode::Files | PaletteMode::Recent
-    );
+    if !query.is_empty()
+        && matches!(
+            mode,
+            PaletteMode::All | PaletteMode::Classes | PaletteMode::Symbols
+        )
+    {
+        let mut hits: Vec<(i32, &SymbolHit)> = symbols
+            .iter()
+            .filter(|h| mode != PaletteMode::Classes && mode != PaletteMode::All || h.is_class())
+            .filter_map(|h| fuzzy_score(query, &h.name).map(|s| (s, h)))
+            .collect();
+        hits.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+        let cap = if mode == PaletteMode::All { 8 } else { 60 };
+        out.extend(hits.into_iter().take(cap).map(|(_, h)| symbol_entry(ws, h)));
+    }
 
-    if want_actions {
+    if !query.is_empty() && matches!(mode, PaletteMode::All | PaletteMode::Files) {
+        let cap = if mode == PaletteMode::All { 12 } else { 60 };
+        for (_, path) in project_files(ws, query, cap) {
+            out.push(file_entry(ws, &path, ""));
+        }
+    }
+
+    if matches!(mode, PaletteMode::All | PaletteMode::Actions)
+        && (!query.is_empty() || mode == PaletteMode::Actions)
+    {
+        let mut actions: Vec<(i32, Entry)> = Vec::new();
         for spec in crate::commands::REGISTRY {
             if !crate::commands::is_available(spec.id) {
                 continue;
             }
             let label = spec.palette_label();
-            if query.is_empty() || fuzzy_score(query, &label).is_some() {
-                out.push(Entry {
-                    label,
-                    detail: "action".to_string(),
-                    hint: crate::commands::shortcut_text(spec.id),
-                    action: PaletteActionKind::Run(spec.id),
-                });
+            if let Some(score) =
+                fuzzy_score(query, &label).or_else(|| fuzzy_score(query, spec.label))
+            {
+                actions.push((
+                    score,
+                    Entry {
+                        icon: IconId::Command,
+                        kind: None,
+                        label,
+                        detail: String::new(),
+                        hint: crate::commands::shortcut_text(spec.id),
+                        action: ActionKind::Run(spec.id),
+                    },
+                ));
             }
+        }
+        // Settings pages, searched by name and keywords.
+        for spec in crate::settings_dialog::search(query) {
+            // A page named like the query beats loose subsequence matches.
+            let named = spec.label.to_lowercase().contains(&query.to_lowercase());
+            actions.push((
+                if query.is_empty() {
+                    0
+                } else if named {
+                    1000
+                } else {
+                    20
+                },
+                Entry {
+                    icon: IconId::Settings,
+                    kind: None,
+                    label: format!("Settings: {}", spec.label),
+                    detail: spec.section.to_string(),
+                    hint: String::new(),
+                    action: ActionKind::Settings(spec.page),
+                },
+            ));
         }
         for (label, id) in extra {
-            if query.is_empty() || fuzzy_score(query, label).is_some() {
-                out.push(Entry {
-                    label: label.clone(),
-                    detail: "external".to_string(),
-                    hint: String::new(),
-                    action: PaletteActionKind::Plugin(id.clone()),
-                });
-            }
-        }
-    }
-
-    if want_files {
-        match mode {
-            PaletteMode::Recent => {
-                let list = if state.edited_only {
-                    &ws.edited_files
-                } else {
-                    &ws.recent_files
-                };
-                for path in list {
-                    let rel = path
-                        .strip_prefix(&ws.root)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .into_owned();
-                    if query.is_empty() || fuzzy_score(query, &rel).is_some() {
-                        out.push(Entry {
-                            label: path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                            detail: rel,
-                            hint: "recent".to_string(),
-                            action: PaletteActionKind::Open(path.clone()),
-                        });
-                    }
-                }
-            }
-            _ => {
-                for (_, path) in project_files(ws, query, 20) {
-                    out.push(Entry {
-                        label: path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                        detail: path.display().to_string(),
+            if let Some(score) = fuzzy_score(query, label) {
+                actions.push((
+                    score,
+                    Entry {
+                        icon: IconId::Run,
+                        kind: None,
+                        label: label.clone(),
+                        detail: "external".to_string(),
                         hint: String::new(),
-                        action: PaletteActionKind::Open(path),
-                    });
-                }
+                        action: ActionKind::Plugin(id.clone()),
+                    },
+                ));
             }
         }
+        if !query.is_empty() {
+            actions.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+        }
+        let cap = if mode == PaletteMode::All { 10 } else { 200 };
+        out.extend(actions.into_iter().take(cap).map(|(_, e)| e));
     }
     out
 }
 
-/// Desenha a palette e devolve a ação escolhida (Enter/clique).
+/// Draws the popup and returns the chosen action (Enter or click).
 pub fn show(
     ctx: &egui::Context,
     ws: &Workspace,
     state: &mut PaletteState,
     extra: &[(String, String)],
-    symbols: &[(String, PathBuf, usize, usize)],
+    symbols: &[SymbolHit],
 ) -> Option<PaletteAction> {
+    use crate::design::components::{ListRow, TextInput};
     if !state.open {
         return None;
     }
+    let theme = crate::design::current(ctx);
+    let p = theme.palette;
     let mut action: Option<PaletteAction> = None;
     let mut close = false;
 
-    egui::Window::new("palette")
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .movable(false)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 40.0))
-        .frame(
-            egui::Frame::window(&ctx.global_style())
-                .shadow(egui::epaint::Shadow::default())
-                .inner_margin(egui::Margin::same(8)),
-        )
+    // Tab / Shift+Tab switch scope before the text field sees the key.
+    if state.mode != PaletteMode::Recent {
+        // Shift+Tab first: a plain Tab pattern also matches it.
+        let (back, tab) = ctx.input_mut(|i| {
+            let back = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+            (back, i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+        });
+        if tab || back {
+            let here = TABS.iter().position(|m| *m == state.mode).unwrap_or(0);
+            let next = if tab {
+                (here + 1) % TABS.len()
+            } else {
+                (here + TABS.len() - 1) % TABS.len()
+            };
+            state.mode = TABS[next];
+            state.selected = 0;
+            state.just_opened = true;
+        }
+    }
+
+    let area = egui::Area::new(egui::Id::new("palette"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 56.0))
         .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(if state.mode == PaletteMode::Recent && state.edited_only {
-                    "Recently Edited Files"
-                } else {
-                    state.mode.title()
-                })
-                .strong()
-                .small()
-                .weak(),
-            );
-            let edit = egui::TextEdit::singleline(&mut state.query)
-                .hint_text("Type to search (> for actions)")
-                .desired_width(460.0)
-                .show(ui);
-            if state.just_opened {
-                edit.response.request_focus();
-                state.just_opened = false;
-            }
-
-            let entries = collect_entries(ws, state, extra, symbols);
-            if state.selected >= entries.len() {
-                state.selected = entries.len().saturating_sub(1);
-            }
-
-            ctx.input(|i| {
-                if i.key_pressed(egui::Key::ArrowDown) && !entries.is_empty() {
-                    state.selected = (state.selected + 1).min(entries.len() - 1);
-                }
-                if i.key_pressed(egui::Key::ArrowUp) {
-                    state.selected = state.selected.saturating_sub(1);
-                }
-                if i.key_pressed(egui::Key::PageDown) && !entries.is_empty() {
-                    state.selected = (state.selected + 10).min(entries.len() - 1);
-                }
-                if i.key_pressed(egui::Key::PageUp) {
-                    state.selected = state.selected.saturating_sub(10);
-                }
-                if i.key_pressed(egui::Key::Escape) {
-                    close = true;
-                }
-            });
-
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
-                .show(ui, |ui| {
-                    for (i, entry) in entries.iter().enumerate() {
-                        let selected = i == state.selected;
-                        let label = if entry.hint.is_empty() {
-                            format!("{}   —   {}", entry.label, entry.detail)
+            crate::design::components::Dialog::frame(ui).show(ui, |ui| {
+                ui.set_width(640.0);
+                if state.mode == PaletteMode::Recent {
+                    ui.label(
+                        egui::RichText::new(if state.edited_only {
+                            "Recently Edited Files"
                         } else {
-                            format!("{}   —   {} [{}]", entry.label, entry.detail, entry.hint)
-                        };
-                        let row = ui.selectable_label(selected, label);
-                        if row.clicked()
-                            || (selected && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                        {
-                            action = Some(match &entry.action {
-                                PaletteActionKind::Open(p) => PaletteAction::Open(p.clone()),
-                                PaletteActionKind::Run(c) => PaletteAction::Run(*c),
-                                PaletteActionKind::Plugin(id) => PaletteAction::Plugin(id.clone()),
+                            "Recent Files"
+                        })
+                        .strong(),
+                    );
+                    if !state.edited_only {
+                        ui.weak("Press Ctrl+E again to show edited files only.");
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        for mode in TABS {
+                            let selected = state.mode == mode;
+                            let text = egui::RichText::new(mode.title()).color(if selected {
+                                p.text_primary
+                            } else {
+                                p.text_secondary
                             });
-                            close = true;
+                            if ui.selectable_label(selected, text).clicked() {
+                                state.mode = mode;
+                                state.selected = 0;
+                                state.just_opened = true;
+                            }
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.weak("Tab switches");
+                        });
+                    });
+                }
+                ui.add_space(4.0);
+                let hint = match state.mode {
+                    PaletteMode::Recent => "Filter recent files",
+                    PaletteMode::Actions => "Type an action or a setting",
+                    PaletteMode::Classes => "Type a class name",
+                    PaletteMode::Symbols => "Type a symbol name",
+                    PaletteMode::Files => "Type a file name (CamelCase works: UsCo)",
+                    PaletteMode::All => {
+                        "Search files, classes, symbols and actions (> for actions)"
+                    }
+                };
+                let edit = TextInput::search(&mut state.query)
+                    .hint(hint)
+                    .id_salt("palette-query")
+                    .show(ui);
+                if state.just_opened {
+                    edit.request_focus();
+                    state.just_opened = false;
+                }
+                // Tab switches scope instead of moving the focus away.
+                if edit.has_focus() {
+                    ui.memory_mut(|m| {
+                        m.set_focus_lock_filter(
+                            edit.id,
+                            egui::EventFilter {
+                                tab: true,
+                                vertical_arrows: true,
+                                ..Default::default()
+                            },
+                        )
+                    });
+                }
+                if edit.changed() {
+                    state.selected = 0;
+                }
+
+                let entries = collect_entries(ws, state, extra, symbols);
+                if state.selected >= entries.len() {
+                    state.selected = entries.len().saturating_sub(1);
+                }
+                let mut moved = false;
+                ctx.input(|i| {
+                    if i.key_pressed(egui::Key::ArrowDown) && !entries.is_empty() {
+                        state.selected = (state.selected + 1).min(entries.len() - 1);
+                        moved = true;
+                    }
+                    if i.key_pressed(egui::Key::ArrowUp) {
+                        state.selected = state.selected.saturating_sub(1);
+                        moved = true;
+                    }
+                    if i.key_pressed(egui::Key::PageDown) && !entries.is_empty() {
+                        state.selected = (state.selected + 10).min(entries.len() - 1);
+                        moved = true;
+                    }
+                    if i.key_pressed(egui::Key::PageUp) {
+                        state.selected = state.selected.saturating_sub(10);
+                        moved = true;
+                    }
+                    if i.key_pressed(egui::Key::Escape) {
+                        close = true;
                     }
                 });
-        });
+                let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
 
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("palette-results")
+                    .max_height(380.0)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        if entries.is_empty() {
+                            ui.weak(if state.query.trim().is_empty() {
+                                "Nothing here yet."
+                            } else if state.mode.wants_symbols() && symbols.is_empty() {
+                                "No match. Classes and symbols need a running language server."
+                            } else {
+                                "Nothing found."
+                            });
+                        }
+                        for (i, entry) in entries.iter().enumerate() {
+                            let selected = i == state.selected;
+                            let color = match entry.kind {
+                                Some(kind) => p.file_color(kind),
+                                None => p.text_secondary,
+                            };
+                            let mut row = ListRow::new(entry.label.clone())
+                                .icon(entry.icon, color)
+                                .selected(selected);
+                            if !entry.detail.is_empty() {
+                                row = row.detail(entry.detail.clone());
+                            }
+                            if !entry.hint.is_empty() {
+                                row = row.trailing(entry.hint.clone());
+                            }
+                            let response = row.show(ui);
+                            if selected && moved {
+                                response.scroll_to_me(None);
+                            }
+                            if response.clicked() || (selected && enter) {
+                                action = Some(match &entry.action {
+                                    ActionKind::Open(p) => PaletteAction::Open(p.clone()),
+                                    ActionKind::OpenAt(p, l, c) => {
+                                        PaletteAction::OpenAt(p.clone(), *l, *c)
+                                    }
+                                    ActionKind::Run(c) => PaletteAction::Run(*c),
+                                    ActionKind::Plugin(id) => PaletteAction::Plugin(id.clone()),
+                                    ActionKind::Settings(page) => PaletteAction::Settings(*page),
+                                });
+                                close = true;
+                            }
+                        }
+                    });
+            });
+        });
+    // A click outside closes the popup, as in PhpStorm.
+    let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
+        && !area.response.contains_pointer()
+        && !state.just_opened;
+    if clicked_outside {
+        close = true;
+    }
+
+    if action.is_some() && enter_used(ctx) {
+        // The Enter that chose the entry must not also press a button of
+        // whatever opens next (a dialog's first row, say).
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    }
     if close {
         state.open = false;
         state.query.clear();
         state.selected = 0;
     }
     action
+}
+
+fn enter_used(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camel_case_and_snake_case_queries_match_names() {
+        assert!(fuzzy_score("UsCo", "UserController.php").is_some());
+        let camel = fuzzy_score("UC", "UserController.php").unwrap();
+        let middle = fuzzy_score("UC", "ubuntu_cache.php").unwrap();
+        assert!(camel >= middle, "word starts rank higher");
+        assert!(fuzzy_score("use_rep", "user_repository.php").is_some());
+        assert!(fuzzy_score("xyz", "UserController.php").is_none());
+    }
+
+    #[test]
+    fn empty_search_lists_recent_files_and_settings_are_actions() {
+        let mut ws = Workspace::unscanned(PathBuf::from("/p"));
+        ws.recent_files = vec![PathBuf::from("/p/src/A.php"), PathBuf::from("/p/B.php")];
+        let mut state = PaletteState::new();
+        state.open_with(PaletteMode::All);
+        let entries = collect_entries(&ws, &state, &[], &[]);
+        assert_eq!(entries[0].label, "A.php");
+        assert_eq!(entries[1].label, "B.php");
+        state.mode = PaletteMode::Actions;
+        state.query = "color scheme".into();
+        let entries = collect_entries(&ws, &state, &[], &[]);
+        assert!(entries
+            .iter()
+            .any(|e| matches!(e.action, ActionKind::Settings(SettingsPage::ColorScheme))));
+        // Classes keep only class-like symbols.
+        let symbols = vec![
+            SymbolHit {
+                name: "Invoice".into(),
+                container: "App".into(),
+                path: "/p/src/Invoice.php".into(),
+                line0: 4,
+                col0: 0,
+                kind: 5,
+            },
+            SymbolHit {
+                name: "invoiceTotal".into(),
+                container: String::new(),
+                path: "/p/src/f.php".into(),
+                line0: 1,
+                col0: 0,
+                kind: 12,
+            },
+        ];
+        state.mode = PaletteMode::Classes;
+        state.query = "inv".into();
+        let entries = collect_entries(&ws, &state, &[], &symbols);
+        assert_eq!(entries.len(), 1);
+        state.mode = PaletteMode::Symbols;
+        assert_eq!(collect_entries(&ws, &state, &[], &symbols).len(), 2);
+    }
 }

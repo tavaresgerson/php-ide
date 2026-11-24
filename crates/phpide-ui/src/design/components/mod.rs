@@ -9,7 +9,7 @@ mod navigation;
 mod surfaces;
 mod toast;
 
-pub use buttons::{Button, ButtonKind, IconButton};
+pub use buttons::{Button, ButtonKind, IconButton, ToolbarWidget};
 pub use inputs::{Checkbox, Select, TextInput};
 pub use navigation::{
     menu_frame, menu_item, menu_separator, ListRow, Tab, TabResponse, TreeResponse, TreeRow,

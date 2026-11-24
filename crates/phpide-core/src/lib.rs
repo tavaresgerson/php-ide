@@ -649,6 +649,19 @@ impl Workspace {
         false
     }
 
+    /// Moves pinned tabs before the others, keeping both groups in order
+    /// and the active tab active.
+    pub fn keep_pinned_first(&mut self) {
+        let active_id = self.active_buffer().map(|b| b.id);
+        let (pinned, rest): (Vec<Buffer>, Vec<Buffer>) = std::mem::take(&mut self.buffers)
+            .into_iter()
+            .partition(|b| b.pinned);
+        self.buffers = pinned.into_iter().chain(rest).collect();
+        if let Some(id) = active_id {
+            self.active = self.buffers.iter().position(|b| b.id == id).unwrap_or(0);
+        }
+    }
+
     /// Closes every tab except pinned ones (`keep_pinned`).
     pub fn close_all_tabs(&mut self, keep_pinned: bool) {
         let mut i = 0;
@@ -949,9 +962,11 @@ mod tests {
             Some("c.php"),
             "reopened at the end"
         );
-        ws.buffers[0].pinned = true;
+        ws.buffers[2].pinned = true;
+        ws.keep_pinned_first();
+        assert_eq!(names(&ws)[0], "c.php", "pinned tabs move first");
         ws.close_all_tabs(true);
-        assert_eq!(names(&ws), ["d.php"], "the pinned tab stays");
+        assert_eq!(names(&ws), ["c.php"], "the pinned tab stays");
         fs::remove_dir_all(&root).ok();
     }
 

@@ -7,34 +7,17 @@ use eframe::egui;
 
 use crate::settings_dialog::SettingsPage;
 use crate::tool_window_header;
-use crate::toolwindows::{Anchor, ToolWindow};
+use crate::toolwindows::ToolWindow;
 use crate::PhpIdeApp;
 
 pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
-    match tw.anchor() {
-        Anchor::Left => {
-            egui::Panel::left(format!("tool-window-{}", tw.title()))
-                .resizable(true)
-                .default_size(240.0)
-                .show(ui, |ui| panel(app, ui, tw));
-        }
-        Anchor::Right => {
-            egui::Panel::right(format!("tool-window-{}", tw.title()))
-                .resizable(true)
-                .default_size(240.0)
-                .show(ui, |ui| panel(app, ui, tw));
-        }
-        Anchor::Bottom => {
-            egui::Panel::bottom(format!("tool-window-{}", tw.title()))
-                .resizable(true)
-                .default_size(if tw == ToolWindow::Database {
-                    360.0
-                } else {
-                    190.0
-                })
-                .show(ui, |ui| panel(app, ui, tw));
-        }
-    }
+    let size = if tw == ToolWindow::Database {
+        360.0
+    } else {
+        240.0
+    };
+    let placement = app.tw.placement(tw);
+    crate::toolwindows::dock(ui, tw, placement, size, |ui| panel(app, ui, tw));
 }
 
 fn panel(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
@@ -211,15 +194,52 @@ fn database(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn notifications(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label(egui::RichText::new("Event Log").strong());
-    ui.label(if app.ws.message.is_empty() {
-        "No new notifications."
-    } else {
-        &app.ws.message
+    use crate::design::components::{paint_icon, EmptyState};
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "{} events · Language Server: {}",
+                app.event_log.len(),
+                app.lsp_label()
+            ))
+            .weak()
+            .small(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add_enabled(!app.event_log.is_empty(), egui::Button::new("Clear All"))
+                .clicked()
+            {
+                app.event_log.clear();
+            }
+        });
     });
     ui.separator();
-    ui.label(format!("Language Server: {}", app.lsp_label()));
-    ui.label(format!("Diagnostics: {}", app.ws.diagnostics.len()));
+    if app.event_log.is_empty() {
+        EmptyState::new(phpide_icons::IconId::Notifications, "No notifications")
+            .description("Messages, warnings and errors appear here.")
+            .show(ui);
+        return;
+    }
+    let palette = crate::design::theme::current(ui.ctx()).palette;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for event in app.event_log.entries() {
+                ui.horizontal(|ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    paint_icon(
+                        ui.painter(),
+                        rect,
+                        event.tone.icon(),
+                        event.tone.color(&palette),
+                    );
+                    ui.label(egui::RichText::new(&event.time).weak().small().monospace());
+                    ui.add(egui::Label::new(&event.text).wrap());
+                });
+            }
+        });
 }
 
 fn remote_host(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

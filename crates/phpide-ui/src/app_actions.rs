@@ -57,6 +57,7 @@ impl PhpIdeApp {
             }
             Command::SearchEverywhere => self.open_palette(PaletteMode::All),
             Command::GotoFile => self.open_palette(PaletteMode::Files),
+            Command::GotoClass => self.open_palette(PaletteMode::Classes),
             Command::RecentFiles => self.open_palette(PaletteMode::Recent),
             Command::FindAction => self.open_palette(PaletteMode::Actions),
             Command::BlockStart => self.jump_block(true),
@@ -107,6 +108,53 @@ impl PhpIdeApp {
                 }
             }
             Command::OpenProject => self.open_project_dialog(ctx),
+            Command::CopyPath | Command::CopyReference | Command::CopyRepositoryUrl => {
+                let Some(buffer) = self.ws.active_buffer() else {
+                    return;
+                };
+                let Some(path) = buffer.path.clone() else {
+                    return;
+                };
+                let line = buffer
+                    .document
+                    .line_col(self.cursor_char.min(buffer.document.len_chars()))
+                    .0;
+                let text = match cmd {
+                    Command::CopyPath => Some(path.display().to_string()),
+                    Command::CopyReference => {
+                        let relative = path.strip_prefix(&self.ws.root).unwrap_or(&path);
+                        Some(format!("{}:{line}", relative.display()))
+                    }
+                    _ => self
+                        .git
+                        .remote()
+                        .and_then(|r| r.file_url(&path, Some(line))),
+                };
+                match text {
+                    Some(text) => {
+                        self.ws.message = format!("Copied {text}");
+                        ctx.copy_text(text);
+                    }
+                    None => self.ws.message = "No remote repository (origin) for this file".into(),
+                }
+            }
+            Command::NextProjectWindow | Command::PreviousProjectWindow => {
+                let forward = cmd == Command::NextProjectWindow;
+                match self.windows.neighbour(forward) {
+                    Some(window) => self
+                        .windows
+                        .send(window.pid, services::windows::WindowCommand::Focus),
+                    None => self.ws.message = "No other project window".into(),
+                }
+            }
+            Command::CloseOtherProjects => {
+                let others: Vec<u32> = self.windows.others().iter().map(|w| w.pid).collect();
+                for pid in &others {
+                    self.windows
+                        .send(*pid, services::windows::WindowCommand::Close);
+                }
+                self.ws.message = format!("Closing {} other project window(s)", others.len());
+            }
             Command::CloseProject => self.request_close_project(ctx),
             Command::CloseAllTabs => self.request_close_all(false),
             Command::ReopenClosedTab => {
@@ -144,9 +192,14 @@ impl PhpIdeApp {
                 }
             }
             Command::SelectIn => {
-                self.tw.set_visible(ToolWindow::Project, true);
-                crate::project_tree::follow_active_file(self, ctx, true);
-                ctx.memory_mut(|m| m.request_focus(crate::project_tree::tree_id()));
+                if self
+                    .ws
+                    .active_buffer()
+                    .and_then(|b| b.path.as_ref())
+                    .is_some()
+                {
+                    self.select_in = Some(0);
+                }
             }
             Command::NavigateBack => {
                 if !self.ws.navigate_back() {
@@ -411,9 +464,39 @@ impl PhpIdeApp {
         // Text commands belong to the focused widget: with the Project tree
         // or a text field focused, Ctrl+D or Ctrl+Z must not edit the code.
         let other_focus = !self.editors.editor_focused && ctx.memory(|m| m.focused().is_some());
+        let tree_focused = ctx.memory(|m| m.focused() == Some(crate::project_tree::tree_id()));
+        // Esc in a tool window returns to the editor (RF-UI-02); the tree
+        // handles its own Esc (speed search first).
+        let popup = self.palette.open
+            || self.settings_dialog.open
+            || self.completion.open
+            || self.goto_line_open
+            || self.select_in.is_some()
+            || self.tree.dialog.is_some()
+            || self.open_prompt.is_some()
+            || self.pending_close.is_some()
+            || self.welcome_open;
+        if !popup
+            && !tree_focused
+            && !self.editors.editor_focused
+            && !self.ws.buffers.is_empty()
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape) && i.modifiers.is_none())
+        {
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            self.editors.request_focus();
+        }
         ctx.input_mut(|i| {
             for (shortcut, command) in &pairs {
                 if other_focus && command.is_text_command() {
+                    continue;
+                }
+                // Ctrl+NumPad +/− expand and collapse the focused tree.
+                if tree_focused
+                    && shortcut.modifiers.ctrl
+                    && matches!(command, Command::ZoomIn | Command::ZoomOut)
+                {
                     continue;
                 }
                 if i.consume_shortcut(shortcut) {
