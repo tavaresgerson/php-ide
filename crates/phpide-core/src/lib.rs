@@ -14,32 +14,46 @@ use ropey::Rope;
 pub mod error;
 pub mod fixtures;
 pub mod fsutil;
+pub mod history;
 pub mod jobs;
 pub mod log;
 pub mod offsets;
 pub mod redact;
 pub mod revision;
 pub mod settings;
+pub mod text;
 
 pub use error::{Component, ErrorKind, IdeError};
+pub use history::{Carets, EditKind};
 pub use jobs::{JobHandle, JobId, JobOutcome, JobRegistry, JobState, JobSystem};
 pub use log::{Correlation, Level, Logger};
 pub use offsets::{negotiate_encoding, PositionEncoding};
 pub use revision::{PerFileRevision, Revision, Revisioned};
+pub use text::{Assoc, Change, ChangeSet};
 
 /// Um documento de texto editável. Equivalente ao `Document` da IntelliJ Platform.
+///
+/// Every mutation goes through [`Document::apply`]: the revision grows by one
+/// per applied change set (undo included, so it never goes back), and the
+/// last changes stay in a short log that incremental consumers (syntax tree,
+/// other editor views, LSP) replay with [`Document::changes_since`].
 #[derive(Debug)]
 pub struct Document {
     rope: Rope,
     /// Incrementa a cada mutação; útil para invalidar caches futuros (highlight, LSP).
     pub version: u64,
+    log: std::collections::VecDeque<(Revision, std::sync::Arc<text::AppliedChange>)>,
 }
+
+/// How many applied change sets the document remembers.
+const CHANGE_LOG_CAP: usize = 512;
 
 impl Document {
     pub fn new(text: &str) -> Self {
         Document {
             rope: Rope::from_str(text),
             version: 0,
+            log: std::collections::VecDeque::new(),
         }
     }
 
@@ -48,7 +62,8 @@ impl Document {
         Ok(Self::new(&text))
     }
 
-    pub(crate) fn rope(&self) -> &Rope {
+    /// The text as a rope (cheap to clone, O(log n) slicing).
+    pub fn rope(&self) -> &Rope {
         &self.rope
     }
 
@@ -80,16 +95,61 @@ impl Document {
         self.rope.line_to_char(line0)
     }
 
+    /// Applies a change set; returns it with its byte edits, or `None` when
+    /// it changes nothing.
+    pub fn apply(
+        &mut self,
+        changes: &text::ChangeSet,
+    ) -> Option<std::sync::Arc<text::AppliedChange>> {
+        if changes.is_empty() {
+            return None;
+        }
+        let byte_edits = text::apply(&mut self.rope, changes);
+        self.version += 1;
+        let applied = std::sync::Arc::new(text::AppliedChange {
+            changes: changes.clone(),
+            byte_edits,
+        });
+        self.log.push_back((self.version, applied.clone()));
+        if self.log.len() > CHANGE_LOG_CAP {
+            self.log.pop_front();
+        }
+        Some(applied)
+    }
+
+    /// Change sets applied after `revision`, oldest first. `None` when the
+    /// log no longer reaches back that far (the caller must resync fully).
+    pub fn changes_since(
+        &self,
+        revision: Revision,
+    ) -> Option<Vec<std::sync::Arc<text::AppliedChange>>> {
+        if revision == self.version {
+            return Some(Vec::new());
+        }
+        if revision > self.version {
+            return None;
+        }
+        let first = self.log.front()?.0;
+        if first > revision + 1 {
+            return None;
+        }
+        Some(
+            self.log
+                .iter()
+                .filter(|(rev, _)| *rev > revision)
+                .map(|(_, change)| change.clone())
+                .collect(),
+        )
+    }
+
     /// Insere `text` no deslocamento em caracteres `at`.
     pub fn insert(&mut self, at: usize, text: &str) {
-        self.rope.insert(at, text);
-        self.version += 1;
+        self.apply(&text::ChangeSet::single(at, at, text));
     }
 
     /// Remove o intervalo em caracteres `[start, end)`.
     pub fn delete(&mut self, start: usize, end: usize) {
-        self.rope.remove(start..end);
-        self.version += 1;
+        self.apply(&text::ChangeSet::single(start, end, ""));
     }
 
     /// Texto da linha `line0` (0-based), incluindo o `\n` final se houver.
@@ -100,12 +160,36 @@ impl Document {
     pub fn char(&self, offset: usize) -> char {
         self.rope.char(offset)
     }
+
+    /// Smallest change set turning this text into `new_text` (common prefix
+    /// and suffix kept), so carets, folds and the syntax tree survive
+    /// whole-text replacements such as formatting.
+    pub fn diff_to(&self, new_text: &str) -> text::ChangeSet {
+        let old: Vec<char> = self.rope.chars().collect();
+        let new: Vec<char> = new_text.chars().collect();
+        let mut start = 0;
+        while start < old.len() && start < new.len() && old[start] == new[start] {
+            start += 1;
+        }
+        let (mut old_end, mut new_end) = (old.len(), new.len());
+        while old_end > start && new_end > start && old[old_end - 1] == new[new_end - 1] {
+            old_end -= 1;
+            new_end -= 1;
+        }
+        text::ChangeSet::single(
+            start,
+            old_end,
+            new[start..new_end].iter().collect::<String>(),
+        )
+    }
 }
 
-const UNDO_CAP: usize = 128;
+static NEXT_BUFFER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Um arquivo aberto na IDE: documento + metadados + histórico.
 pub struct Buffer {
+    /// Unique for the process lifetime (editor views and syntax state key on it).
+    pub id: u64,
     pub document: Document,
     pub path: Option<PathBuf>,
     pub dirty: bool,
@@ -116,39 +200,38 @@ pub struct Buffer {
     pub pinned: bool,
     /// Somente leitura (cadeado na status bar): edições são bloqueadas.
     pub readonly: bool,
-    undo: Vec<Document>,
-    redo: Vec<Document>,
+    history: history::History,
+    /// History state of the text on disk (see [`history::History::state_id`]).
+    saved_state: u64,
     /// Salto de cursor pendente (line0, col0), aplicado quando o editor desenhar.
     pending_cursor: Option<(usize, usize)>,
 }
 
 impl Buffer {
-    pub fn untitled() -> Self {
+    fn with_document(document: Document, path: Option<PathBuf>) -> Self {
         Buffer {
-            document: Document::new("<?php\n\n"),
-            path: None,
+            id: NEXT_BUFFER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            document,
+            path,
             dirty: false,
             preview: false,
             pinned: false,
             readonly: false,
-            undo: Vec::new(),
-            redo: Vec::new(),
+            history: history::History::new(),
+            saved_state: 0,
             pending_cursor: None,
         }
     }
 
+    pub fn untitled() -> Self {
+        Buffer::with_document(Document::new("<?php\n\n"), None)
+    }
+
     pub fn open(path: &Path) -> io::Result<Self> {
-        Ok(Buffer {
-            document: Document::open(path)?,
-            path: Some(path.to_path_buf()),
-            dirty: false,
-            preview: false,
-            pinned: false,
-            readonly: false,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            pending_cursor: None,
-        })
+        Ok(Buffer::with_document(
+            Document::open(path)?,
+            Some(path.to_path_buf()),
+        ))
     }
 
     pub fn name(&self) -> String {
@@ -159,63 +242,89 @@ impl Buffer {
             .unwrap_or_else(|| "untitled.php".to_string())
     }
 
-    fn record(&mut self) {
-        self.undo.push(Document {
-            rope: self.document.rope.clone(),
-            version: self.document.version,
-        });
-        if self.undo.len() > UNDO_CAP {
-            self.undo.remove(0);
+    /// Applies an edit and records it for undo. `before`/`after` are the
+    /// carets of the editor view that made it (empty for external edits).
+    pub fn edit(
+        &mut self,
+        changes: text::ChangeSet,
+        kind: history::EditKind,
+        before: history::Carets,
+        after: history::Carets,
+    ) -> Option<std::sync::Arc<text::AppliedChange>> {
+        if changes.is_empty() {
+            return None;
         }
-        self.redo.clear();
+        let inverse = changes.invert(self.document.rope());
+        let ends_word = kind == history::EditKind::Typing
+            && changes.changes().iter().any(|c| c.text.ends_with('\n'));
+        let applied = self.document.apply(&changes)?;
+        self.history.record(
+            changes,
+            inverse,
+            kind,
+            before,
+            after,
+            std::time::Instant::now(),
+            ends_word,
+        );
+        self.dirty = self.history.state_id() != self.saved_state;
+        // Editar promove a aba de pré-visualização a permanente.
+        self.preview = false;
+        Some(applied)
     }
 
     pub fn insert(&mut self, at: usize, text: &str) {
-        self.record();
-        self.document.insert(at, text);
-        self.dirty = true;
-        // Editar promove a aba de pré-visualização a permanente.
-        self.preview = false;
+        self.edit(
+            text::ChangeSet::single(at, at, text),
+            history::EditKind::Other,
+            Vec::new(),
+            Vec::new(),
+        );
     }
 
     pub fn delete(&mut self, start: usize, end: usize) {
         if start >= end {
             return;
         }
-        self.record();
-        self.document.delete(start, end);
-        self.dirty = true;
-        self.preview = false;
+        self.edit(
+            text::ChangeSet::single(start, end, ""),
+            history::EditKind::Other,
+            Vec::new(),
+            Vec::new(),
+        );
     }
 
-    pub fn undo(&mut self) -> bool {
-        match self.undo.pop() {
-            Some(prev) => {
-                self.redo.push(Document {
-                    rope: self.document.rope.clone(),
-                    version: self.document.version,
-                });
-                self.document = prev;
-                self.dirty = true;
-                true
-            }
-            None => false,
+    fn replay(&mut self, replay: history::Replay) -> history::Carets {
+        for changes in &replay.changes {
+            self.document.apply(changes);
         }
+        self.dirty = self.history.state_id() != self.saved_state;
+        replay.carets
     }
 
-    pub fn redo(&mut self) -> bool {
-        match self.redo.pop() {
-            Some(next) => {
-                self.undo.push(Document {
-                    rope: self.document.rope.clone(),
-                    version: self.document.version,
-                });
-                self.document = next;
-                self.dirty = true;
-                true
-            }
-            None => false,
-        }
+    /// Undoes the last step; returns the carets to restore (empty when the
+    /// step came from outside an editor view).
+    pub fn undo(&mut self) -> Option<history::Carets> {
+        let replay = self.history.undo()?;
+        Some(self.replay(replay))
+    }
+
+    pub fn redo(&mut self) -> Option<history::Carets> {
+        let replay = self.history.redo()?;
+        Some(self.replay(replay))
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// The next edit starts a new undo step (caret moved, focus lost…).
+    pub fn break_undo_group(&mut self) {
+        self.history.break_group();
     }
 
     /// Salva o buffer de forma atômica (NFR-007): o arquivo nunca fica
@@ -228,6 +337,8 @@ impl Buffer {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no path"))?;
         fsutil::write_atomic(&path, self.document.text().as_bytes())?;
         self.dirty = false;
+        self.saved_state = self.history.state_id();
+        self.history.break_group();
         Ok(())
     }
 
@@ -244,15 +355,11 @@ impl Buffer {
         })
     }
 
+    /// Replaces the whole text as one undo step, changing only the part
+    /// that differs.
     pub fn replace_all(&mut self, text: &str) {
-        self.record();
-        let len = self.document.len_chars();
-        if len > 0 {
-            self.document.delete(0, len);
-        }
-        self.document.insert(0, text);
-        self.dirty = true;
-        self.preview = false;
+        let changes = self.document.diff_to(text);
+        self.edit(changes, history::EditKind::Other, Vec::new(), Vec::new());
     }
 }
 
@@ -542,10 +649,76 @@ mod tests {
         let base = buf.document.len_chars();
         buf.insert(base, "echo 1;");
         assert!(buf.dirty);
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.document.text(), "<?php\n\n");
-        assert!(buf.redo());
+        assert!(buf.redo().is_some());
         assert!(buf.document.text().ends_with("echo 1;"));
+    }
+
+    #[test]
+    fn revision_only_grows_and_the_log_replays_changes() {
+        let mut buf = Buffer::untitled();
+        let r0 = buf.document.revision();
+        buf.insert(0, "a");
+        buf.insert(1, "b");
+        assert_eq!(buf.document.revision(), r0 + 2);
+        buf.undo();
+        buf.undo();
+        assert_eq!(buf.document.text(), "<?php\n\n");
+        assert_eq!(buf.document.revision(), r0 + 4, "undo is a new revision");
+        let log = buf.document.changes_since(r0).expect("log reaches back");
+        assert_eq!(log.len(), 4);
+        assert_eq!(buf.document.changes_since(r0 + 4), Some(Vec::new()));
+        assert!(buf.document.changes_since(r0 + 99).is_none());
+    }
+
+    #[test]
+    fn undo_back_to_the_saved_text_is_clean() {
+        let dir = std::env::temp_dir().join(format!("phpide-dirty-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.php");
+        fs::write(&path, "<?php\n").unwrap();
+        let mut buf = Buffer::open(&path).unwrap();
+        buf.insert(0, "x");
+        assert!(buf.dirty);
+        buf.undo();
+        assert!(!buf.dirty, "back to the file content");
+        buf.redo();
+        buf.save().unwrap();
+        assert!(!buf.dirty);
+        buf.undo();
+        assert!(buf.dirty, "differs from the saved file");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn typing_steps_merge_into_one_undo() {
+        let mut buf = Buffer::untitled();
+        let end = buf.document.len_chars();
+        for (i, ch) in "abc".chars().enumerate() {
+            let at = end + i;
+            buf.edit(
+                ChangeSet::single(at, at, ch.to_string()),
+                EditKind::Typing,
+                vec![(at, at)],
+                vec![(at + 1, at + 1)],
+            );
+        }
+        assert!(buf.document.text().ends_with("abc"));
+        assert_eq!(buf.undo(), Some(vec![(end, end)]));
+        assert_eq!(buf.document.text(), "<?php\n\n");
+    }
+
+    #[test]
+    fn replace_all_changes_only_the_difference() {
+        let mut buf = Buffer::untitled();
+        buf.replace_all("<?php\necho 1;\n");
+        let log = buf.document.changes_since(0).unwrap();
+        assert_eq!(
+            log[0].changes.changes(),
+            &[Change::new(6, 6, "echo 1;")][..]
+        );
+        assert_eq!(buf.document.text(), "<?php\necho 1;\n");
     }
 
     #[test]
@@ -924,13 +1097,19 @@ impl Buffer {
         let Some(path) = self.path.clone() else {
             return Ok(false);
         };
-        let on_disk = Document::open(&path)?;
+        let on_disk = fs::read_to_string(&path)?;
         // Same content: keep the document (and its revision) untouched, so
         // diagnostics, markers and the cursor stay valid.
-        if on_disk.rope == self.document.rope {
+        if self.document.rope == on_disk.as_str() {
             return Ok(false);
         }
-        self.document = on_disk;
+        // Applied as a change, so the revision keeps growing and editor views
+        // map their carets; the undo history no longer matches the file.
+        let changes = self.document.diff_to(&on_disk);
+        self.document.apply(&changes);
+        self.history.clear();
+        self.saved_state = self.history.state_id();
+        self.dirty = false;
         Ok(true)
     }
 }

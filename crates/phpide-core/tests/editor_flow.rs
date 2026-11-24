@@ -33,13 +33,16 @@ fn open_edit_undo_save_close_sequence_preserves_state() {
     assert!(ws.buffers[0].document.text().contains("// edição"));
 
     // 3. Desfazer / refazer.
-    assert!(ws.buffers[0].undo(), "undo disponível após edição");
+    assert!(
+        ws.buffers[0].undo().is_some(),
+        "undo disponível após edição"
+    );
     assert_eq!(
         ws.buffers[0].document.text(),
         "<?php echo 'v0';\n",
         "undo restaura o texto exato"
     );
-    assert!(ws.buffers[0].redo(), "redo disponível após undo");
+    assert!(ws.buffers[0].redo().is_some(), "redo disponível após undo");
     assert!(ws.buffers[0].document.text().contains("// edição"));
 
     // 4. Salvar: conteúdo persiste, dirty limpa, disco confere byte a byte.

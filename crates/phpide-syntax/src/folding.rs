@@ -29,6 +29,11 @@ pub fn folding_ranges(code: &str, total_lines: usize) -> Vec<FoldRange> {
     let Some(tree) = parser.parse(code, None) else {
         return Vec::new();
     };
+    folding_ranges_from_tree(&tree, total_lines)
+}
+
+/// Folding ranges of an already parsed tree.
+pub fn folding_ranges_from_tree(tree: &tree_sitter::Tree, total_lines: usize) -> Vec<FoldRange> {
     let mut out = Vec::new();
     let has_error = tree.root_node().has_error();
     collect(tree.root_node(), &mut out);
@@ -48,6 +53,19 @@ pub fn folding_ranges(code: &str, total_lines: usize) -> Vec<FoldRange> {
             true
         })
         .collect();
+    // A body on its own line ("{" under the signature) folds with its
+    // declaration: drop the block that ends with a range starting just above.
+    let declarations: Vec<(usize, usize)> = out
+        .iter()
+        .filter(|r| r.kind != "block")
+        .map(|r| (r.start_line0, r.end_line0))
+        .collect();
+    out.retain(|r| {
+        r.kind != "block"
+            || !declarations
+                .iter()
+                .any(|&(start, end)| end == r.end_line0 && start + 1 == r.start_line0)
+    });
     // Ordenação estável: início crescente; no mesmo início, o mais externo
     // (maior fim) primeiro — é o pai no aninhamento.
     out.sort_by(|a, b| {

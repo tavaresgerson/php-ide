@@ -203,3 +203,73 @@ fn shortcuts_with_extra_modifiers_run_their_own_command() {
     assert!(app.palette.open, "Ctrl+Shift+N opens Go to File");
     assert_eq!(app.ws.buffers.len(), 1, "and does not create a new file");
 }
+
+fn active_text(h: &Harness<'static, PhpIdeApp>) -> String {
+    h.state().ws.active_buffer().unwrap().document.text()
+}
+
+#[test]
+fn opening_a_file_focuses_the_editor_and_shortcuts_edit_it() {
+    let (_dir, root) = project();
+    let file = root.join("src/App.php");
+    let mut harness = harness(&root, vec![file]);
+    harness.run_steps(3);
+    assert_eq!(
+        harness.query_all_by_label("Editor").count(),
+        1,
+        "one editor pane"
+    );
+
+    // The caret starts at the top: typing lands there without a click.
+    for c in ["/", "/", " ", "x"] {
+        harness.event(egui::Event::Text(c.into()));
+        harness.run_steps(1);
+    }
+    assert_eq!(active_text(&harness), "// x<?php\necho 'app';\n");
+
+    let ctrl = egui::Modifiers {
+        ctrl: true,
+        ..Default::default()
+    };
+    // Ctrl+D duplicates the line, Ctrl+/ toggles its comment.
+    harness.key_press_modifiers(ctrl, egui::Key::D);
+    harness.run_steps(2);
+    assert_eq!(active_text(&harness), "// x<?php\n// x<?php\necho 'app';\n");
+    harness.key_press_modifiers(ctrl, egui::Key::Slash);
+    harness.run_steps(2);
+    assert_eq!(active_text(&harness), "// x<?php\nx<?php\necho 'app';\n");
+
+    // Ctrl+Z walks back through the three groups.
+    for _ in 0..3 {
+        harness.key_press_modifiers(ctrl, egui::Key::Z);
+        harness.run_steps(2);
+    }
+    assert_eq!(active_text(&harness), "<?php\necho 'app';\n");
+    assert!(!harness.state().ws.active_buffer().unwrap().dirty);
+}
+
+#[test]
+fn split_shows_two_panes_of_one_buffer() {
+    let (_dir, root) = project();
+    let file = root.join("src/App.php");
+    let mut harness = harness(&root, vec![file]);
+    harness.run_steps(3);
+    let ctx = harness.ctx.clone();
+    harness
+        .state_mut()
+        .dispatch_command(crate::commands::Command::SplitRight, &ctx);
+    harness.run_steps(3);
+    assert_eq!(harness.query_all_by_label("Editor").count(), 2);
+
+    // Typing in one pane edits the shared buffer.
+    harness.event(egui::Event::Text("A".into()));
+    harness.run_steps(2);
+    assert_eq!(active_text(&harness), "A<?php\necho 'app';\n");
+    assert_eq!(harness.state().ws.buffers.len(), 1, "no second buffer");
+
+    harness
+        .state_mut()
+        .dispatch_command(crate::commands::Command::Unsplit, &ctx);
+    harness.run_steps(2);
+    assert_eq!(harness.query_all_by_label("Editor").count(), 1);
+}

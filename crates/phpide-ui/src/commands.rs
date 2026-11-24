@@ -6,6 +6,8 @@
 
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
+use phpide_editor::ViewCommand;
+
 use crate::toolwindows::ToolWindow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,6 +25,8 @@ pub enum Command {
     Redo,
     UndoRefactor,
     Complete,
+    /// Text commands routed to the focused editor pane.
+    Editor(ViewCommand),
     // View
     ToggleToolWindow(ToolWindow),
     HideActiveToolWindow,
@@ -36,6 +40,7 @@ pub enum Command {
     ToggleFolding,
     SplitRight,
     SplitDown,
+    Unsplit,
     // Navigate
     SearchEverywhere,
     GotoFile,
@@ -167,6 +172,7 @@ const fn spec(
 use Category as C;
 use Command as K;
 use ToolWindow as Tw;
+use ViewCommand as V;
 
 pub const REGISTRY: &[CommandSpec] = &[
     // File
@@ -200,6 +206,124 @@ pub const REGISTRY: &[CommandSpec] = &[
         &[ctrl(Key::Space)],
         true,
     ),
+    spec(K::Editor(V::SelectAll), C::Edit, "Select All", &[], true),
+    spec(K::Editor(V::Find), C::Edit, "Find", &[ctrl(Key::F)], true),
+    spec(
+        K::Editor(V::Replace),
+        C::Edit,
+        "Replace",
+        &[ctrl(Key::R)],
+        true,
+    ),
+    spec(
+        K::Editor(V::FindNext),
+        C::Edit,
+        "Find Next",
+        &[key(Key::F3)],
+        true,
+    ),
+    spec(
+        K::Editor(V::FindPrevious),
+        C::Edit,
+        "Find Previous",
+        &[shift(Key::F3)],
+        true,
+    ),
+    spec(
+        K::Editor(V::ToggleLineComment),
+        C::Edit,
+        "Comment with Line Comment",
+        &[ctrl(Key::Slash)],
+        true,
+    ),
+    spec(
+        K::Editor(V::ToggleBlockComment),
+        C::Edit,
+        "Comment with Block Comment",
+        &[ctrl_shift(Key::Slash), ctrl_shift(Key::Questionmark)],
+        true,
+    ),
+    spec(
+        K::Editor(V::Duplicate),
+        C::Edit,
+        "Duplicate Line or Selection",
+        &[ctrl(Key::D)],
+        true,
+    ),
+    spec(
+        K::Editor(V::DeleteLines),
+        C::Edit,
+        "Delete Line",
+        &[ctrl(Key::Y)],
+        true,
+    ),
+    spec(
+        K::Editor(V::MoveLinesUp),
+        C::Edit,
+        "Move Line Up",
+        &[alt_shift(Key::ArrowUp)],
+        true,
+    ),
+    spec(
+        K::Editor(V::MoveLinesDown),
+        C::Edit,
+        "Move Line Down",
+        &[alt_shift(Key::ArrowDown)],
+        true,
+    ),
+    spec(K::Editor(V::Indent), C::Edit, "Indent Lines", &[], false),
+    spec(K::Editor(V::Outdent), C::Edit, "Unindent Lines", &[], false),
+    spec(
+        K::Editor(V::SelectNextOccurrence),
+        C::Edit,
+        "Add Selection for Next Occurrence",
+        &[alt(Key::J)],
+        true,
+    ),
+    spec(
+        K::Editor(V::UnselectOccurrence),
+        C::Edit,
+        "Unselect Occurrence",
+        &[alt_shift(Key::J)],
+        true,
+    ),
+    spec(
+        K::Editor(V::SelectAllOccurrences),
+        C::Edit,
+        "Select All Occurrences",
+        &[ctrl_alt_shift(Key::J)],
+        true,
+    ),
+    spec(
+        K::Editor(V::CaretAbove),
+        C::Edit,
+        "Add Caret Above",
+        &[ctrl_alt_shift(Key::ArrowUp)],
+        false,
+    ),
+    spec(
+        K::Editor(V::CaretBelow),
+        C::Edit,
+        "Add Caret Below",
+        &[ctrl_alt_shift(Key::ArrowDown)],
+        false,
+    ),
+    spec(
+        K::Editor(V::Fold),
+        C::Edit,
+        "Collapse",
+        &[ctrl_shift(Key::Minus)],
+        false,
+    ),
+    spec(
+        K::Editor(V::Unfold),
+        C::Edit,
+        "Expand",
+        &[ctrl_shift(Key::Equals), ctrl_shift(Key::Plus)],
+        false,
+    ),
+    spec(K::Editor(V::FoldAll), C::Edit, "Collapse All", &[], false),
+    spec(K::Editor(V::UnfoldAll), C::Edit, "Expand All", &[], false),
     // View
     spec(
         K::ToggleToolWindow(Tw::Project),
@@ -352,6 +476,7 @@ pub const REGISTRY: &[CommandSpec] = &[
     spec(K::ToggleFolding, C::View, "Toggle Folding", &[], false),
     spec(K::SplitRight, C::View, "Split Right", &[], false),
     spec(K::SplitDown, C::View, "Split Down", &[], false),
+    spec(K::Unsplit, C::View, "Unsplit", &[], false),
     // Navigate
     spec(
         K::SearchEverywhere,
@@ -477,14 +602,14 @@ pub const REGISTRY: &[CommandSpec] = &[
         K::RunCurrent,
         C::Run,
         "Run Current File",
-        &[ctrl(Key::R)],
+        &[shift(Key::F10)],
         true,
     ),
     spec(
         K::DebugCurrent,
         C::Run,
         "Debug Current File",
-        &[ctrl(Key::D)],
+        &[shift(Key::F9)],
         true,
     ),
     spec(K::Stop, C::Run, "Stop", &[ctrl(Key::F2)], true),
@@ -614,6 +739,24 @@ mod tests {
         assert_eq!(
             resolve(ctrl_shift(Key::F12)),
             Some(Command::HideAllToolWindows)
+        );
+        assert_eq!(
+            resolve(ctrl_shift(Key::Minus)),
+            Some(Command::Editor(ViewCommand::Fold))
+        );
+        assert_eq!(resolve(ctrl(Key::Minus)), Some(Command::ZoomOut));
+        assert_eq!(
+            resolve(alt_shift(Key::ArrowUp)),
+            Some(Command::Editor(ViewCommand::MoveLinesUp))
+        );
+        assert_eq!(resolve(alt(Key::ArrowLeft)), Some(Command::NavigateBack));
+        assert_eq!(
+            resolve(ctrl_alt_shift(Key::J)),
+            Some(Command::Editor(ViewCommand::SelectAllOccurrences))
+        );
+        assert_eq!(
+            resolve(alt(Key::J)),
+            Some(Command::Editor(ViewCommand::SelectNextOccurrence))
         );
     }
 }

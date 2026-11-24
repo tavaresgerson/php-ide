@@ -346,6 +346,7 @@ impl PhpIdeApp {
         if close {
             self.goto_line_open = false;
             self.goto_line_input.clear();
+            self.editors.request_focus();
         }
     }
 

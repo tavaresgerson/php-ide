@@ -1,0 +1,22 @@
+[package]
+name = "phpide-editor"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Code editor of PHP IDE: multi-cursor selections, edit commands, incremental highlighting and the egui view"
+
+[dependencies]
+phpide-core = { path = "../phpide-core" }
+phpide-php = { path = "../phpide-php" }
+phpide-syntax = { path = "../phpide-syntax" }
+eframe = "0.36"
+ropey = "1.6"
+regex = "1"
+tree-sitter = "0.25"
+tree-sitter-php = "0.23"
+unicode-segmentation = "1"
+unicode-width = "0.1"
+
+[[bench]]
+name = "editor_pipeline"
+harness = false

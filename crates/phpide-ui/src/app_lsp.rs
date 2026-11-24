@@ -714,6 +714,7 @@ impl PhpIdeApp {
     }
 
     pub(crate) fn close_completion(&mut self) {
+        self.editors.request_focus();
         let origin = self.completion.origin;
         if let Some(client) = lsp_client_for_origin(&self.lsp, &self.fe, origin) {
             self.completion.close(client);
@@ -853,12 +854,27 @@ impl PhpIdeApp {
         let mut accept: Option<String> = None;
         let mut close = false;
 
-        egui::Window::new("completion")
+        let mut window = egui::Window::new("completion")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -56.0))
+            .movable(false);
+        // Below the caret, or above it when the caret is near the bottom.
+        window = match self.editors.caret_rect {
+            Some(caret) => {
+                let screen = ctx.content_rect();
+                let below = caret.bottom() + 4.0;
+                if below + 320.0 > screen.bottom() {
+                    window
+                        .pivot(egui::Align2::LEFT_BOTTOM)
+                        .fixed_pos(egui::pos2(caret.left(), caret.top() - 4.0))
+                } else {
+                    window.fixed_pos(egui::pos2(caret.left(), below))
+                }
+            }
+            None => window.anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -56.0)),
+        };
+        window
             .frame(
                 egui::Frame::window(&ctx.global_style())
                     .shadow(egui::epaint::Shadow::default())
@@ -1006,13 +1022,8 @@ impl PhpIdeApp {
                 }
             }
         }
-        let id = egui::Id::new(("editor", self.ws.active));
-        let mut st = TextEditState::load(ctx, id).unwrap_or_default();
-        let mut cc = egui::text::CCursor::new(self.cursor_char);
-        cc.prefer_next_row = true;
-        st.cursor
-            .set_char_range(Some(egui::text::CCursorRange::one(cc)));
-        st.store(ctx, id);
+        let _ = ctx;
+        self.editors.set_caret(&mut self.ws, self.cursor_char);
         self.close_completion();
     }
 
@@ -1032,14 +1043,21 @@ impl PhpIdeApp {
         if !phpide_php::Php::is_php_file(&path) {
             return;
         }
-        let version = buf.document.revision();
-        let fresh = matches!(&self.syntax, Some((p, cache)) if p == &path
-            && cache.revision() == version
-            && cache.is_current(&buf.document));
+        let index = self.ws.active;
+        let buffer = &self.ws.buffers[index];
+        let syntax = self.editors.syntax(buffer);
+        let Some(structure) = syntax.structure(&buffer.document) else {
+            return;
+        };
+        let Some(version) = syntax.structure_revision() else {
+            return;
+        };
+        let fresh =
+            matches!(&self.syntax, Some((p, cache)) if p == &path && cache.revision() == version);
         if fresh {
             return;
         }
-        let report = phpide_syntax::analyze(&buf.document.text());
+        let report = structure.report.clone();
         self.syntax = Some((
             path.clone(),
             Revisioned::new(version, report.blocks.clone()),

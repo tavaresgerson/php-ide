@@ -130,28 +130,46 @@ under 800 lines, menus and shortcuts come from the registry. ✔
       icons, quiet header/status bar buttons, frameless editor.
 
 **Done when:** gallery approved; no color literal outside `tokens.rs`
-(checked in CI). Guard ✔ — gallery awaiting approval.
+(checked in CI). ✔ Gallery approved on 2026-11-24.
 
-### Phase 3 — New editor `phpide-editor` (L)
+### Phase 3 — New editor `phpide-editor` (L) — done, awaiting review
 
-1. Model: rope, multi-cursor selections, invertible transactions, undo
-   grouped by time and edit kind, monotonic revision for LSP.
-2. View: visible lines only, per-line layout cache, smooth and horizontal
-   scrolling, current line, indent guides.
-3. Input: character/word/line/page motions, keyboard and mouse selection,
-   column selection, clipboard, IME, auto-indent, bracket pairs and
-   matching, comment toggle, duplicate/move line.
-4. Incremental highlighting with tree-sitter; LSP semantic tokens on top.
-5. Gutter and decorations as editor layers: line numbers, breakpoints,
-   bookmarks, Git markers, native folding, sticky lines, diagnostics,
-   inlay hints, blame, coverage.
-6. Find/replace in file with regex.
-7. Real split: two views of one document, independent caret and scroll.
-8. Remove the `TextEdit`-based editor and its projection code.
+- [x] Model: rope with invertible change sets (`phpide_core::text`), a change
+      log per document (`Document::changes_since`), undo grouped by time and
+      edit kind with caret restore (`phpide_core::history`), monotonic
+      revision.
+- [x] View: only visible lines are laid out, per-line layout cache, vertical
+      and horizontal scrolling, current line, indent guides, scrollbars with
+      diagnostic/Git/find markers.
+- [x] Input: grapheme/word/line/page motions, smart Home, mouse selection
+      (word on double click, line on triple click), Alt+click carets,
+      Alt+Shift drag column selection, clipboard (whole-line copy and paste),
+      IME preedit, auto-indent, bracket pairs and type-over, line/block
+      comment toggle, duplicate, delete and move lines, next/all occurrences.
+- [x] Highlighting: tree-sitter for PHP, parsed in the background for large
+      files and reparsed incrementally per edit; syntect per line for other
+      languages; LSP semantic tokens painted on top.
+- [x] Gutter and decorations as editor layers: line numbers, breakpoints,
+      bookmarks, Git markers, folding chevrons and placeholders, sticky lines,
+      diagnostics squiggles, inlay hints, blame, coverage, execution line.
+- [x] Find/replace in file: regex, case, whole word, replace one/all.
+- [x] Split: two views of one buffer with their own carets, scroll and folds;
+      edits in one pane move the other's carets.
+- [x] `TextEdit` editor and its projection code removed (`editor_surface`,
+      `editor_view`, `folding`, `geometry`, `groups`).
+- [x] Interaction tests: `phpide-editor/tests/interaction.rs` (typing,
+      grouped undo, multi-cursor, clipboard, folding, split, find/replace,
+      read-only) and app-level tests in `phpide-ui` (focus, shortcuts,
+      split); snapshots `editor-dark`/`editor-light`.
+
+Shortcut changes: Run moved from Ctrl+R to **Shift+F10** and Debug from
+Ctrl+D to **Shift+F9**, so Ctrl+R is Replace and Ctrl+D is Duplicate, as in
+IntelliJ.
 
 **Done when:** a 50k-line file opens in under 300 ms, scrolls at 60 fps and a
 keystroke costs under 16 ms (measured with `editor_pipeline`); interaction
 tests cover typing, grouped undo, multi-cursor, folding and split.
+✔ Measured below ("Phase 3 results").
 
 ### Phase 4 — Polished shell (M)
 
@@ -218,8 +236,7 @@ gate passed (6 tests). The machine has no Xdebug loaded in the system PHP and
 no `phpunit` on `PATH`, so Phase 1 must make the run/debug gates report which
 binaries they used instead of a plain "ok".
 
-**Editor pipeline** (`cargo bench -p phpide-ui --bench editor_pipeline`,
-median; frame budget at 60 fps is 16.6 ms):
+**Editor pipeline, old `TextEdit` editor** (median; frame budget at 60 fps is 16.6 ms):
 
 | Step | 2k lines | 10k lines | 54k lines |
 |---|---:|---:|---:|
@@ -239,3 +256,24 @@ whole file. Phase 3 targets: highlight and lay out only the visible lines,
 reparse incrementally, and stay under 16.6 ms per frame at 54k lines.
 
 Release binary: 28 MB.
+
+## Phase 3 results
+
+`cargo bench -p phpide-editor --bench editor_pipeline` (release, Linux,
+real egui frames of the widget at 1280×800 plus tessellation; budget 16.6 ms):
+
+| Step | 2k lines | 10k lines | 54k lines |
+|---|---:|---:|---:|
+| Open + first frame | 44.8 ms¹ | 2.0 ms | 9.4 ms |
+| Background parse + structure | 8.3 ms | 128 ms | 637 ms |
+| Scroll frame, median / worst | 0.22 / 0.52 ms | 0.59 / 1.16 ms | 0.79 / 1.13 ms |
+| Idle frame | 0.13 ms | 0.14 ms | 0.19 ms |
+| Keystroke frame, median / worst | 0.68 / 1.09 ms | 1.23 / 2.76 ms | 4.65 / 7.16 ms |
+
+¹ Includes the font atlas and query compilation, paid once per process.
+
+The first parse of a large file runs on a worker thread; frames before it
+arrives show plain text, then the tree catches up by replaying the edits made
+meanwhile. Folds and blocks (`Structure`) are recomputed in the background,
+at most every 300 ms.
+

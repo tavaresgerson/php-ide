@@ -98,7 +98,7 @@ run gate-run-debug "gate: run/debug/PHPUnit" \
 if [ "$QUICK" -eq 0 ]; then
     run build-release "cargo build --release" cargo build --release -p phpide-ui
     run bench-editor "bench: editor pipeline (2k/10k/50k lines)" \
-        cargo bench -p phpide-ui --bench editor_pipeline
+        cargo bench -p phpide-editor --bench editor_pipeline
     run bench-doc "bench: document operations" cargo bench -p phpide-core --bench doc_ops
 fi
 

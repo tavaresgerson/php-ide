@@ -250,6 +250,97 @@ pub fn highlight(code: &str, syntax: &SyntaxStyle) -> egui::text::LayoutJob {
     job
 }
 
+/// A span of one line: char columns `start..end` with a role.
+pub type LineSpan = (usize, usize, SyntaxRole);
+
+/// Line-by-line syntect highlighting with a state checkpoint at every line
+/// start, so an edit only re-highlights from the edited line and scrolling
+/// only highlights what becomes visible. Used for non-PHP files (PHP goes
+/// through tree-sitter in the editor).
+pub struct LineHighlighter {
+    syntax: &'static SyntaxReference,
+    /// `states[i]`: parser and highlighter state at the start of line `i`.
+    states: Vec<(
+        syntect::parsing::ParseState,
+        syntect::highlighting::HighlightState,
+    )>,
+}
+
+impl LineHighlighter {
+    /// Highlighter for a file name (by extension), `None` for plain text.
+    pub fn for_file_name(name: &str) -> Option<Self> {
+        let ss = syntax_set();
+        let extension = name.rsplit_once('.').map(|(_, e)| e).unwrap_or(name);
+        let syntax = ss
+            .find_syntax_by_extension(extension)
+            .or_else(|| ss.find_syntax_by_extension(&extension.to_ascii_lowercase()))?;
+        if syntax.name == "Plain Text" {
+            return None;
+        }
+        Some(LineHighlighter {
+            syntax,
+            states: Vec::new(),
+        })
+    }
+
+    pub fn language_name(&self) -> &str {
+        &self.syntax.name
+    }
+
+    /// Forgets every state after the start of `line` (it was edited).
+    pub fn invalidate_from(&mut self, line: usize) {
+        self.states.truncate(line + 1);
+    }
+
+    /// Spans for lines `first..=last`. `line_text(i)` returns line `i`
+    /// with its line break.
+    pub fn highlight_lines(
+        &mut self,
+        first: usize,
+        last: usize,
+        line_text: impl Fn(usize) -> String,
+    ) -> Vec<Vec<LineSpan>> {
+        use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter};
+        use syntect::parsing::{ParseState, ScopeStack};
+        let ss = syntax_set();
+        let highlighter = Highlighter::new(role_theme());
+        if self.states.is_empty() {
+            self.states.push((
+                ParseState::new(self.syntax),
+                HighlightState::new(&highlighter, ScopeStack::new()),
+            ));
+        }
+        let mut out = Vec::with_capacity(last + 1 - first);
+        let start = (self.states.len() - 1).min(first);
+        let (mut parse, mut highlight) = self.states[start].clone();
+        for line in start..=last {
+            let text = line_text(line);
+            let ops = parse.parse_line(&text, ss).unwrap_or_default();
+            if line >= first {
+                let mut spans = Vec::new();
+                let mut column = 0;
+                for (style, piece) in
+                    HighlightIterator::new(&mut highlight, &ops, &text, &highlighter)
+                {
+                    let len = piece.trim_end_matches(['\n', '\r']).chars().count();
+                    let role = role_of(style);
+                    if len > 0 && role != SyntaxRole::Plain {
+                        spans.push((column, column + len, role));
+                    }
+                    column += piece.chars().count();
+                }
+                out.push(spans);
+            } else {
+                for _ in HighlightIterator::new(&mut highlight, &ops, &text, &highlighter) {}
+            }
+            if line + 1 == self.states.len() {
+                self.states.push((parse.clone(), highlight.clone()));
+            }
+        }
+        out
+    }
+}
+
 /// Role of every highlighted fragment, in order (tests and tooling).
 pub fn highlight_roles(code: &str) -> Vec<(String, SyntaxRole)> {
     let ss = syntax_set();
@@ -376,6 +467,30 @@ mod tests {
         let job = highlight("<?php return 1;", &style);
         assert!(job.sections.iter().any(|s| s.format.color == Color32::RED));
         assert!(job.sections.iter().all(|s| s.format.font_id.size == 13.0));
+    }
+
+    #[test]
+    fn line_highlighter_resumes_from_checkpoints() {
+        let lines = [
+            "let a = 1;\n",
+            "/* x\n",
+            "still comment */ let b = \"s\";\n",
+        ];
+        let mut h = LineHighlighter::for_file_name("app.js").expect("js syntax");
+        let all = h.highlight_lines(0, 2, |i| lines[i].to_string());
+        assert!(all[0].iter().any(|s| s.2 == SyntaxRole::Keyword));
+        assert!(
+            all[2].iter().any(|s| s.2 == SyntaxRole::Comment),
+            "{:?}",
+            all[2]
+        );
+        // Re-highlighting a later line uses the stored state.
+        let again = h.highlight_lines(2, 2, |i| lines[i].to_string());
+        assert_eq!(again[0], all[2]);
+        h.invalidate_from(1);
+        let after = h.highlight_lines(2, 2, |i| lines[i].to_string());
+        assert_eq!(after[0], all[2]);
+        assert!(LineHighlighter::for_file_name("notes.unknownext").is_none());
     }
 
     #[test]

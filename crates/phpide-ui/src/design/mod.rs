@@ -16,7 +16,7 @@ pub mod theme;
 pub mod tokens;
 
 #[cfg(test)]
-mod snapshot;
+pub(crate) mod snapshot;
 
 pub use theme::{current, install, Theme, ThemeId};
 pub use tokens::Density;

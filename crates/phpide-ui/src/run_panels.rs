@@ -191,7 +191,9 @@ fn session_list(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             });
         }
         if app.rd.manager.sessions().is_empty() {
-            ui.label(egui::RichText::new("Nothing running. Ctrl+R runs the current file.").weak());
+            ui.label(
+                egui::RichText::new("Nothing running. Shift+F10 runs the current file.").weak(),
+            );
         }
     });
 }

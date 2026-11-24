@@ -93,10 +93,12 @@ impl PhpIdeApp {
             last_shift_press: None,
             zoom_on_ctrl_wheel: false,
             bookmarks: HashMap::new(),
-            folds: HashMap::new(),
-            fold_cache: None,
+            editors: editor_area::EditorArea::default(),
+            scroll_hook: std::env::var("PHPIDE_SCROLL_TO_LINE")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .map(|line| line.saturating_sub(1)),
             switcher: switcher::MruSwitcher::default(),
-            groups: groups::EditorGroups::default(),
             hints: hints::HintStore::default(),
             hints_path: None,
             code_vision: hints::CodeVision::default(),
@@ -153,12 +155,13 @@ impl PhpIdeApp {
                 .active_buffer()
                 .and_then(|buffer| buffer.path.clone())
             {
-                app.groups.open(path.to_string_lossy().into_owned());
-                app.groups.split_root(if axis == "down" {
-                    groups::Axis::Vertical
+                let _ = path;
+                let axis = if axis == "down" {
+                    editor_area::SplitAxis::Down
                 } else {
-                    groups::Axis::Horizontal
-                });
+                    editor_area::SplitAxis::Right
+                };
+                app.editors.split(&app.ws, axis);
             }
         }
         if let Some(err) = settings_err {
@@ -449,11 +452,11 @@ impl PhpIdeApp {
     pub(crate) fn palette_extras(&self) -> Vec<(String, String)> {
         let mut v = vec![
             (
-                "Run: Run Current File (Ctrl+R)".to_string(),
+                "Run: Run Current File (Shift+F10)".to_string(),
                 "php:run".to_string(),
             ),
             (
-                "Run: Debug Current File (Ctrl+D)".to_string(),
+                "Run: Debug Current File (Shift+F9)".to_string(),
                 "debug:run".to_string(),
             ),
         ];

@@ -17,13 +17,9 @@ mod commands;
 mod completion;
 mod database;
 mod design;
-mod editor_surface;
-mod editor_view;
+mod editor_area;
 mod exec;
 mod fe_servers;
-mod folding;
-mod geometry;
-mod groups;
 mod header;
 mod hints;
 mod intelligence;
@@ -64,7 +60,6 @@ use commands::Command;
 use completion::CompletionState;
 use design::ThemeId;
 use eframe::egui;
-use egui::widgets::text_edit::TextEditState;
 use exec::ExecState;
 use notify::Watcher as _;
 use palette::{PaletteAction, PaletteMode, PaletteState};
@@ -75,7 +70,6 @@ use phpide_core::{
 };
 use phpide_dbgp::session::ContinueCommand;
 use phpide_lsp::{detect_server, LspClient, LspDiagnostic, LspStatus};
-use phpide_php::{Language, PhpLanguage};
 use search::SearchState;
 use serde_json::Value;
 use toolwindows::ToolWindow;
@@ -259,15 +253,12 @@ struct PhpIdeApp {
     bookmarks: HashMap<PathBuf, BTreeSet<usize>>,
     terminal_input: String,
     commit_message: String,
-    // Fase 5 — superfície avançada do editor (UI-ED-001..007, UI-ICON-001).
-    /// Estado de folding por arquivo (UI-ED-002).
-    folds: HashMap<PathBuf, folding::FoldState>,
-    /// Cache de ranges de folding por (arquivo, revisão).
-    fold_cache: Option<(PathBuf, u64, Vec<phpide_syntax::folding::FoldRange>)>,
+    /// Editor views, split pane and per-buffer syntax state.
+    editors: editor_area::EditorArea,
+    /// Line to jump to on the first frame (`PHPIDE_SCROLL_TO_LINE`, demos).
+    scroll_hook: Option<usize>,
     /// Switcher Ctrl+Tab (MRU).
     switcher: switcher::MruSwitcher,
-    /// Editor groups / split (UI-ED-003-03/04).
-    groups: groups::EditorGroups,
     /// Inlay hints por revisão (UI-ED-005).
     hints: hints::HintStore,
     hints_path: Option<PathBuf>,
@@ -395,6 +386,9 @@ impl eframe::App for PhpIdeApp {
         if self.palette.open && !self.was_palette_open {
             self.extras = self.palette_extras();
         }
+        if !self.palette.open && self.was_palette_open {
+            self.editors.request_focus();
+        }
         self.was_palette_open = self.palette.open;
 
         if let Some(action) = palette::show(
@@ -512,3 +506,6 @@ mod gate_fe;
 
 #[cfg(test)]
 mod gate_tests;
+
+#[cfg(test)]
+mod editor_snapshots;

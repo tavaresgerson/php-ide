@@ -4,7 +4,9 @@ A PHP-focused IDE written in Rust for Linux (X11/Wayland). Free and open
 source under MIT OR Apache-2.0, with no proprietary components.
 
 > **Status: pre-1.0, under active rework.** The language, debugger, test and
-> Git back ends work, but the editor surface and the UI are being rebuilt.
+> Git back ends work, and the code editor was rewritten (multi-cursor,
+> incremental highlighting, folding, split, find/replace; smooth on 50k-line
+> files). The shell UI and PHP intelligence are being rebuilt next.
 > Expect rough edges. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Run
@@ -51,9 +53,14 @@ through tree-sitter.
 | Ctrl+N / Ctrl+F4 | New file / Close tab |
 | Ctrl+Space | Completion |
 | F12 / Ctrl+B | Go to definition |
+| Ctrl+F / Ctrl+R / F3 | Find / Replace / Find next in the editor |
 | Ctrl+Shift+F | Find in files |
 | F2 / Shift+F2 | Next / previous problem |
-| Ctrl+R / Ctrl+D / Ctrl+F2 | Run file / Debug with Xdebug / Stop |
+| Ctrl+/ / Ctrl+D / Ctrl+Y | Comment line / Duplicate / Delete line |
+| Alt+Shift+↑/↓ | Move line up / down |
+| Alt+J / Ctrl+Alt+Shift+J / Alt+click | Next occurrence / All occurrences / Add caret |
+| Ctrl+Shift+− / Ctrl+Shift+= | Collapse / Expand fold |
+| Shift+F10 / Shift+F9 / Ctrl+F2 | Run file / Debug with Xdebug / Stop |
 | F9 | Toggle breakpoint (Resume while debugging) |
 | F7 / F8 / Shift+F8 | Step into / over / out |
 | Alt+1…0, Alt+F12 | Tool windows, Terminal |

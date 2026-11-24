@@ -105,6 +105,59 @@ impl Theme {
         self.syntax.style(self.editor_font())
     }
 
+    /// Colors and fonts of the code editor.
+    pub fn editor_style(&self) -> phpide_editor::EditorStyle {
+        let p = &self.palette;
+        phpide_editor::EditorStyle {
+            syntax: self.syntax_style(),
+            gutter_font: self.gutter_font(),
+            ui_font: FontId::proportional(typography::BODY),
+            line_spacing: 1.2,
+            colors: phpide_editor::EditorColors {
+                background: p.bg_editor,
+                gutter_background: p.bg_editor,
+                gutter_text: p.editor_gutter_text,
+                gutter_text_current: p.editor_gutter_text_current,
+                current_line: p.editor_current_line_bg,
+                selection: p.editor_selection_bg,
+                caret: p.editor_caret,
+                indent_guide: p.editor_indent_guide,
+                fold_placeholder: p.editor_fold_bg,
+                fold_placeholder_text: p.text_secondary,
+                fold_marker: p.text_muted,
+                search_match: p.search_match_bg,
+                search_current: p.search_current_match_bg,
+                occurrence: p.search_match_bg,
+                error: p.error,
+                warning: p.warning,
+                info: p.info,
+                hint: p.text_muted,
+                git_added: p.git_added,
+                git_modified: p.git_modified,
+                git_deleted: p.git_deleted,
+                breakpoint: p.debug_breakpoint,
+                breakpoint_check: p.text_on_accent,
+                bookmark: p.warning,
+                execution_line: p.debug_current_line,
+                coverage_full: p.coverage_full,
+                coverage_partial: p.coverage_partial,
+                coverage_none: p.coverage_none,
+                sticky_background: p.editor_sticky_bg,
+                sticky_border: p.border_subtle,
+                scrollbar_thumb: p.border_strong,
+                scrollbar_thumb_hover: p.text_muted,
+                inlay_background: p.bg_hover,
+                inlay_text: p.text_muted,
+                blame_text: p.text_muted,
+                panel_background: p.bg_elevated,
+                panel_border: p.border_subtle,
+                text: p.text_primary,
+                text_muted: p.text_muted,
+                accent: p.accent,
+            },
+        }
+    }
+
     /// Animation time, or zero with Reduced Motion.
     pub fn motion(&self, seconds: f32) -> f32 {
         if self.reduced_motion {

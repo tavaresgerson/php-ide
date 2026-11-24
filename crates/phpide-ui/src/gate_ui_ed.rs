@@ -1,7 +1,5 @@
-//! Gate UI-ED-GATE-01: pipeline de superfície (folding + gutter visual +
-//! markers + sticky) sobre fixture de 10 mil linhas, com medição.
-
-use super::*;
+//! Gate UI-ED-GATE-01: editor pipeline (structure, folds, display map,
+//! highlight) on a 10k-line fixture, with timings.
 
 fn big_php() -> String {
     let mut s = String::from("<?php\n");
@@ -14,50 +12,46 @@ fn big_php() -> String {
 }
 
 #[test]
-fn gate_folding_gutter_markers_10k_within_budget() {
+fn gate_folding_highlight_10k_within_budget() {
+    use phpide_editor::view::folds::{DisplayMap, Folds};
+
     let code = big_php();
     let total = code.lines().count();
-    assert!(total >= 10_000, "fixture tem {total} linhas");
+    assert!(total >= 10_000, "fixture has {total} lines");
+    let doc = phpide_core::Document::new(&code);
 
     let t0 = std::time::Instant::now();
-    // 1) Ranges de folding (tree-sitter) sobre as 10k linhas.
-    let ranges = phpide_syntax::folding::folding_ranges(&code, total);
-    assert!(!ranges.is_empty());
-    let t_ranges = t0.elapsed();
+    // 1) Structure (folds + blocks) from the background parse.
+    let mut syntax = phpide_editor::Syntax::for_path(Some(std::path::Path::new("big.php")));
+    syntax.wait_idle(&doc);
+    let structure = syntax.structure(&doc).expect("structure");
+    assert!(!structure.folds.is_empty());
+    assert!(!structure.report.blocks.is_empty());
+    let t_structure = t0.elapsed();
 
-    // 2) Dobras efetivas + projeção + contagem visual.
-    let folded: Vec<(usize, usize)> = ranges
-        .iter()
-        .take(200)
-        .map(|r| (r.start_line0, r.end_line0))
-        .collect();
-    let visuals = folding::FoldVisuals::new(&folded);
-    let proj = folding::project(&code, &visuals);
-    assert!(proj.text.lines().count() < total);
-    let t_proj = t0.elapsed() - t_ranges;
+    // 2) 200 folds and the display map built from them.
+    let mut folds = Folds::default();
+    for range in structure.folds.iter().take(200) {
+        folds.fold(doc.rope(), range.start_line0, range.end_line0);
+    }
+    let map = DisplayMap::new(doc.rope(), &folds);
+    assert!(map.rows() < total);
+    let t_map = t0.elapsed() - t_structure;
 
-    // 3) Markers agregados (limite por categoria) + sticky trail.
-    let diags: Vec<(u32, phpide_core::Severity)> = (1..=50)
-        .map(|l| (l * 100, phpide_core::Severity::Error))
-        .collect();
-    let git: Vec<(u32, bool)> = (1..=20).map(|l| (l * 200, true)).collect();
-    let markers = lens::aggregate_scrollbar_markers(&diags, &git, total);
-    assert!(!markers.is_empty());
-    let blocks = phpide_syntax::analyze(&code).blocks;
-    let trail = editor_view::sticky_trail(&blocks, total / 2, 5);
-    assert!(!trail.is_empty());
+    // 3) Highlight of one screen in the middle of the file.
+    let first = total / 2;
+    let spans = syntax.line_spans(&doc, first, first + 60);
+    assert_eq!(spans.len(), 61);
     let total_t = t0.elapsed();
 
-    // Orçamento folgado: pipeline completo < 2s (baseline UI-ED-000-04:
-    // 7.5ns/frame). Registre o número real ao evoluir o gate.
     assert!(
         total_t < std::time::Duration::from_secs(2),
-        "pipeline 10k lento: {total_t:?} (ranges {t_ranges:?}, proj {t_proj:?})"
+        "10k pipeline too slow: {total_t:?} (structure {t_structure:?}, map {t_map:?})"
     );
     eprintln!(
-        "GATE 10k: total {total} linhas, {} ranges, {} linhas visuais, {total_t:?}",
-        ranges.len(),
-        proj.text.lines().count()
+        "GATE 10k: {total} lines, {} folds, {} visible rows, {total_t:?}",
+        structure.folds.len(),
+        map.rows()
     );
 }
 

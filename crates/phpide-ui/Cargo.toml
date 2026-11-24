@@ -17,6 +17,7 @@ phpide-exec = { path = "../phpide-exec" }
 phpide-lsp = { path = "../phpide-lsp" }
 phpide-run = { path = "../phpide-run" }
 phpide-vcs = { path = "../phpide-vcs" }
+phpide-editor = { path = "../phpide-editor" }
 phpide-icons = { path = "../phpide-icons" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
@@ -35,12 +36,4 @@ png = "0.18"
 
 [[bench]]
 name = "search_large"
-harness = false
-
-[[bench]]
-name = "viewport"
-harness = false
-
-[[bench]]
-name = "editor_pipeline"
 harness = false

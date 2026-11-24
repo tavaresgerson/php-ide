@@ -147,11 +147,11 @@ fn vcs_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 /// Widget Run: ações de execução/depuração do arquivo atual.
 fn run_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.menu_button("▶ Run", |ui| {
-        if ui.button("Run Current File\tCtrl+R").clicked() {
+        if ui.button("Run Current File\tShift+F10").clicked() {
             app.run_current_php();
             ui.close();
         }
-        if ui.button("Debug Current File\tCtrl+D").clicked() {
+        if ui.button("Debug Current File\tShift+F9").clicked() {
             app.debug_run();
             ui.close();
         }

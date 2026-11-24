@@ -39,42 +39,16 @@ impl PhpIdeApp {
         self.rd.stop();
     }
 
-    /// Reduz a edição "texto inteiro" do TextEdit a uma operação mínima na rope.
-    pub(crate) fn diff_edit(old: &str, new: &str) -> Option<(usize, usize, String)> {
-        if old == new {
-            return None;
-        }
-        let old: Vec<char> = old.chars().collect();
-        let new: Vec<char> = new.chars().collect();
-        let mut start = 0;
-        while start < old.len() && start < new.len() && old[start] == new[start] {
-            start += 1;
-        }
-        let mut old_end = old.len();
-        let mut new_end = new.len();
-        while old_end > start && new_end > start && old[old_end - 1] == new[new_end - 1] {
-            old_end -= 1;
-            new_end -= 1;
-        }
-        Some((start, old_end - start, new[start..new_end].iter().collect()))
-    }
-
     /// Runs a command from the registry (menu, Find Action or shortcut).
     pub(crate) fn dispatch_command(&mut self, cmd: Command, ctx: &egui::Context) {
         match cmd {
             Command::Undo => {
-                if let Some(buf) = self.ws.active_buffer_mut() {
-                    if !buf.readonly {
-                        buf.undo();
-                    }
-                }
+                self.editors
+                    .run(phpide_editor::ViewCommand::Undo, &mut self.ws);
             }
             Command::Redo => {
-                if let Some(buf) = self.ws.active_buffer_mut() {
-                    if !buf.readonly {
-                        buf.redo();
-                    }
-                }
+                self.editors
+                    .run(phpide_editor::ViewCommand::Redo, &mut self.ws);
             }
             Command::Complete => self.trigger_completion(),
             Command::ToggleToolWindow(tw) => self.tw.toggle(tw),
@@ -154,16 +128,19 @@ impl PhpIdeApp {
                 self.open_palette(PaletteMode::Symbols);
             }
             Command::FindUsages => self.request_usages(),
-            Command::SplitRight => {
-                if let Some(p) = self.ws.active_buffer().and_then(|b| b.path.clone()) {
-                    self.groups.open(p.to_string_lossy().into_owned());
-                    self.groups.split_root(groups::Axis::Horizontal);
-                }
+            Command::SplitRight => self.editors.split(&self.ws, editor_area::SplitAxis::Right),
+            Command::SplitDown => self.editors.split(&self.ws, editor_area::SplitAxis::Down),
+            Command::Unsplit => {
+                self.editors.unsplit();
             }
-            Command::SplitDown => {
-                if let Some(p) = self.ws.active_buffer().and_then(|b| b.path.clone()) {
-                    self.groups.open(p.to_string_lossy().into_owned());
-                    self.groups.split_root(groups::Axis::Vertical);
+            Command::Editor(command) => {
+                if !self.editors.run(command, &mut self.ws) {
+                    if let Some(buf) = self.ws.active_buffer() {
+                        if buf.readonly && command.edits() {
+                            self.ws.message =
+                                "the file is read-only (unlock it in the status bar)".to_string();
+                        }
+                    }
                 }
             }
             Command::ToggleBlame => {
@@ -192,7 +169,10 @@ impl PhpIdeApp {
             }
             Command::ToggleFolding => {
                 self.settings.folding = !self.settings.folding;
-                self.fold_cache = None;
+                if !self.settings.folding {
+                    self.editors
+                        .run(phpide_editor::ViewCommand::UnfoldAll, &mut self.ws);
+                }
             }
             Command::RestartLsp => self.restart_lsp(),
             Command::RunCurrent => self.run_current_php(),
@@ -392,7 +372,7 @@ impl PhpIdeApp {
         }
     }
 
-    /// Roda o arquivo atual como PHP Script (Ctrl+R) — Run Configuration
+    /// Roda o arquivo atual como PHP Script (Shift+F10) — Run Configuration
     /// temporária sobre o RunManager (T-RUN-002-01): validação de campos,
     /// cwd, env e sessão com output/estado no painel Run.
     pub(crate) fn run_current_php(&mut self) {
@@ -490,7 +470,7 @@ impl PhpIdeApp {
         self.ws.message = format!("bookmark {action} (Ln {line})");
     }
 
-    /// Debug do arquivo atual (Ctrl+D): engine DBGp + PHP com XDEBUG_CONFIG
+    /// Debug do arquivo atual (Shift+F9): engine DBGp + PHP com XDEBUG_CONFIG
     /// zero-config (mescla o env do usuário, T-RUN-DBG-001-01) e Stop/
     /// Detach confiáveis (T-RUN-DBG-001-04 — processo via RunManager,
     /// socket via engine).

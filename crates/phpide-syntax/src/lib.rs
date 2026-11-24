@@ -56,10 +56,13 @@ const BLOCK_KINDS: [&str; 12] = [
     "switch_statement",
 ];
 
+/// Source text of a node (the caller owns the text: string or rope).
+pub type TextOf<'a> = &'a dyn Fn(Node) -> String;
+
 /// Nó filho que declara o nome do bloco, por kind (campo `name` do tree-sitter).
-fn name_of(node: Node, code: &str) -> String {
+fn name_of(node: Node, text_of: TextOf) -> String {
     node.child_by_field_name("name")
-        .map(|n| n.utf8_text(code.as_bytes()).unwrap_or("").to_string())
+        .map(text_of)
         .unwrap_or_default()
 }
 
@@ -72,13 +75,21 @@ pub fn analyze(code: &str) -> SyntaxReport {
     let Some(tree) = parser.parse(code, None) else {
         return SyntaxReport::default();
     };
+    analyze_tree(&tree, &|node| {
+        node.utf8_text(code.as_bytes()).unwrap_or("").to_string()
+    })
+}
+
+/// Blocks and syntax errors of an already parsed tree (the editor keeps an
+/// incrementally updated one).
+pub fn analyze_tree(tree: &tree_sitter::Tree, text_of: TextOf) -> SyntaxReport {
     let mut report = SyntaxReport::default();
-    walk(tree.root_node(), code, &mut report);
+    walk(tree.root_node(), text_of, &mut report);
     report.blocks.sort_by_key(|b| (b.start_line0, b.end_line0));
     report
 }
 
-fn walk(node: Node, code: &str, report: &mut SyntaxReport) {
+fn walk(node: Node, code: TextOf, report: &mut SyntaxReport) {
     let kind = node.kind();
     if BLOCK_KINDS.contains(&kind) {
         let start = node.start_position().row;
@@ -95,12 +106,7 @@ fn walk(node: Node, code: &str, report: &mut SyntaxReport) {
     }
     if node.is_error() {
         let pos = node.start_position();
-        let snippet: String = node
-            .utf8_text(code.as_bytes())
-            .unwrap_or("")
-            .chars()
-            .take(40)
-            .collect();
+        let snippet: String = code(node).chars().take(40).collect();
         report.errors.push(SyntaxError {
             line0: pos.row,
             col0: pos.column,

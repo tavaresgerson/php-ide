@@ -3031,6 +3031,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "phpide-editor"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "phpide-core",
+ "phpide-php",
+ "phpide-syntax",
+ "regex",
+ "ropey",
+ "tree-sitter",
+ "tree-sitter-php",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "phpide-exec"
 version = "0.1.0"
 dependencies = [
@@ -3096,6 +3112,7 @@ dependencies = [
  "phpide-core",
  "phpide-db",
  "phpide-dbgp",
+ "phpide-editor",
  "phpide-exec",
  "phpide-icons",
  "phpide-lsp",
