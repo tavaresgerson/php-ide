@@ -17,6 +17,9 @@ impl PhpIdeApp {
         self.pending_requests.clear_origin(routing::LspOrigin::Php);
         self.pending_outline = None;
         self.last_outline_key = None;
+        // The syntax-tree structure stands in until the new server answers.
+        self.outline_from_server = false;
+        self.outline_local_revision = None;
         self.pending_symbols = None;
         self.symbol_results.clear();
         self.semantic = None;
@@ -431,7 +434,16 @@ impl PhpIdeApp {
                 if matches && revision_ok {
                     let mut entries = Vec::new();
                     collect_symbols(&result, 0, &mut entries);
-                    self.ws.outline = entries;
+                    if entries.is_empty() {
+                        // An empty answer, `null` or an error (some servers
+                        // answer before indexing the file): the syntax-tree
+                        // structure stays, and is refreshed from the tree.
+                        self.outline_from_server = false;
+                        self.outline_local_revision = None;
+                    } else {
+                        self.ws.outline = entries;
+                        self.outline_from_server = true;
+                    }
                 }
             }
             if done {
@@ -830,12 +842,26 @@ impl PhpIdeApp {
             .as_ref()
             .map(|l| matches!(l.status(), LspStatus::Running(_)))
             .unwrap_or(false);
-        let Some(buf) = self.ws.active_buffer() else {
+        let active_php = self
+            .ws
+            .active_buffer()
+            .and_then(|b| b.path.clone())
+            .filter(|path| phpide_php::Php::is_php_file(path));
+        let Some(path) = active_php else {
+            // The structure always describes the active PHP file.
+            if self.outline_path.take().is_some() {
+                self.ws.outline.clear();
+                self.outline_from_server = false;
+                self.outline_local_revision = None;
+            }
             return;
         };
-        let Some(path) = buf.path.clone() else { return };
-        if !phpide_php::Php::is_php_file(&path) {
-            return;
+        if self.outline_path.as_ref() != Some(&path) {
+            // Another file: nothing of the previous one stays on screen.
+            self.ws.outline.clear();
+            self.outline_path = Some(path.clone());
+            self.outline_from_server = false;
+            self.outline_local_revision = None;
         }
         let index = self.ws.active;
         let buffer = &self.ws.buffers[index];
@@ -846,6 +872,25 @@ impl PhpIdeApp {
         let Some(version) = syntax.structure_revision() else {
             return;
         };
+        // Structure tool window and File Structure: the syntax tree's
+        // declarations, unless the language server answered for this file.
+        if (!self.outline_from_server || !lsp_running)
+            && self.outline_local_revision != Some(version)
+        {
+            self.ws.outline = structure
+                .report
+                .outline
+                .iter()
+                .map(|symbol| phpide_core::OutlineEntry {
+                    name: symbol.name.clone(),
+                    kind: symbol.kind.to_string(),
+                    line0: symbol.line0,
+                    depth: symbol.depth,
+                })
+                .collect();
+            self.outline_from_server = false;
+            self.outline_local_revision = Some(version);
+        }
         let fresh =
             matches!(&self.syntax, Some((p, cache)) if p == &path && cache.revision() == version);
         if fresh {

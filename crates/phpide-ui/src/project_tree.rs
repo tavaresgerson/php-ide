@@ -16,8 +16,8 @@ use eframe::egui;
 use phpide_icons::{file_icon, IconId};
 
 use crate::design::components::{
-    menu_item, menu_separator, Button, Dialog, IconButton, PanelHeader, TextInput, ToolbarWidget,
-    TreeRow as RowWidget,
+    menu_item, menu_separator, menu_submenu, Button, Dialog, IconButton, PanelHeader, TextInput,
+    ToolbarWidget, TreeRow as RowWidget,
 };
 use crate::services::file_ops;
 use crate::services::files::{TreeOptions, TreeRow};
@@ -772,7 +772,7 @@ fn click_select(tree: &mut TreeState, rows: &[TreeRow], path: &Path, modifiers: 
 }
 
 fn new_submenu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    ui.menu_button("New", |ui| {
+    menu_submenu(ui, Some(IconId::Plus), "New", true, |ui| {
         ui.set_min_width(200.0);
         for (kind, icon, label) in [
             (CreateKind::File, IconId::File, "File"),
@@ -802,27 +802,45 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
     fn item(
         actions: &mut Vec<Action>,
         ui: &mut egui::Ui,
+        icon: Option<IconId>,
         label: &str,
         shortcut: &str,
         enabled: bool,
         action: Action,
     ) {
-        if menu_item(ui, None, label, shortcut, enabled).clicked() {
+        if menu_item(ui, icon, label, shortcut, enabled).clicked() {
             actions.push(action);
             ui.close();
         }
     }
-    item(actions, ui, "Cut", "Ctrl+X", true, Action::Cut);
-    item(actions, ui, "Copy", "Ctrl+C", true, Action::Copy);
     item(
         actions,
         ui,
+        Some(IconId::Cut),
+        "Cut",
+        "Ctrl+X",
+        true,
+        Action::Cut,
+    );
+    item(
+        actions,
+        ui,
+        Some(IconId::Copy),
+        "Copy",
+        "Ctrl+C",
+        true,
+        Action::Copy,
+    );
+    item(
+        actions,
+        ui,
+        Some(IconId::Paste),
         "Paste",
         "Ctrl+V",
         app.tree.clipboard.is_some(),
         Action::Paste,
     );
-    ui.menu_button("Copy Path/Reference…", |ui| {
+    menu_submenu(ui, None, "Copy Path/Reference…", true, |ui| {
         ui.set_min_width(220.0);
         for (kind, label, shortcut) in [
             (PathKind::Absolute, "Absolute Path", "Ctrl+Shift+C"),
@@ -841,14 +859,31 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
         }
     });
     menu_separator(ui);
-    item(actions, ui, "Rename…", "Shift+F6", single, Action::Rename);
-    item(actions, ui, "Delete…", "Delete", true, Action::Delete);
+    item(
+        actions,
+        ui,
+        Some(IconId::Edit),
+        "Rename…",
+        "Shift+F6",
+        single,
+        Action::Rename,
+    );
+    item(
+        actions,
+        ui,
+        Some(IconId::Trash),
+        "Delete…",
+        "Delete",
+        true,
+        Action::Delete,
+    );
     menu_separator(ui);
     if is_dir && single {
         if let Some(dir) = app.tree.lead.clone() {
             item(
                 actions,
                 ui,
+                Some(IconId::Search),
                 "Find in Files…",
                 "Ctrl+Shift+F",
                 true,
@@ -857,6 +892,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
             item(
                 actions,
                 ui,
+                Some(IconId::Replace),
                 "Replace in Files…",
                 "Ctrl+Shift+R",
                 true,
@@ -869,7 +905,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
     if is_dir && single {
         if let Some(dir) = app.tree.lead.clone() {
             let current = app.project_marks.mark_of(&dir);
-            ui.menu_button("Mark Directory as", |ui| {
+            menu_submenu(ui, None, "Mark Directory as", true, |ui| {
                 ui.set_min_width(200.0);
                 use crate::project_marks::Mark;
                 for mark in [Mark::Sources, Mark::Tests, Mark::Excluded] {
@@ -889,6 +925,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
         item(
             actions,
             ui,
+            Some(IconId::SplitRight),
             "Open in Right Split",
             "Shift+Enter",
             single,
@@ -897,33 +934,39 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
     }
     if !is_dir && single {
         if let Some(path) = app.tree.lead.clone() {
-            ui.menu_button("Override File Type", |ui| {
-                ui.set_min_width(200.0);
-                let current = app.file_type_override(&path).map(str::to_string);
-                if ui
-                    .selectable_label(current.is_none(), "Auto-detect")
-                    .clicked()
-                {
-                    app.set_file_type_override(&path, None);
-                    ui.close();
-                }
-                ui.separator();
-                for file_type in phpide_php::filetype::FILE_TYPES {
-                    let selected = current.as_deref() == Some(file_type.id);
-                    if ui.selectable_label(selected, file_type.name).clicked() {
-                        app.set_file_type_override(&path, Some(file_type.id));
+            menu_submenu(
+                ui,
+                Some(IconId::FileCode),
+                "Override File Type",
+                true,
+                |ui| {
+                    ui.set_min_width(200.0);
+                    let current = app.file_type_override(&path).map(str::to_string);
+                    if ui
+                        .selectable_label(current.is_none(), "Auto-detect")
+                        .clicked()
+                    {
+                        app.set_file_type_override(&path, None);
                         ui.close();
                     }
-                }
-            });
+                    ui.separator();
+                    for file_type in phpide_php::filetype::FILE_TYPES {
+                        let selected = current.as_deref() == Some(file_type.id);
+                        if ui.selectable_label(selected, file_type.name).clicked() {
+                            app.set_file_type_override(&path, Some(file_type.id));
+                            ui.close();
+                        }
+                    }
+                },
+            );
         }
     }
-    ui.menu_button("Open In", |ui| {
-        if menu_item(ui, None, "Files", "", single).clicked() {
+    menu_submenu(ui, Some(IconId::ExternalLink), "Open In", true, |ui| {
+        if menu_item(ui, Some(IconId::FolderOpen), "Files", "", single).clicked() {
             actions.push(Action::RevealInFiles);
             ui.close();
         }
-        if menu_item(ui, None, "Terminal", "", single).clicked() {
+        if menu_item(ui, Some(IconId::Terminal), "Terminal", "", single).clicked() {
             actions.push(Action::OpenTerminal);
             ui.close();
         }
@@ -934,6 +977,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
             item(
                 actions,
                 ui,
+                Some(IconId::Unlink),
                 "Detach Project",
                 "",
                 true,
@@ -946,6 +990,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
         item(
             actions,
             ui,
+            Some(IconId::ExpandAll),
             "Expand All",
             "Ctrl+NumPad +",
             single,
@@ -954,6 +999,7 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
         item(
             actions,
             ui,
+            Some(IconId::CollapseAll),
             "Collapse All",
             "Ctrl+NumPad -",
             true,

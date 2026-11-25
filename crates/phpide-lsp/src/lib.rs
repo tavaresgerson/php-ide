@@ -98,6 +98,44 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     String::from_utf8(decoded).ok().map(PathBuf::from)
 }
 
+/// A place in a file: 0-based line and column, as the protocol sends them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Location {
+    pub path: PathBuf,
+    pub line0: usize,
+    pub col0: usize,
+}
+
+/// Places in the answer to definition, declaration, implementation,
+/// typeDefinition or references: a `Location`, a `LocationLink` (what a
+/// server may send because this client declares `linkSupport`), an array
+/// of either, or `null`.
+pub fn parse_locations(value: &Value) -> Vec<Location> {
+    let items: Vec<&Value> = match value {
+        Value::Array(items) => items.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    };
+    items.into_iter().filter_map(location_of).collect()
+}
+
+fn location_of(item: &Value) -> Option<Location> {
+    let (uri, range) = match item.get("targetUri") {
+        // LocationLink: the selection range is the declared name itself.
+        Some(uri) => (
+            uri,
+            item.get("targetSelectionRange")
+                .or_else(|| item.get("targetRange"))?,
+        ),
+        None => (item.get("uri")?, item.get("range")?),
+    };
+    Some(Location {
+        path: uri_to_path(uri.as_str()?)?,
+        line0: range["start"]["line"].as_u64()? as usize,
+        col0: range["start"]["character"].as_u64()? as usize,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Estado compartilhado com a UI
 // ---------------------------------------------------------------------------
@@ -918,6 +956,33 @@ pub fn detect_server(root: &Path) -> Option<(String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locations_and_location_links() {
+        let location = json!({
+            "uri": "file:///p/a.php",
+            "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 8 } }
+        });
+        let link = json!({
+            "originSelectionRange": { "start": { "line": 9, "character": 1 }, "end": { "line": 9, "character": 6 } },
+            "targetUri": "file:///p/b.php",
+            "targetRange": { "start": { "line": 5, "character": 4 }, "end": { "line": 8, "character": 5 } },
+            "targetSelectionRange": { "start": { "line": 5, "character": 20 }, "end": { "line": 5, "character": 25 } }
+        });
+        let at = |path: &str, line0, col0| Location {
+            path: PathBuf::from(path),
+            line0,
+            col0,
+        };
+        assert_eq!(parse_locations(&location), [at("/p/a.php", 2, 4)]);
+        assert_eq!(parse_locations(&link), [at("/p/b.php", 5, 20)]);
+        assert_eq!(
+            parse_locations(&json!([location, link])),
+            [at("/p/a.php", 2, 4), at("/p/b.php", 5, 20)]
+        );
+        assert!(parse_locations(&Value::Null).is_empty());
+        assert!(parse_locations(&json!([])).is_empty());
+    }
 
     #[test]
     fn frame_roundtrip() {

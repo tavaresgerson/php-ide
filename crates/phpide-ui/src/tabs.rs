@@ -210,16 +210,36 @@ fn tab(
     let has_path = buffer.path.is_some();
     response.context_menu(|ui| {
         ui.set_min_width(260.0);
-        let mut item = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool, action| {
-            if menu_item(ui, None, label, shortcut, enabled).clicked() {
+        let mut item = |ui: &mut egui::Ui,
+                        icon: Option<IconId>,
+                        label: &str,
+                        shortcut: &str,
+                        enabled: bool,
+                        action| {
+            if menu_item(ui, icon, label, shortcut, enabled).clicked() {
                 actions.push(action);
                 ui.close();
             }
         };
-        item(ui, "Close", "Ctrl+F4", true, TabAction::Close(i));
-        item(ui, "Close Other Tabs", "", true, TabAction::CloseOthers(i));
         item(
             ui,
+            Some(IconId::Close),
+            "Close",
+            "Ctrl+F4",
+            true,
+            TabAction::Close(i),
+        );
+        item(
+            ui,
+            None,
+            "Close Other Tabs",
+            "",
+            true,
+            TabAction::CloseOthers(i),
+        );
+        item(
+            ui,
+            None,
             "Close All Tabs",
             "",
             true,
@@ -227,6 +247,7 @@ fn tab(
         );
         item(
             ui,
+            None,
             "Close Unpinned Tabs",
             "",
             true,
@@ -235,6 +256,7 @@ fn tab(
         menu_separator(ui);
         item(
             ui,
+            Some(IconId::Pin),
             if pinned { "Unpin Tab" } else { "Pin Tab" },
             "",
             true,
@@ -242,15 +264,24 @@ fn tab(
         );
         item(
             ui,
+            Some(IconId::Undo),
             "Reopen Closed Tab",
             "Ctrl+Shift+T",
             !app.ws.closed_tabs.is_empty(),
             TabAction::Reopen,
         );
         menu_separator(ui);
-        item(ui, "Copy Path", "", has_path, TabAction::CopyPath(i, true));
         item(
             ui,
+            Some(IconId::Copy),
+            "Copy Path",
+            "",
+            has_path,
+            TabAction::CopyPath(i, true),
+        );
+        item(
+            ui,
+            None,
             "Copy File Name",
             "",
             has_path,
@@ -258,6 +289,7 @@ fn tab(
         );
         item(
             ui,
+            None,
             "Copy Repository URL",
             "",
             has_path && app.git.remote().is_some(),
@@ -265,6 +297,7 @@ fn tab(
         );
         item(
             ui,
+            Some(IconId::Locate),
             "Select in Project View",
             "Alt+F1",
             has_path,
@@ -273,6 +306,7 @@ fn tab(
         menu_separator(ui);
         item(
             ui,
+            Some(IconId::SplitRight),
             "Split Right",
             "",
             true,
@@ -280,6 +314,7 @@ fn tab(
         );
         item(
             ui,
+            Some(IconId::SplitDown),
             "Split Down",
             "",
             true,

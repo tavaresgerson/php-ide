@@ -7,7 +7,7 @@
 
 use eframe::egui;
 
-use crate::design::components::{IconButton, ListRow, Tab, TreeRow};
+use crate::design::components::{menu_item, IconButton, ListRow, Tab, TreeRow};
 use phpide_dbgp::session::{ContinueCommand, Watch};
 use phpide_icons::IconId;
 use phpide_run::session::{SessionId, SessionState};
@@ -827,7 +827,8 @@ fn variables_tree(app: &mut PhpIdeApp, ui: &mut egui::Ui, height: f32) {
                     .icon(IconId::Eye, p.info)
                     .show(ui);
                 response.response.context_menu(|ui| {
-                    if ui.button("Remove Watch").clicked() {
+                    ui.set_min_width(180.0);
+                    if menu_item(ui, Some(IconId::Trash), "Remove Watch", "", true).clicked() {
                         remove = Some(i);
                         ui.close();
                     }
@@ -878,11 +879,12 @@ fn variable_row(
     let copy_value = variable.value.clone().unwrap_or_default();
     let fullname = variable.fullname.clone();
     response.response.context_menu(|ui| {
-        if ui.button("Copy Value").clicked() {
+        ui.set_min_width(180.0);
+        if menu_item(ui, Some(IconId::Copy), "Copy Value", "", true).clicked() {
             ui.ctx().copy_text(copy_value.clone());
             ui.close();
         }
-        if ui.button("Add to Watches").clicked() {
+        if menu_item(ui, Some(IconId::Eye), "Add to Watches", "", true).clicked() {
             let next_id = app.rd.watches.iter().map(|w| w.id).max().unwrap_or(0) + 1;
             app.rd.watches.push(Watch {
                 id: next_id,
@@ -983,6 +985,9 @@ pub fn evaluate_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
     }
 }
 
+/// Height of the list and details area of View Breakpoints.
+const BREAKPOINTS_BODY_HEIGHT: f32 = 320.0;
+
 /// View Breakpoints (Ctrl+Shift+F8): enable, condition, remove, go to.
 pub fn breakpoints_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
     let Some(selected) = app.rd.breakpoints_dialog else {
@@ -1005,11 +1010,17 @@ pub fn breakpoints_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
                     ui.label(egui::RichText::new("Breakpoints").strong());
                     ui.add_space(6.0);
                     ui.horizontal_top(|ui| {
+                        // A fixed height: `horizontal_top` takes all the height
+                        // left in the modal, the vertical separator fills it and
+                        // the modal remembers that size, so without a cap the
+                        // dialog grew every frame past the window edges.
+                        ui.set_min_height(BREAKPOINTS_BODY_HEIGHT);
+                        ui.set_max_height(BREAKPOINTS_BODY_HEIGHT);
                         ui.vertical(|ui| {
                             ui.set_width(320.0);
                             egui::ScrollArea::vertical()
                                 .id_salt("breakpoint-list")
-                                .max_height(320.0)
+                                .max_height(BREAKPOINTS_BODY_HEIGHT)
                                 .show(ui, |ui| {
                                     if breakpoints.is_empty() {
                                         ui.weak("No breakpoints. F9 or a click on the line numbers adds one.");

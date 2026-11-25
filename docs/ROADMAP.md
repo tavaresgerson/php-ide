@@ -425,7 +425,8 @@ Not verified here: the AppImage and the Flatpak were not built in this
 environment (no appimagetool, no flatpak-builder); CI builds them. Inside
 the Flatpak sandbox the IDE runs the sandbox's tools, which have no PHP;
 running host tools through `flatpak-spawn` is left for later. The version
-stays 0.1.0 until the maintainer tags 1.0.
+stays 0.1.0 until the maintainer tags 1.0. The workflow itself did not run
+either: it was not in `.github/workflows/` (fixed in Phase 9).
 
 ### After v1.0
 
@@ -433,46 +434,85 @@ The maintainer's post-1.0 list (2026-11-24). Each item is planned as a
 phase of its own, with the same rule as before: a gate through UI
 interaction tests and screenshots in the three themes.
 
-#### 1.x
+#### 1.x — Phases 9 to 13 (plan of 2026-11-25)
 
-- [ ] **PHPantom as the PHP analysis engine.** PHPantom
-      (<https://github.com/AJenbo/phpantom_lsp>, MIT, Rust; Mago parser,
-      phpstorm-stubs embedded, Composer autoload, generics, PHPStan
-      annotations, Laravel) becomes the engine PHP IDE ships with, so code
-      intelligence works out of the box with no proprietary or external
-      server. intelephense and phpactor stay selectable.
-  - Decide how it is shipped: a bundled binary started over stdio (what
-    the client already does) or linked as a crate and served in process
-    over the stream transport (`LspClient::connect`, as the fixture
-    server is). Pin a version; update it deliberately.
-  - Settings › Languages › PHP: engine (PHPantom / intelephense /
-    phpactor / custom command), its options (`.phpantom.toml`: PHP
-    version, indexing strategy, diagnostics), restart.
-  - Map what it offers to the features of Phase 5 (completion, hover,
-    signature help, definition, references, rename, code actions,
-    formatting, semantic tokens, inlay hints); hide what it lacks.
-  - Attached projects (RF-PRJ-08) as workspace folders of the engine.
-  - **Done when:** `real_servers_on_laravel_fixture` passes with PHPantom
-    in CI on every commit, with no server installed on the machine, and
-    the startup and keystroke latencies are measured on a large project.
-- [ ] **Terminal in its own window.** Builds on the PTY terminal of
-      Phase 6: the terminal can live in a separate OS window (and move
-      back into the tool window), several sessions as tabs, split
-      sessions, profiles (shell, working directory, environment), shell
-      integration (command boundaries, exit status, clickable file paths
-      and `file:line` links that open in the editor), search in the
-      scrollback, the editor's font and theme.
-  - **Done when:** a long-running command (`php artisan serve`, `npm run
-    dev`) keeps running in a detached terminal window while the project
-    window is used, and its output links open files.
-- [ ] **Minimap on the right of the editor,** as in VS Code: a scaled
-      rendering of the file with the visible area highlighted; click and
-      drag to scroll; marks for diagnostics, Git changes, search matches
-      and the selection; on/off, width and "render characters vs blocks"
-      in Settings › Editor. It must cost nothing noticeable on 50k-line
-      files (rendered from the highlight spans, cached per revision).
-  - **Done when:** the editor benchmark on 54k lines stays within the
-    Phase 3 numbers with the minimap on, and snapshot tests cover it.
+Release cuts: **1.1** = Phases 9–11, **1.2** = Phase 12, **1.3** = Phase 13.
+Decisions taken with the maintainer: PHPantom ships as a bundled binary
+run as a separate process; menu icons follow the IntelliJ rule (an icon
+where one means something, the icon column always reserved); the editor
+gets a context menu in Phase 10; `v1.0.0` is tagged after the first green
+CI run.
+
+- [ ] **Phase 9 — Prerequisites (S).** The Phase 8 workflow never ran: it
+      sat in `.github/ci.yml` (Actions only reads `.github/workflows/`),
+      triggered on `main` (the branch is `master`) and was not committed.
+      Move it, run fmt/clippy/tests with the fixes of 2026-11-25
+      (Breakpoints dialog height, menu icons, Structure from the syntax
+      tree), refresh the gallery snapshots, tag `v1.0.0`.
+  - **Done when:** CI passes on `master` with the `.deb` and AppImage as
+    artifacts and the `v1.0.0` release is published.
+- [ ] **Phase 10 — Icons and menus (M).**
+  - `CommandSpec` gains `icon`, shared by the main menu, Find Action,
+    Search Everywhere and buttons; a test requires an icon on every menu
+    command outside a reviewed `NO_ICON` list.
+  - `menu_check_item` and `menu_radio_item`; the main menu and every
+    remaining menu (tool window Options and Move To, Project view Options,
+    Copy Path/Reference, Mark Directory as, color scheme actions, Home
+    Options, the language-server status menu, Abort in the branch popup,
+    the run configuration selector) move off native `egui` buttons.
+  - A new editor context menu (context actions, clipboard, Go To,
+    Refactor, Reformat, Run/Debug at caret, breakpoint, bookmark, Git,
+    Open In) and a gutter menu; items the server lacks are hidden.
+  - **Done when:** no menu uses native `egui` buttons, the registry icon
+    test passes, `gate_menus.rs` passes and the screenshots of every menu
+    in the three themes are approved.
+- [ ] **Phase 11 — PHPantom as the PHP engine (L).** PHPantom
+      (<https://github.com/PHPantom-dev/phpantom_lsp>, MIT) as a separate
+      process: a crash restarts the server, not the IDE, and its global
+      allocator and async runtime stay out of the IDE.
+  - `scripts/fetch-phpantom.sh` + `third_party/phpantom.lock` (version,
+    URL, sha256 of each release archive); packages install it under
+    `<prefix>/lib/phpide/` with its license and the phpstorm-stubs one.
+  - Discovery: `PHPIDE_LSP` → Settings choice → bundled → `third_party/`
+    → `phpantom_lsp`, `intelephense`, `phpactor` on PATH.
+  - Settings › PHP › Language Server: engine, version and path, Restart,
+    Show Log, Open `.phpantom.toml` (created with `phpantom_lsp init
+    --yes` on request only).
+  - Indexing progress (`workDoneProgress`) in the status bar; Excluded
+    folders and PHP file types sent as `initializationOptions.indexing`
+    and on change; attached projects as workspace folders.
+  - New features: Go to Super Method (Ctrl+U), Type Hierarchy (Ctrl+H),
+    Call Hierarchy (Ctrl+Alt+H), code lens, Extend/Shrink Selection
+    (Ctrl+W / Ctrl+Shift+W), document links; Phase 5 features checked
+    one by one against PHPantom.
+  - Automatic restart with backoff (3 times in 5 minutes).
+  - **Done when:** `real_servers_on_laravel_fixture` and `gate_phpantom.rs`
+    pass in CI on every run with no other server installed, and time to
+    ready and completion/diagnostic latency (p50/p95) on a large Laravel
+    project are recorded here.
+- [ ] **Phase 12 — Minimap (M).** `phpide-editor/src/view/minimap.rs`:
+      blocks of 256 lines rendered to textures in the background from the
+      cached highlight spans, only the edited blocks redone; characters or
+      blocks; visible-area slider, click and drag; marks for diagnostics,
+      Git changes, search matches and the selection (moved off the
+      scrollbar while the minimap is on); Settings › Editor › General ›
+      Minimap.
+  - **Done when:** `editor_pipeline` on 54k lines with the minimap on
+    stays within the Phase 3 numbers (open 9.4 ms; scroll worst 1.13 ms;
+    keystroke worst 7.16 ms), and snapshots and an interaction test cover
+    it.
+- [ ] **Phase 13 — Terminal in its own window (L).** An immediate `egui`
+      viewport in the project's process (sessions already live outside
+      the UI, so moving them restarts nothing): Open in Window / Move to
+      Tool Window; tabs and splits; profiles (Settings › Tools ›
+      Terminal); shell integration through OSC 7 and OSC 133 (command
+      marks with exit status, jump between commands, Copy Output, relative
+      `file:line` links); search in the scrollback; editable ANSI colors in
+      Color Scheme › Console Colors; mouse reporting to programs (SGR).
+  - **Done when:** `gate_terminal_window.rs` passes (the window is embedded
+    in test mode) and a manual check on X11 and Wayland keeps `php artisan
+    serve` running in the detached window while the project is used, with
+    output links opening files.
 
 #### 2.x
 

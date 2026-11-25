@@ -11,7 +11,9 @@ use eframe::egui;
 use phpide_core::jobs::{JobContext, JobHandle, JobOutcome};
 use phpide_core::{Component, ErrorKind, IdeError};
 
-use crate::design::components::{menu_item, menu_separator, Button, Dialog, IconButton, TextInput};
+use crate::design::components::{
+    menu_item, menu_separator, menu_submenu, Button, Dialog, IconButton, TextInput,
+};
 use crate::design::ThemeId;
 use crate::services::desktop::Picked;
 use crate::PhpIdeApp;
@@ -791,16 +793,16 @@ fn group_row(
     }
     response.context_menu(|ui| {
         ui.set_min_width(200.0);
-        if menu_item(ui, None, "Rename Group…", "", true).clicked() {
+        if menu_item(ui, Some(IconId::Edit), "Rename Group…", "", true).clicked() {
             action = Some(RecentAction::RenameGroup(group));
             ui.close();
         }
-        if menu_item(ui, None, "Remove Group", "", true).clicked() {
+        if menu_item(ui, Some(IconId::Trash), "Remove Group", "", true).clicked() {
             action = Some(RecentAction::RemoveGroup(group));
             ui.close();
         }
         menu_separator(ui);
-        if menu_item(ui, None, "New Project Group…", "", true).clicked() {
+        if menu_item(ui, Some(IconId::Plus), "New Project Group…", "", true).clicked() {
             action = Some(RecentAction::NewGroup(None));
             ui.close();
         }
@@ -1008,24 +1010,32 @@ fn recent_row(ui: &mut egui::Ui, row: RecentRow<'_>) -> Option<RecentAction> {
     }
     response.context_menu(|ui| {
         ui.set_min_width(240.0);
-        if menu_item(ui, None, "Open", "", exists).clicked() {
+        if menu_item(ui, Some(IconId::FolderOpen), "Open", "", exists).clicked() {
             action = Some(RecentAction::Open(path.to_string()));
             ui.close();
         }
-        if menu_item(ui, None, "Open in New Window", "", exists).clicked() {
+        if menu_item(
+            ui,
+            Some(IconId::ExternalLink),
+            "Open in New Window",
+            "",
+            exists,
+        )
+        .clicked()
+        {
             action = Some(RecentAction::NewWindow(path.to_string()));
             ui.close();
         }
-        if menu_item(ui, None, "Show in Files", "", exists).clicked() {
+        if menu_item(ui, Some(IconId::Folder), "Show in Files", "", exists).clicked() {
             action = Some(RecentAction::ShowInFiles(path.to_string()));
             ui.close();
         }
-        if menu_item(ui, None, "Copy Path", "", true).clicked() {
+        if menu_item(ui, Some(IconId::Copy), "Copy Path", "", true).clicked() {
             action = Some(RecentAction::Copy(path.to_string()));
             ui.close();
         }
         menu_separator(ui);
-        ui.menu_button("Move to Group", |ui| {
+        menu_submenu(ui, Some(IconId::Project), "Move to Group", true, |ui| {
             ui.set_min_width(200.0);
             for (g, group_name) in groups.iter().enumerate() {
                 if menu_item(ui, None, group_name, "", group != Some(g)).clicked() {
@@ -1036,17 +1046,27 @@ fn recent_row(ui: &mut egui::Ui, row: RecentRow<'_>) -> Option<RecentAction> {
             if !groups.is_empty() {
                 menu_separator(ui);
             }
-            if menu_item(ui, None, "New Project Group…", "", true).clicked() {
+            if menu_item(ui, Some(IconId::Plus), "New Project Group…", "", true).clicked() {
                 action = Some(RecentAction::NewGroup(Some(path.to_string())));
                 ui.close();
             }
         });
-        if group.is_some() && menu_item(ui, None, "Remove from Group", "", true).clicked() {
+        if group.is_some()
+            && menu_item(ui, Some(IconId::Minus), "Remove from Group", "", true).clicked()
+        {
             action = Some(RecentAction::MoveTo(path.to_string(), None));
             ui.close();
         }
         menu_separator(ui);
-        if menu_item(ui, None, "Remove from Recent Projects", "", true).clicked() {
+        if menu_item(
+            ui,
+            Some(IconId::Close),
+            "Remove from Recent Projects",
+            "",
+            true,
+        )
+        .clicked()
+        {
             action = Some(RecentAction::Remove(path.to_string()));
             ui.close();
         }

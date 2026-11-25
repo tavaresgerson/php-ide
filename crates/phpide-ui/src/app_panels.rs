@@ -596,30 +596,58 @@ impl PhpIdeApp {
     // -----------------------------------------------------------------
 
     pub(crate) fn outline_panel(&mut self, ui: &mut egui::Ui) {
+        use crate::design::components::{EmptyState, ListRow};
         let placement = self.tw.placement(ToolWindow::Structure);
         crate::toolwindows::dock(ui, ToolWindow::Structure, placement, 210.0, |ui| {
             tool_window_header(self, ui, ToolWindow::Structure);
             if self.ws.outline.is_empty() {
-                ui.label("—");
-            } else {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let entries = self.ws.outline.clone();
-                    for e in entries {
-                        let jump = ui
+                let php_open = self
+                    .ws
+                    .active_buffer()
+                    .and_then(|b| b.path.as_deref())
+                    .is_some_and(phpide_php::Php::is_php_file);
+                let (title, description) = if php_open {
+                    (
+                        "No declarations",
+                        "Classes, functions, methods, properties and constants of this file appear here.",
+                    )
+                } else {
+                    (
+                        "No structure",
+                        "Open a PHP file to see its classes, functions and members.",
+                    )
+                };
+                EmptyState::new(phpide_icons::IconId::Structure, title)
+                    .description(description)
+                    .show(ui);
+                return;
+            }
+            let p = crate::design::current(ui.ctx()).palette;
+            let path = self.ws.active_buffer().and_then(|b| b.path.clone());
+            let mut jump = None;
+            egui::ScrollArea::vertical()
+                .id_salt("structure-list")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for entry in &self.ws.outline {
+                        let row = ui
                             .horizontal(|ui| {
-                                ui.add_space(12.0 * e.depth as f32);
-                                ui.selectable_label(false, format!("{}  {}", e.kind, e.name))
-                                    .clicked()
+                                ui.add_space(14.0 * entry.depth as f32);
+                                ListRow::new(&entry.name)
+                                    .icon(crate::app_intel::symbol_icon(&entry.kind), p.accent)
+                                    .detail(entry.kind.clone())
+                                    .trailing(format!(":{}", entry.line0 + 1))
+                                    .show(ui)
                             })
                             .inner;
-                        if jump {
-                            let path = self.ws.active_buffer().and_then(|b| b.path.clone());
-                            if let Some(path) = path {
-                                self.ws.open_file_at(&path, e.line0, 0);
-                            }
+                        if row.clicked() {
+                            jump = Some(entry.line0);
                         }
                     }
                 });
+            if let (Some(line0), Some(path)) = (jump, path) {
+                self.ws.open_file_at(&path, line0, 0);
             }
         });
     }

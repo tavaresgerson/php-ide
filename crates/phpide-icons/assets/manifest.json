@@ -500,6 +500,31 @@
       "name": "update",
       "tabler": "arrow-down",
       "file": "assets/update.svg"
+    },
+    {
+      "name": "cut",
+      "tabler": "scissors",
+      "file": "assets/cut.svg"
+    },
+    {
+      "name": "paste",
+      "tabler": "clipboard",
+      "file": "assets/paste.svg"
+    },
+    {
+      "name": "replace",
+      "tabler": "replace",
+      "file": "assets/replace.svg"
+    },
+    {
+      "name": "unlink",
+      "tabler": "unlink",
+      "file": "assets/unlink.svg"
+    },
+    {
+      "name": "clear",
+      "tabler": "eraser",
+      "file": "assets/clear.svg"
     }
   ]
 }

@@ -41,37 +41,9 @@ pub fn plan_sync(
     ops
 }
 
-/// Uma localização (arquivo + linha/coluna 0-based, como o LSP envia).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Location {
-    pub path: PathBuf,
-    pub line0: usize,
-    pub col0: usize,
-}
-
-/// Converte a resposta de definition/implementation/typeDefinition/
-/// references em localizações (aceita Location único, array ou null).
-pub fn parse_locations(value: &Value) -> Vec<Location> {
-    let array: Vec<&Value> = if value.is_array() {
-        value.as_array().unwrap().iter().collect()
-    } else if value.is_object() && value.get("uri").is_some() {
-        vec![value]
-    } else {
-        Vec::new()
-    };
-    array
-        .into_iter()
-        .filter_map(|loc| {
-            let uri = loc["uri"].as_str()?;
-            let path = phpide_lsp::uri_to_path(uri)?;
-            Some(Location {
-                path,
-                line0: loc["range"]["start"]["line"].as_u64()? as usize,
-                col0: loc["range"]["start"]["character"].as_u64()? as usize,
-            })
-        })
-        .collect()
-}
+/// Places answered by definition-like requests (`Location` and
+/// `LocationLink`), parsed in `phpide-lsp` so tests outside the UI share it.
+pub use phpide_lsp::{parse_locations, Location};
 
 /// Converte a resposta de workspace/symbol em localizações com nome.
 pub fn parse_workspace_symbols(value: &Value) -> Vec<(String, Location)> {

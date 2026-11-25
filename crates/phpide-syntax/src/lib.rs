@@ -8,6 +8,9 @@
 use tree_sitter::{Node, Parser};
 
 pub mod folding;
+pub mod outline;
+
+pub use outline::OutlineSymbol;
 
 /// Uma região de bloco (função, classe, if, foreach...) que pode ser dobrada
 /// ou usada para navegação estrutural. Linhas 0-based.
@@ -33,6 +36,8 @@ pub struct SyntaxError {
 pub struct SyntaxReport {
     pub blocks: Vec<Block>,
     pub errors: Vec<SyntaxError>,
+    /// Declarations of the file (Structure tool window, File Structure).
+    pub outline: Vec<OutlineSymbol>,
 }
 
 pub(crate) fn language() -> tree_sitter::Language {
@@ -86,6 +91,7 @@ pub fn analyze_tree(tree: &tree_sitter::Tree, text_of: TextOf) -> SyntaxReport {
     let mut report = SyntaxReport::default();
     walk(tree.root_node(), text_of, &mut report);
     report.blocks.sort_by_key(|b| (b.start_line0, b.end_line0));
+    report.outline = outline::outline_of(tree.root_node(), text_of);
     report
 }
 

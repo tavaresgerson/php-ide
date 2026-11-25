@@ -562,12 +562,52 @@ pub fn menu_frame(ui: &egui::Ui) -> egui::Frame {
 }
 
 /// Menu row: optional icon, label and right-aligned shortcut.
+///
+/// The icon column is always reserved, so rows with and without an icon
+/// line up (as in the IntelliJ menus).
 pub fn menu_item(
     ui: &mut egui::Ui,
     icon: Option<IconId>,
     label: &str,
     shortcut: &str,
     enabled: bool,
+) -> Response {
+    menu_row(ui, icon, label, shortcut, false, enabled, false)
+}
+
+/// Menu row that opens a submenu on hover or click, with the same icon
+/// column as [`menu_item`] and a chevron on the right. Returns what
+/// `content` returned while the submenu is open.
+pub fn menu_submenu<R>(
+    ui: &mut egui::Ui,
+    icon: Option<IconId>,
+    label: &str,
+    enabled: bool,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    use egui::containers::menu::{MenuState, SubMenu};
+    // The row takes the next auto id; the submenu state is keyed by it.
+    let id = ui.next_auto_id();
+    let open = MenuState::from_ui(ui, |state, _| {
+        state.open_item == Some(SubMenu::id_from_widget_id(id))
+    });
+    let response = menu_row(ui, icon, label, "", true, enabled, open);
+    if !enabled {
+        return None;
+    }
+    SubMenu::new()
+        .show(ui, &response, content)
+        .map(|inner| inner.inner)
+}
+
+fn menu_row(
+    ui: &mut egui::Ui,
+    icon: Option<IconId>,
+    label: &str,
+    shortcut: &str,
+    submenu: bool,
+    enabled: bool,
+    open: bool,
 ) -> Response {
     let theme = theme(ui);
     let p = theme.palette;
@@ -579,12 +619,14 @@ pub fn menu_item(
     };
     let text = galley(ui, label, body_font(), fg);
     let keys = (!shortcut.is_empty()).then(|| galley(ui, shortcut, small_font(), p.text_muted));
+    let chevron = m.icon * 0.75;
     let icon_column = m.icon + space::S3;
-    let min_width = space::S4
-        + icon_column
-        + text.size().x
-        + keys.as_ref().map_or(0.0, |k| k.size().x + space::S7)
-        + space::S4;
+    let trailing = if submenu {
+        chevron + space::S7
+    } else {
+        keys.as_ref().map_or(0.0, |k| k.size().x + space::S7)
+    };
+    let min_width = space::S4 + icon_column + text.size().x + trailing + space::S4;
     let width = ui.available_width().max(min_width);
     let sense = if enabled {
         Sense::click()
@@ -596,36 +638,38 @@ pub fn menu_item(
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label_owned));
     if ui.is_rect_visible(rect) {
-        if enabled && (response.hovered() || response.has_focus()) {
+        if enabled && (open || response.hovered() || response.has_focus()) {
             ui.painter().rect_filled(
                 rect,
                 CornerRadius::same(radius::CONTROL),
                 p.bg_selected_focused,
             );
         }
+        let secondary = if enabled {
+            p.text_secondary
+        } else {
+            p.text_disabled
+        };
         let x = rect.left() + space::S4;
         if let Some(icon) = icon {
             let icon_rect = egui::Rect::from_center_size(
                 egui::pos2(x + m.icon / 2.0, rect.center().y),
                 egui::vec2(m.icon, m.icon),
             );
-            paint_icon(
-                ui.painter(),
-                icon_rect,
-                icon,
-                if enabled {
-                    p.text_secondary
-                } else {
-                    p.text_disabled
-                },
-            );
+            paint_icon(ui.painter(), icon_rect, icon, secondary);
         }
         ui.painter().galley(
             egui::pos2(x + icon_column, rect.center().y - text.size().y / 2.0),
             text,
             fg,
         );
-        if let Some(keys) = keys {
+        if submenu {
+            let chevron_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.right() - space::S4 - chevron / 2.0, rect.center().y),
+                egui::vec2(chevron, chevron),
+            );
+            paint_icon(ui.painter(), chevron_rect, IconId::ChevronRight, secondary);
+        } else if let Some(keys) = keys {
             ui.painter().galley(
                 egui::pos2(
                     rect.right() - space::S4 - keys.size().x,

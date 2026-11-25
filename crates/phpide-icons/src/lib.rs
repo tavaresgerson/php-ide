@@ -110,6 +110,11 @@ icons! {
     More => "more", "dots", "More";
     Check => "check", "check", "Done";
     Copy => "copy", "copy", "Copy";
+    Cut => "cut", "scissors", "Cut";
+    Paste => "paste", "clipboard", "Paste";
+    Replace => "replace", "replace", "Replace";
+    Unlink => "unlink", "unlink", "Detach";
+    Clear => "clear", "eraser", "Clear";
     ExternalLink => "external-link", "external-link", "Open externally";
     Undo => "undo", "arrow-back-up", "Undo";
     Redo => "redo", "arrow-forward-up", "Redo";

@@ -10,7 +10,7 @@ use eframe::egui;
 use phpide_icons::{file_icon, IconId};
 
 use crate::app_vcs::{status_color, GitDialog, GitDialogKind};
-use crate::design::components::{Button, Checkbox, IconButton, TreeRow};
+use crate::design::components::{menu_item, menu_separator, Button, Checkbox, IconButton, TreeRow};
 use crate::services::vcs::{
     ChangeKind, ConflictSide, DiffRequest, FileStatus, QuickOp, Side, VcsStatus,
 };
@@ -635,51 +635,75 @@ fn file_row(
     let abs = toplevel.join(&status.path);
     response.context_menu(|ui| {
         ui.set_min_width(200.0);
+        let mut item = |ui: &mut egui::Ui, icon: Option<IconId>, label: &str, act: Act| {
+            if menu_item(ui, icon, label, "", true).clicked() {
+                acts.push(act);
+                ui.close();
+            }
+        };
         if group == Group::Conflicts {
-            if ui.button("Accept Yours").clicked() {
-                acts.push(Act::Accept(path.clone(), ConflictSide::Ours));
-                ui.close();
-            }
-            if ui.button("Accept Theirs").clicked() {
-                acts.push(Act::Accept(path.clone(), ConflictSide::Theirs));
-                ui.close();
-            }
-            if ui.button("Mark Resolved").clicked() {
-                acts.push(Act::Stage(vec![path.clone()]));
-                ui.close();
-            }
-            ui.separator();
+            item(
+                ui,
+                None,
+                "Accept Yours",
+                Act::Accept(path.clone(), ConflictSide::Ours),
+            );
+            item(
+                ui,
+                None,
+                "Accept Theirs",
+                Act::Accept(path.clone(), ConflictSide::Theirs),
+            );
+            item(
+                ui,
+                Some(IconId::Check),
+                "Mark Resolved",
+                Act::Stage(vec![path.clone()]),
+            );
+            menu_separator(ui);
         } else {
-            if ui.button("Show Diff").clicked() {
-                acts.push(Act::Diff(group, status.clone()));
-                ui.close();
-            }
-            let stage_label = if group == Group::Staged {
-                "Unstage"
+            item(
+                ui,
+                Some(IconId::Diff),
+                "Show Diff",
+                Act::Diff(group, status.clone()),
+            );
+            if group == Group::Staged {
+                item(
+                    ui,
+                    Some(IconId::Minus),
+                    "Unstage",
+                    Act::Unstage(vec![path.clone()]),
+                );
             } else {
-                "Stage"
-            };
-            if ui.button(stage_label).clicked() {
-                acts.push(if group == Group::Staged {
-                    Act::Unstage(vec![path.clone()])
-                } else {
-                    Act::Stage(vec![path.clone()])
-                });
-                ui.close();
+                item(
+                    ui,
+                    Some(IconId::Plus),
+                    "Stage",
+                    Act::Stage(vec![path.clone()]),
+                );
             }
-            if ui.button("Rollback…").clicked() {
-                acts.push(Act::Rollback(vec![(group, path.clone())]));
-                ui.close();
-            }
+            item(
+                ui,
+                Some(IconId::Undo),
+                "Rollback…",
+                Act::Rollback(vec![(group, path.clone())]),
+            );
         }
-        if abs.exists() && ui.button("Jump to Source").clicked() {
-            acts.push(Act::Open(abs.clone()));
-            ui.close();
+        if abs.exists() {
+            item(
+                ui,
+                Some(IconId::File),
+                "Jump to Source",
+                Act::Open(abs.clone()),
+            );
         }
-        if ui.button("Copy Path").clicked() {
-            acts.push(Act::CopyPath(abs.clone()));
-            ui.close();
-        }
+        item(
+            ui,
+            Some(IconId::Copy),
+            "Copy Path",
+            Act::CopyPath(abs.clone()),
+        );
     });
 }
 

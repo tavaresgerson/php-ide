@@ -824,3 +824,71 @@ fn terminal_runs_the_shell_on_a_pty() {
     harness.run_steps(3);
     assert!(!harness.state().terminal.focused);
 }
+
+/// The Structure tool window lists the file's declarations from the syntax
+/// tree with no language server, and a click on one jumps to its line.
+#[test]
+fn structure_lists_declarations_without_a_language_server() {
+    let (_dir, root) = project();
+    let file = root.join("src/Order.php");
+    std::fs::write(
+        &file,
+        "<?php\nclass Order\n{\n    private int $total = 0;\n\n    public function placeOrderNow(): void\n    {\n    }\n}\n",
+    )
+    .unwrap();
+    let mut harness = harness(&root, vec![file]);
+    harness
+        .state_mut()
+        .tw
+        .set_visible(crate::toolwindows::ToolWindow::Structure, true);
+    step_until(&mut harness, "the structure", |h| {
+        h.state().ws.outline.len() == 3
+    });
+    let listed: Vec<(String, String, usize)> = harness
+        .state()
+        .ws
+        .outline
+        .iter()
+        .map(|e| (e.kind.clone(), e.name.clone(), e.depth))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("class".to_string(), "Order".to_string(), 0),
+            ("property".to_string(), "$total".to_string(), 1),
+            ("method".to_string(), "placeOrderNow".to_string(), 1),
+        ]
+    );
+    harness.run_steps(2);
+    harness.get_by_label("placeOrderNow").click();
+    harness.run_steps(3);
+    let app = harness.state();
+    let buffer = app.ws.active_buffer().unwrap();
+    assert_eq!(
+        buffer.document.rope().char_to_line(app.cursor_char),
+        5,
+        "the caret is on the method"
+    );
+}
+
+/// View Breakpoints keeps its size inside the window: it used to grow a bit
+/// every frame until its top and bottom ran past the window edges.
+#[test]
+fn breakpoints_dialog_fits_the_window_and_keeps_its_size() {
+    let (_dir, root) = project();
+    let mut harness = harness(&root, Vec::new());
+    harness.run_steps(2);
+    harness.state_mut().rd.breakpoints_dialog = Some(None);
+    harness.run_steps(5);
+    let dialog = |h: &Harness<'static, PhpIdeApp>| {
+        h.ctx
+            .memory(|m| m.area_rect(egui::Id::new("view-breakpoints")))
+            .expect("the dialog is shown")
+    };
+    let first = dialog(&harness);
+    harness.run_steps(60);
+    let later = dialog(&harness);
+    assert_eq!(first.size(), later.size(), "the dialog keeps its size");
+    let window = harness.ctx.content_rect();
+    assert!(window.contains_rect(later), "{later:?} fits in {window:?}");
+}

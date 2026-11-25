@@ -98,8 +98,10 @@ impl Image {
             return usize::MAX;
         }
         self.rgba
-            .chunks_exact(4)
-            .zip(other.rgba.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(other.rgba.as_chunks::<4>().0)
             .filter(|(a, b)| {
                 a.iter()
                     .zip(b.iter())
@@ -185,7 +187,7 @@ fn rasterize(
         if !clip.is_positive() {
             continue;
         }
-        for triangle in mesh.indices.chunks_exact(3) {
+        for triangle in mesh.indices.as_chunks::<3>().0 {
             let [a, b, c] = [
                 &mesh.vertices[triangle[0] as usize],
                 &mesh.vertices[triangle[1] as usize],

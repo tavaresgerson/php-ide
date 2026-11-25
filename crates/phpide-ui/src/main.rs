@@ -297,6 +297,13 @@ struct PhpIdeApp {
     pending_requests: routing::LspRouting,
     pending_outline: Option<(PathBuf, mpsc::Receiver<Value>)>,
     last_outline_key: Option<(PathBuf, u64)>,
+    /// The active PHP file `ws.outline` describes (Structure tool window,
+    /// File Structure), and whether its entries came from the language
+    /// server; otherwise they come from the syntax tree.
+    outline_path: Option<PathBuf>,
+    outline_from_server: bool,
+    /// Revision of the syntax-tree outline last copied into `ws.outline`.
+    outline_local_revision: Option<u64>,
     /// Go to Symbol: resultados da última consulta workspace/symbol.
     symbol_results: Vec<palette::SymbolHit>,
     pending_symbols: Option<mpsc::Receiver<Value>>,

@@ -17,7 +17,7 @@ use phpide_editor::syntax::Span;
 use phpide_editor::Syntax;
 use phpide_icons::IconId;
 
-use crate::design::components::IconButton;
+use crate::design::components::{menu_item, IconButton};
 use crate::services::vcs::{
     DiffData, DiffLineKind, DiffRequest, FileDiff, HunkAction, QuickOp, Side,
 };
@@ -730,13 +730,18 @@ pub(crate) fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                             }
                             let copy_text = if on_left { lt } else { rt }.cloned();
                             response.context_menu(|ui| {
-                                if ui.button("Copy Line").clicked() {
+                                ui.set_min_width(180.0);
+                                if menu_item(ui, Some(IconId::Copy), "Copy Line", "", true)
+                                    .clicked()
+                                {
                                     if let Some(text) = &copy_text {
                                         acts.push(Act::Copy(text.clone()));
                                     }
                                     ui.close();
                                 }
-                                if ui.button("Open in Editor").clicked() {
+                                if menu_item(ui, Some(IconId::File), "Open in Editor", "F4", true)
+                                    .clicked()
+                                {
                                     acts.push(Act::OpenSource(row.right.or(row.left)));
                                     ui.close();
                                 }

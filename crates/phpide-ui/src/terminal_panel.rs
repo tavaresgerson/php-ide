@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Pos2, Rect};
+use phpide_icons::IconId;
 use phpide_term::{Color as TermColor, Key, Mods, Pty, Terminal};
 
-use crate::design::components::{IconButton, Tab};
+use crate::design::components::{menu_item, IconButton, Tab};
 use crate::PhpIdeApp;
 
 /// Lines per wheel notch.
@@ -522,27 +523,27 @@ fn terminal_view(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let mut paste = false;
     let mut clear = false;
     response.context_menu(|ui| {
+        ui.set_min_width(200.0);
         let session = &app.terminal.sessions[index];
-        if ui
-            .add_enabled(
-                session.selection.is_some(),
-                egui::Button::new("Copy").shortcut_text("Ctrl+Shift+C"),
-            )
-            .clicked()
+        if menu_item(
+            ui,
+            Some(IconId::Copy),
+            "Copy",
+            "Ctrl+Shift+C",
+            session.selection.is_some(),
+        )
+        .clicked()
         {
             if let Some(text) = session.selected_text() {
                 ui.ctx().copy_text(text);
             }
             ui.close();
         }
-        if ui
-            .add(egui::Button::new("Paste").shortcut_text("Ctrl+Shift+V"))
-            .clicked()
-        {
+        if menu_item(ui, Some(IconId::Paste), "Paste", "Ctrl+Shift+V", true).clicked() {
             paste = true;
             ui.close();
         }
-        if ui.button("Clear Buffer").clicked() {
+        if menu_item(ui, Some(IconId::Clear), "Clear Buffer", "", true).clicked() {
             clear = true;
             ui.close();
         }

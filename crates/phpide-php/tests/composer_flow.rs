@@ -163,13 +163,10 @@ fn composer_project_full_flow_with_real_lsp() {
     loop {
         let rx = lsp.definition(&main, line, 13); // dentro de "greet"
         if let Some(result) = wait_for(Duration::from_secs(10), || rx.try_recv().ok()) {
-            let arr = result
-                .as_array()
-                .cloned()
-                .unwrap_or_else(|| vec![result.clone()]);
-            locations = arr
-                .iter()
-                .filter_map(|loc| phpide_lsp::uri_to_path(loc["uri"].as_str()?))
+            // `Location` or `LocationLink`: the client declares linkSupport.
+            locations = phpide_lsp::parse_locations(&result)
+                .into_iter()
+                .map(|location| location.path)
                 .collect();
             if locations.iter().any(|p| p.ends_with("Greeter.php")) {
                 break;

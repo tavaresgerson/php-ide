@@ -12,7 +12,8 @@ mod toast;
 pub use buttons::{Button, ButtonKind, IconButton, ToolbarWidget};
 pub use inputs::{Checkbox, Select, TextInput};
 pub use navigation::{
-    menu_frame, menu_item, menu_separator, ListRow, Tab, TabResponse, TreeResponse, TreeRow,
+    menu_frame, menu_item, menu_separator, menu_submenu, ListRow, Tab, TabResponse, TreeResponse,
+    TreeRow,
 };
 pub use surfaces::{
     editor_notice, panel_frame, splitter, tooltip, tooltip_contents, Dialog, DialogResponse,

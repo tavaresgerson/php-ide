@@ -1252,7 +1252,7 @@ fn parameter_ranges(label: &str, parameters: Option<&Vec<Value>>) -> Vec<(usize,
         .collect()
 }
 
-fn symbol_icon(kind: &str) -> phpide_icons::IconId {
+pub(crate) fn symbol_icon(kind: &str) -> phpide_icons::IconId {
     use phpide_icons::IconId;
     match kind {
         "class" | "interface" | "enum" | "struct" | "trait" => IconId::FileCode,

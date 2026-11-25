@@ -9,7 +9,9 @@ use eframe::egui;
 use phpide_icons::{file_icon, IconId};
 
 use crate::app_vcs::{GitDialog, GitDialogKind};
-use crate::design::components::{IconButton, Select, Tab, TextInput, TreeRow};
+use crate::design::components::{
+    menu_item, menu_separator, menu_submenu, IconButton, Select, Tab, TextInput, TreeRow,
+};
 use crate::services::vcs::{
     Branch, ChangeKind, CommitDetails, CommitEntry, DiffRequest, LogFilter, Side,
 };
@@ -533,11 +535,15 @@ fn log_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         let short = entry.short.clone();
                         response.context_menu(|ui| {
                             ui.set_min_width(200.0);
-                            if ui.button("Copy Revision Number").clicked() {
+                            if menu_item(ui, Some(IconId::Copy), "Copy Revision Number", "", true)
+                                .clicked()
+                            {
                                 acts.push(LogAct::Copy(sha.clone()));
                                 ui.close();
                             }
-                            if ui.button("New Branch…").clicked() {
+                            if menu_item(ui, Some(IconId::GitBranch), "New Branch…", "", true)
+                                .clicked()
+                            {
                                 acts.push(LogAct::NewBranch(Some(short.clone())));
                                 ui.close();
                             }
@@ -611,42 +617,52 @@ fn branch_context_menu(response: &egui::Response, b: &Branch, acts: &mut Vec<Log
 
 /// Actions of one branch (context menu and branch popup).
 fn branch_actions(ui: &mut egui::Ui, b: &Branch, acts: &mut Vec<LogAct>) {
+    let mut item = |ui: &mut egui::Ui, icon: Option<IconId>, label: &str, act: LogAct| {
+        if menu_item(ui, icon, label, "", true).clicked() {
+            acts.push(act);
+            ui.close();
+        }
+    };
     if b.current {
-        if ui.button("Update").clicked() {
-            acts.push(LogAct::Update);
-            ui.close();
-        }
-        if ui.button("Push…").clicked() {
-            acts.push(LogAct::Push);
-            ui.close();
-        }
-    } else if ui.button("Checkout").clicked() {
-        acts.push(LogAct::Checkout(b.name.clone(), b.remote));
-        ui.close();
+        item(ui, Some(IconId::Update), "Update", LogAct::Update);
+        item(ui, Some(IconId::Push), "Push…", LogAct::Push);
+    } else {
+        item(
+            ui,
+            Some(IconId::GitBranch),
+            "Checkout",
+            LogAct::Checkout(b.name.clone(), b.remote),
+        );
     }
-    if ui
-        .button(format!("New Branch from '{}'…", b.name))
-        .clicked()
-    {
-        acts.push(LogAct::NewBranch(Some(b.name.clone())));
-        ui.close();
-    }
-    if !b.current
-        && ui
-            .button(format!("Merge '{}' into Current", b.name))
-            .clicked()
-    {
-        acts.push(LogAct::Merge(b.name.clone()));
-        ui.close();
+    item(
+        ui,
+        Some(IconId::Plus),
+        format!("New Branch from '{}'…", b.name).as_str(),
+        LogAct::NewBranch(Some(b.name.clone())),
+    );
+    if !b.current {
+        item(
+            ui,
+            Some(IconId::Merge),
+            format!("Merge '{}' into Current", b.name).as_str(),
+            LogAct::Merge(b.name.clone()),
+        );
     }
     if !b.remote {
-        if ui.button("Rename…").clicked() {
-            acts.push(LogAct::Rename(b.name.clone()));
-            ui.close();
-        }
-        if !b.current && ui.button("Delete").clicked() {
-            acts.push(LogAct::Delete(b.name.clone()));
-            ui.close();
+        menu_separator(ui);
+        item(
+            ui,
+            Some(IconId::Edit),
+            "Rename…",
+            LogAct::Rename(b.name.clone()),
+        );
+        if !b.current {
+            item(
+                ui,
+                Some(IconId::Trash),
+                "Delete",
+                LogAct::Delete(b.name.clone()),
+            );
         }
     }
 }
@@ -814,11 +830,12 @@ fn details_view(log: &mut LogState, ui: &mut egui::Ui, acts: &mut Vec<LogAct>) {
                 }
                 let path = path.clone();
                 response.context_menu(|ui| {
-                    if ui.button("Show Diff").clicked() {
+                    ui.set_min_width(180.0);
+                    if menu_item(ui, Some(IconId::Diff), "Show Diff", "", true).clicked() {
                         acts.push(LogAct::FileDiff(k));
                         ui.close();
                     }
-                    if ui.button("Open File").clicked() {
+                    if menu_item(ui, Some(IconId::File), "Open File", "", true).clicked() {
                         acts.push(LogAct::OpenFile(path.clone()));
                         ui.close();
                     }
@@ -967,7 +984,6 @@ fn console_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 
 /// The branch popup of the header (and Git › Branches…).
 pub(crate) fn branches_popup(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    use crate::design::components::{menu_item, menu_separator};
     let p = crate::design::current(ui.ctx()).palette;
     ui.set_min_width(300.0);
     let mut acts = Vec::new();
@@ -1028,10 +1044,15 @@ pub(crate) fn branches_popup(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             if b.ahead > 0 {
                 label.push_str(&format!("  ↑{}", b.ahead));
             }
-            if b.current {
-                label = format!("✓ {label}");
-            }
-            ui.menu_button(label, |ui| branch_actions(ui, b, &mut acts));
+            // The current branch carries a check mark instead of the branch icon.
+            let icon = if b.current {
+                IconId::Check
+            } else {
+                IconId::GitBranch
+            };
+            menu_submenu(ui, Some(icon), &label, true, |ui| {
+                branch_actions(ui, b, &mut acts)
+            });
         }
     }
     let ctx = ui.ctx().clone();

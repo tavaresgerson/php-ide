@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (frozen features)
+        run: cargo clippy --workspace --all-targets --locked --features phpide-ui/experimental -- -D warnings
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: PHP, Xdebug and Composer for the real-tool tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends php-cli php-xdebug php-xml php-mbstring composer git
+          php --version
+      - run: npm ci --prefix third_party
+      - name: Unit, integration and UI interaction tests
+        run: cargo test --workspace --locked
+      - name: Frozen features (experimental build)
+        run: cargo test -p phpide-ui --locked --features experimental
+      - name: Screenshots for review (three themes)
+        if: always()
+        run: |
+          cargo test -p phpide-ui --locked -- --ignored screenshots || true
+      - name: Upload snapshot diffs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshots
+          path: target/snapshots/
+          if-no-files-found: ignore
+
+  package:
+    needs: [lint, test]
+    runs-on: ubuntu-22.04 # oldest supported glibc for the binary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream dpkg-dev
+      - name: Validate desktop entry and AppStream data
+        run: |
+          desktop-file-validate packaging/linux/io.github.tavaresgerson.PhpIde.desktop
+          # Warnings (no screenshots yet, say) are shown; errors fail.
+          appstreamcli validate --no-net --explain packaging/linux/io.github.tavaresgerson.PhpIde.metainfo.xml | tee appstream.log
+          ! grep -q '^E:' appstream.log
+      - run: cargo build --release --locked -p phpide-ui
+      - name: .deb
+        run: bash scripts/package-deb.sh
+      - name: Install the .deb
+        run: |
+          sudo apt-get install -y ./target/package/phpide_*.deb
+          phpide --version
+          dpkg -L phpide | grep -q io.github.tavaresgerson.PhpIde.desktop
+      - name: AppImage
+        run: |
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGETOOL="$PWD/appimagetool" bash scripts/package-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            target/package/*.deb
+            target/package/*.AppImage
+
+  flatpak:
+    # Slow (downloads the runtime and the SDK): tags and manual runs only.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [lint, test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Build
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --force-clean \
+            --build-args=--share=network --repo=repo build-dir \
+            packaging/flatpak/io.github.tavaresgerson.PhpIde.yml
+          flatpak build-bundle repo PHP_IDE.flatpak io.github.tavaresgerson.PhpIde
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: PHP_IDE.flatpak
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/linux-packages/*
+            dist/flatpak/*
+          generate_release_notes: true

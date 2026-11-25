@@ -40,6 +40,20 @@ Phase 8, hardening (2026-11-24).
 - Debugger: Stop or Detach right after Resume could be lost, leaving the
   session hanging; a Stop queued behind another command ended as a lost
   connection.
+- Go to Definition, Implementation and Type Declaration did nothing when
+  the server answered with `LocationLink`s, which this client invites by
+  declaring `linkSupport`; both answer forms are read now.
+- View Breakpoints grew taller every frame until its top and bottom edges
+  left the window; the list and details now have a fixed height.
+- Context menus (Project view, editor tabs, Home, Commit, Git log and
+  branches, diff, Debug variables and watches, Terminal) show icons on
+  their items (Cut, Copy, Paste, Rename, Delete…), and submenus line up
+  with the other items.
+- The Structure tool window was empty without a language server: it now
+  lists classes, interfaces, traits, enums, functions, methods, properties
+  (constructor promotion included), constants and enum cases from the
+  syntax tree, and uses the server's answer when there is one. File
+  Structure (Ctrl+F12) works the same way. An empty window says why.
 
 ### Changed
 

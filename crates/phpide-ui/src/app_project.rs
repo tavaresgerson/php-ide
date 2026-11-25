@@ -75,6 +75,9 @@ impl PhpIdeApp {
             pending_requests: routing::LspRouting::default(),
             pending_outline: None,
             last_outline_key: None,
+            outline_path: None,
+            outline_from_server: false,
+            outline_local_revision: None,
             symbol_results: Vec::new(),
             pending_symbols: None,
             last_symbol_query: String::new(),
@@ -280,6 +283,9 @@ impl PhpIdeApp {
         self.pending_requests.clear();
         self.pending_outline = None;
         self.last_outline_key = None;
+        self.outline_path = None;
+        self.outline_from_server = false;
+        self.outline_local_revision = None;
         self.syntax = None;
         self.db.reset_project(&root);
         self.ws = Workspace::unscanned(root.clone());

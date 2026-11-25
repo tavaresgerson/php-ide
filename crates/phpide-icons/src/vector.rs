@@ -83,7 +83,7 @@ pub(crate) fn parse_svg(source: &str) -> Vec<IconPath> {
             }),
             "polyline" | "polygon" => {
                 let numbers = Numbers::new(node.attribute("points").unwrap_or("")).collect_all();
-                let points: Vec<[f32; 2]> = numbers.chunks_exact(2).map(|p| [p[0], p[1]]).collect();
+                let points: Vec<[f32; 2]> = numbers.as_chunks::<2>().0.to_vec();
                 if !points.is_empty() {
                     out.push(IconPath {
                         points,
