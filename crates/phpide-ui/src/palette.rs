@@ -98,10 +98,84 @@ pub enum PaletteAction {
     /// Comando dinâmico (composer script, phpunit, plugin externo).
     Plugin(String),
     Settings(SettingsPage),
+    /// Alt+Enter on an action in Find Action: give it a shortcut.
+    AssignShortcut(Command),
+}
+
+/// File type groups of the Files filter (RF-SEL-05).
+pub const FILE_TYPES: [(&str, &[&str]); 6] = [
+    ("PHP", &["php", "phtml", "inc", "phpt"]),
+    ("Templates", &["twig", "html", "htm", "tpl", "latte"]),
+    (
+        "JavaScript and TypeScript",
+        &["js", "mjs", "cjs", "ts", "tsx", "jsx", "vue"],
+    ),
+    ("Styles", &["css", "scss", "sass", "less"]),
+    (
+        "Configuration",
+        &[
+            "json", "yml", "yaml", "xml", "neon", "env", "ini", "toml", "dist", "lock",
+        ],
+    ),
+    ("Documentation", &["md", "txt", "rst"]),
+];
+/// Files of no group above.
+pub const OTHER_TYPE: &str = "Other";
+
+/// The type group of a file name.
+pub fn file_type(name: &str) -> &'static str {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    FILE_TYPES
+        .iter()
+        .find(|(_, exts)| exts.contains(&ext.as_str()))
+        .map(|(group, _)| *group)
+        .unwrap_or(OTHER_TYPE)
+}
+
+/// Files outside the project index: `vendor/`, `node_modules/` and the
+/// folders marked Excluded (RF-SEL-05 "include non-project items").
+pub fn scan_libraries(
+    root: &Path,
+    excluded: &[PathBuf],
+    cancelled: impl Fn() -> bool,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.join("vendor"), root.join("node_modules")];
+    stack.extend(excluded.iter().cloned());
+    while let Some(dir) = stack.pop() {
+        if cancelled() || out.len() >= 200_000 {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(entry.path()),
+                Ok(_) => out.push(entry.path()),
+                Err(_) => {}
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 pub struct PaletteState {
     pub open: bool,
+    /// File type groups hidden by the Files filter.
+    pub hidden_types: Vec<&'static str>,
+    /// Also search `vendor/`, `node_modules/` and excluded folders.
+    pub include_non_project: bool,
+    /// Those files, once scanned (`None`: not yet).
+    pub libraries: Option<std::sync::Arc<Vec<PathBuf>>>,
     pub mode: PaletteMode,
     pub query: String,
     pub selected: usize,
@@ -114,6 +188,9 @@ impl PaletteState {
     pub fn new() -> Self {
         PaletteState {
             open: false,
+            hidden_types: Vec::new(),
+            include_non_project: false,
+            libraries: None,
             mode: PaletteMode::All,
             query: String::new(),
             selected: 0,
@@ -202,11 +279,16 @@ pub fn fuzzy_score(needle: &str, hay: &str) -> Option<i32> {
 
 /// Files ranked by name first (so `UC` finds `UserController.php`), then
 /// by path.
-fn project_files(ws: &Workspace, query: &str, cap: usize) -> Vec<(i32, PathBuf)> {
+fn project_files(
+    ws: &Workspace,
+    query: &str,
+    cap: usize,
+    keep: impl Fn(&Path) -> bool,
+) -> Vec<(i32, PathBuf)> {
     let mut files: Vec<(i32, PathBuf)> = ws
         .files
         .iter()
-        .filter(|e| !e.is_dir)
+        .filter(|e| !e.is_dir && keep(&e.path))
         .filter_map(|e| {
             let name = e.path.file_name()?.to_string_lossy();
             if let Some(score) = fuzzy_score(query, &name) {
@@ -219,6 +301,17 @@ fn project_files(ws: &Workspace, query: &str, cap: usize) -> Vec<(i32, PathBuf)>
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.truncate(cap);
     files
+}
+
+fn type_shown(state: &PaletteState, path: &Path) -> bool {
+    if state.hidden_types.is_empty() {
+        return true;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    !state.hidden_types.contains(&file_type(&name))
 }
 
 fn relative(ws: &Workspace, path: &Path) -> String {
@@ -294,6 +387,9 @@ fn collect_entries(
             &ws.recent_files
         };
         for path in list {
+            if !type_shown(state, path) {
+                continue;
+            }
             if query.is_empty() || fuzzy_score(query, &relative(ws, path)).is_some() {
                 out.push(file_entry(ws, path, "recent"));
             }
@@ -321,8 +417,31 @@ fn collect_entries(
 
     if !query.is_empty() && matches!(mode, PaletteMode::All | PaletteMode::Files) {
         let cap = if mode == PaletteMode::All { 12 } else { 60 };
-        for (_, path) in project_files(ws, query, cap) {
-            out.push(file_entry(ws, &path, ""));
+        let mut found: Vec<(i32, PathBuf, &str)> =
+            project_files(ws, query, usize::MAX, |p| type_shown(state, p))
+                .into_iter()
+                .map(|(score, path)| (score, path, ""))
+                .collect();
+        if state.include_non_project {
+            if let Some(libraries) = &state.libraries {
+                for path in libraries.iter().filter(|p| type_shown(state, p)) {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default();
+                    let score = fuzzy_score(query, &name)
+                        .map(|s| s + 20)
+                        .or_else(|| fuzzy_score(query, &relative(ws, path)));
+                    if let Some(score) = score {
+                        // Project files first at equal scores.
+                        found.push((score - 1, path.clone(), "non-project"));
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|f| std::cmp::Reverse(f.0));
+        for (_, path, hint) in found.into_iter().take(cap) {
+            out.push(file_entry(ws, &path, hint));
         }
     }
 
@@ -468,7 +587,13 @@ pub fn show(
                             }
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.weak("Tab switches");
+                            if matches!(state.mode, PaletteMode::All | PaletteMode::Files) {
+                                file_filters(ui, state);
+                            } else if state.mode == PaletteMode::Actions {
+                                ui.weak("Alt+Enter assigns a shortcut");
+                            } else {
+                                ui.weak("Tab switches");
+                            }
                         });
                     });
                 }
@@ -535,6 +660,7 @@ pub fn show(
                     }
                 });
                 let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                let alt_enter = enter && ctx.input(|i| i.modifiers.alt);
 
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
@@ -569,6 +695,13 @@ pub fn show(
                             let response = row.show(ui);
                             if selected && moved {
                                 response.scroll_to_me(None);
+                            }
+                            if selected && alt_enter {
+                                if let ActionKind::Run(c) = &entry.action {
+                                    action = Some(PaletteAction::AssignShortcut(*c));
+                                    close = true;
+                                    continue;
+                                }
                             }
                             if response.clicked() || (selected && enter) {
                                 action = Some(match &entry.action {
@@ -605,6 +738,56 @@ pub fn show(
         state.selected = 0;
     }
     action
+}
+
+/// The Files filter: a type menu and "Include non-project items".
+fn file_filters(ui: &mut egui::Ui, state: &mut PaletteState) {
+    let hidden = state.hidden_types.len();
+    let label = if hidden == 0 {
+        "All file types".to_string()
+    } else {
+        format!("File types ({} hidden)", hidden)
+    };
+    let button = crate::design::components::ToolbarWidget::new(label)
+        .icon(IconId::Filter)
+        .tooltip("Filter by file type")
+        .show(ui);
+    egui::Popup::menu(&button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(220.0);
+            let groups = FILE_TYPES.iter().map(|(g, _)| *g).chain([OTHER_TYPE]);
+            for group in groups {
+                let mut shown = !state.hidden_types.contains(&group);
+                if ui.checkbox(&mut shown, group).changed() {
+                    state.hidden_types.retain(|g| *g != group);
+                    if !shown {
+                        state.hidden_types.push(group);
+                    }
+                    state.selected = 0;
+                }
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("All").clicked() {
+                    state.hidden_types.clear();
+                }
+                if ui.button("None").clicked() {
+                    state.hidden_types = FILE_TYPES
+                        .iter()
+                        .map(|(g, _)| *g)
+                        .chain([OTHER_TYPE])
+                        .collect();
+                }
+            });
+        });
+    if ui
+        .checkbox(&mut state.include_non_project, "Include non-project items")
+        .on_hover_text("Also search vendor/, node_modules/ and excluded folders")
+        .changed()
+    {
+        state.selected = 0;
+    }
 }
 
 fn enter_used(ctx: &egui::Context) -> bool {
@@ -665,5 +848,39 @@ mod tests {
         assert_eq!(entries.len(), 1);
         state.mode = PaletteMode::Symbols;
         assert_eq!(collect_entries(&ws, &state, &[], &symbols).len(), 2);
+    }
+
+    #[test]
+    fn files_filter_by_type_and_include_non_project_items() {
+        let mut ws = Workspace::unscanned(PathBuf::from("/p"));
+        for name in ["src/User.php", "assets/user.js", "user.json"] {
+            ws.files.push(phpide_core::FileEntry {
+                path: PathBuf::from("/p").join(name),
+                depth: 1,
+                is_dir: false,
+            });
+        }
+        let mut state = PaletteState::new();
+        state.open_with(PaletteMode::Files);
+        state.query = "user".into();
+        let labels = |state: &PaletteState| -> Vec<String> {
+            collect_entries(&ws, state, &[], &[])
+                .into_iter()
+                .map(|e| e.label)
+                .collect()
+        };
+        assert_eq!(labels(&state).len(), 3);
+        state.hidden_types = vec!["JavaScript and TypeScript", "Configuration"];
+        assert_eq!(labels(&state), ["User.php"]);
+        state.include_non_project = true;
+        state.libraries = Some(std::sync::Arc::new(vec![PathBuf::from(
+            "/p/vendor/acme/src/UserFactory.php",
+        )]));
+        let entries = collect_entries(&ws, &state, &[], &[]);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "User.php");
+        assert_eq!(entries[1].hint, "non-project");
+        assert_eq!(file_type("base.html.twig"), "Templates");
+        assert_eq!(file_type("Makefile"), OTHER_TYPE);
     }
 }

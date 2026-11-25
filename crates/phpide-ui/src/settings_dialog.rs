@@ -45,6 +45,8 @@ pub struct SettingsDialogState {
     just_opened: bool,
     /// Color Scheme and Font pages.
     pub editor_pages: crate::settings_editor::EditorPagesState,
+    /// Keymap page.
+    pub keymap: crate::keymap_page::KeymapState,
 }
 
 impl Default for SettingsDialogState {
@@ -55,6 +57,7 @@ impl Default for SettingsDialogState {
             query: String::new(),
             just_opened: false,
             editor_pages: Default::default(),
+            keymap: Default::default(),
         }
     }
 }
@@ -89,13 +92,13 @@ pub const PAGES: &[PageSpec] = &[
         page: SettingsPage::SystemSettings,
         section: "Appearance & Behavior",
         label: "System Settings",
-        keywords: "project reopen startup new window current window ask open",
+        keywords: "project reopen startup new window current window ask open default directory folder location",
     },
     PageSpec {
         page: SettingsPage::Keymap,
         section: "Keymap",
         label: "Keymap",
-        keywords: "shortcuts keys bindings",
+        keywords: "shortcuts keys bindings assign shortcut",
     },
     PageSpec {
         page: SettingsPage::EditorAppearance,
@@ -149,6 +152,12 @@ fn pages() -> impl Iterator<Item = &'static PageSpec> {
             .iter()
             .filter(|_| crate::scope::EXPERIMENTAL),
     )
+}
+
+/// Every page (tests walk them all).
+#[cfg(test)]
+pub fn all_pages() -> Vec<SettingsPage> {
+    pages().map(|spec| spec.page).collect()
 }
 
 fn spec_of(page: SettingsPage) -> Option<&'static PageSpec> {
@@ -273,7 +282,8 @@ pub fn show(app: &mut PhpIdeApp, ctx: &egui::Context) {
                 });
             });
         });
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    let recording = app.settings_dialog.keymap.recording;
+    if !recording && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         close = true;
     }
     if close {
@@ -337,6 +347,21 @@ fn system_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             changed = true;
         }
     }
+    ui.add_space(6.0);
+    // Where New Project and Get from VCS create folders (RF-PRJ-14).
+    let label = ui.label("Default project directory:");
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut app.settings.projects_dir)
+            .hint_text("Home folder")
+            .desired_width(320.0),
+    );
+    let field = field.labelled_by(label.id);
+    changed |= field.changed();
+    let dir = app.settings.projects_dir.trim();
+    if !dir.is_empty() && !std::path::Path::new(dir).is_dir() {
+        let p = crate::design::current(ui.ctx()).palette;
+        ui.colored_label(p.warning, "This folder does not exist yet.");
+    }
     if changed {
         app.persist_settings();
     }
@@ -369,13 +394,52 @@ fn tabs_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         }
         changed = true;
     }
+    ui.horizontal(|ui| {
+        ui.label("Tab placement:");
+        for option in ["Top", "None"] {
+            changed |= ui
+                .selectable_value(&mut app.settings.tab_placement, option.to_string(), option)
+                .changed();
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Close button:");
+        for option in ["Right", "Left", "None"] {
+            changed |= ui
+                .selectable_value(
+                    &mut app.settings.tab_close_button,
+                    option.to_string(),
+                    option,
+                )
+                .changed();
+        }
+    });
+    changed |= ui
+        .checkbox(
+            &mut app.settings.tabs_alphabetical,
+            "Sort tabs alphabetically",
+        )
+        .changed();
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Closing Policy").strong());
     ui.horizontal(|ui| {
-        ui.label("Tab limit:");
+        ui.label("When the active tab closes, activate:");
+        for option in phpide_core::AfterClose::ALL {
+            changed |= ui
+                .selectable_value(
+                    &mut app.settings.tab_after_close,
+                    option.label().to_string(),
+                    option.label(),
+                )
+                .changed();
+        }
+    });
+    ui.horizontal(|ui| {
+        let label = ui.label("Tab limit:");
         let mut limit = app.settings.tab_limit;
         if ui
             .add(egui::DragValue::new(&mut limit).range(1..=99))
+            .labelled_by(label.id)
             .changed()
         {
             app.settings.tab_limit = limit;
@@ -477,7 +541,7 @@ fn appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .on_hover_text("Turns off non-essential animations")
         .changed();
     ui.horizontal(|ui| {
-        ui.label("Navigation Bar:");
+        let label = ui.label("Navigation Bar:");
         egui::ComboBox::from_id_salt("settings-navigation-bar")
             .selected_text(&app.settings.navigation_bar)
             .show_ui(ui, |ui| {
@@ -490,7 +554,9 @@ fn appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         )
                         .changed();
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
     });
     ui.label("UI font: Inter");
     ui.label(egui::RichText::new("Themes apply to the window and the editor.").weak());
@@ -503,25 +569,7 @@ fn appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn keymap_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Only the default keymap is available for now.");
-    let mut changed = false;
-    for keymap in [
-        "Default",
-        "Windows",
-        "macOS",
-        "Emacs",
-        "Eclipse",
-        "NetBeans",
-        "Sublime",
-        "Visual Studio",
-    ] {
-        changed |= ui
-            .selectable_value(&mut app.settings.keymap, keymap.to_string(), keymap)
-            .changed();
-    }
-    if changed {
-        app.persist_settings();
-    }
+    crate::keymap_page::show(app, ui);
 }
 
 fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
@@ -538,6 +586,21 @@ fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     changed |= ui
         .checkbox(&mut app.settings.column_selection, "Column Selection Mode")
         .changed();
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label("Line separator for new files:");
+        for label in ["LF", "CRLF"] {
+            changed |= ui
+                .selectable_value(&mut app.settings.line_ending, label.to_string(), label)
+                .changed();
+        }
+    });
+    ui.label(
+        egui::RichText::new(
+            "Existing files keep their own separator; change it from the status bar.",
+        )
+        .weak(),
+    );
     ui.add_space(8.0);
     ui.label("Breadcrumbs and occurrence highlighting follow these editor settings.");
     if changed {

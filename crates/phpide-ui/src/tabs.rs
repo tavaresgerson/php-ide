@@ -29,6 +29,8 @@ enum TabAction {
     CopyUrl(usize),
     Reveal(usize),
     Split(usize, SplitAxis),
+    DiffFocus(usize),
+    DiffClose(usize),
 }
 
 /// Tab labels: the file name, with the parent folder in front when two
@@ -68,6 +70,7 @@ pub fn tab_strip(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                 let list_width = crate::design::current(ui.ctx()).metrics.icon_button + 8.0;
                 let labels = tab_labels(&app.ws.buffers);
+                let order = display_order(app, &labels);
                 let active = app.ws.active;
                 let active_id = app.ws.active_buffer().map(|b| b.id);
                 let memory_key = egui::Id::new("tab-strip-active");
@@ -80,9 +83,10 @@ pub fn tab_strip(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         egui::vec2((ui.available_width() - list_width).max(0.0), 0.0),
                         egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
                         |ui| {
-                            for (i, label) in labels.iter().enumerate() {
-                                tab(app, ui, i, label, false, &mut actions);
+                            for &i in &order {
+                                tab(app, ui, i, &labels[i], false, &mut actions);
                             }
+                            diff_tabs(app, ui, &mut actions);
                         },
                     );
                 } else {
@@ -92,9 +96,17 @@ pub fn tab_strip(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         .max_width((ui.available_width() - list_width).max(0.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                for (i, label) in labels.iter().enumerate() {
-                                    tab(app, ui, i, label, i == active && reveal, &mut actions);
+                                for &i in &order {
+                                    tab(
+                                        app,
+                                        ui,
+                                        i,
+                                        &labels[i],
+                                        i == active && reveal,
+                                        &mut actions,
+                                    );
                                 }
+                                diff_tabs(app, ui, &mut actions);
                             });
                         });
                 }
@@ -103,6 +115,42 @@ pub fn tab_strip(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         });
     for action in actions {
         run(app, ui.ctx(), action);
+    }
+}
+
+/// Order the tabs are shown in: as opened, or by name (pinned first when
+/// pinned tabs go first) (RF-TAB-11).
+pub(crate) fn display_order(app: &PhpIdeApp, labels: &[String]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    if app.settings.tabs_alphabetical {
+        let pinned_first = app.settings.tabs_pinned_left;
+        order.sort_by_key(|&i| {
+            (
+                !(pinned_first && app.ws.buffers[i].pinned),
+                labels[i].to_lowercase(),
+            )
+        });
+    }
+    order
+}
+
+/// Diff tabs after the file tabs.
+fn diff_tabs(app: &PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<TabAction>) {
+    let palette = crate::design::current(ui.ctx()).palette;
+    for (k, diff) in app.diffs.tabs.iter().enumerate() {
+        let active = app.diffs.active == Some(k);
+        let shown = Tab::new(&diff.title)
+            .icon(IconId::Diff, palette.accent)
+            .active(active)
+            .show(ui);
+        if active {
+            shown.response.scroll_to_me(None);
+        }
+        if shown.close_clicked {
+            actions.push(TabAction::DiffClose(k));
+        } else if shown.response.clicked() {
+            actions.push(TabAction::DiffFocus(k));
+        }
     }
 }
 
@@ -117,9 +165,16 @@ fn tab(
     let palette = crate::design::current(ui.ctx()).palette;
     let buffer = &app.ws.buffers[i];
     let (icon, kind) = file_icon(&buffer.name());
+    let vcs_color = buffer
+        .path
+        .as_deref()
+        .and_then(|path| app.vcs_color(&palette, path));
     let shown = Tab::new(label)
         .icon(icon, palette.file_color(kind))
-        .active(i == app.ws.active)
+        .label_color(vcs_color)
+        .close_left(app.settings.tab_close_button == "Left")
+        .closable(app.settings.tab_close_button != "None")
+        .active(i == app.ws.active && app.diffs.active.is_none())
         .modified(buffer.dirty)
         .preview(buffer.preview)
         .pinned(buffer.pinned)
@@ -272,8 +327,14 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: TabAction) {
         TabAction::Focus(i) => {
             if i < app.ws.buffers.len() {
                 app.ws.active = i;
+                app.diffs.active = None;
             }
         }
+        TabAction::DiffFocus(k) => {
+            let active = app.ws.active_buffer().map(|b| b.id);
+            app.diffs.focus(k, active);
+        }
+        TabAction::DiffClose(k) => app.diffs.close(k),
         TabAction::Close(i) => app.request_close_tab(i),
         TabAction::CloseOthers(i) => app.request_close_others(i),
         TabAction::CloseAll { keep_pinned } => app.request_close_all(keep_pinned),

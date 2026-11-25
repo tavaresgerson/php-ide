@@ -396,6 +396,15 @@ impl PhpIdeApp {
                 buffer.request_cursor(line, 0);
             }
         }
+        // A diff tab shows in place of the editor.
+        self.diffs
+            .follow_editor(self.ws.active_buffer().map(|b| b.id));
+        if self.diffs.active.is_some() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(editor_bg))
+                .show(ui, |ui| crate::diff_view::show(self, ui));
+            return;
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(editor_bg))
             .show(ui, |ui| {

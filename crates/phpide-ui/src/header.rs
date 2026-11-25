@@ -238,33 +238,37 @@ fn project_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     });
 }
 
-/// VCS widget: current branch with a menu of Git actions.
+/// Id of the branch popup (Git › Branches… opens it too).
+pub(crate) fn branch_popup() -> egui::Id {
+    egui::Id::new("git-branches-popup")
+}
+
+/// VCS widget: current branch, incoming/outgoing commits and the branch
+/// popup with the Git actions.
 fn vcs_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     if !app.git.is_repo() {
         return;
     }
-    let branch = app.git_branch();
-    let response = ToolbarWidget::new(branch)
+    let mut label = app.git_branch();
+    if let Some(current) = app.vcs.snapshot().and_then(|s| s.current_branch()) {
+        if current.behind > 0 {
+            label.push_str(&format!(" ↓{}", current.behind));
+        }
+        if current.ahead > 0 {
+            label.push_str(&format!(" ↑{}", current.ahead));
+        }
+    }
+    if let Some(op) = app.vcs.snapshot().and_then(|s| s.operation) {
+        label.push_str(&format!(" ({})", op.label()));
+    }
+    let response = ToolbarWidget::new(label)
         .icon(IconId::GitBranch)
         .tooltip("Git branch")
         .show(ui);
-    egui::Popup::menu(&response).show(|ui| {
-        ui.set_min_width(220.0);
-        if ui.button("Refresh Branch").clicked() {
-            app.git_refresh();
-            ui.close();
-        }
-        let log = egui::Button::new("Branches / Log…").shortcut_text("Alt+9");
-        if ui.add(log).clicked() {
-            app.tw.set_visible(ToolWindow::VersionControl, true);
-            ui.close();
-        }
-        let commit = egui::Button::new("Commit…").shortcut_text("Alt+0");
-        if ui.add(commit).clicked() {
-            app.tw.set_visible(ToolWindow::Commit, true);
-            ui.close();
-        }
-    });
+    egui::Popup::menu(&response)
+        .id(branch_popup())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| crate::vcs_panel::branches_popup(app, ui));
 }
 
 /// Run widget: configuration selector plus Run, Debug and Stop buttons.

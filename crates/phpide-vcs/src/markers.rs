@@ -155,12 +155,14 @@ mod tests {
         let d = FileDiff {
             old_path: "x".into(),
             new_path: "x".into(),
+            binary: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_count: 1,
                 new_start: 1,
                 new_count: 1,
                 lines: vec![crate::diff::DiffLine {
+                    no_newline: false,
                     kind: DiffLineKind::Context,
                     content: "igual".into(),
                     old_lineno: Some(1),

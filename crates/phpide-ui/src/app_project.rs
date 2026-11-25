@@ -16,6 +16,7 @@ impl PhpIdeApp {
         };
         let db = database::DatabaseState::new(&root);
         let (settings, settings_err) = settings::Settings::load_or_default();
+        crate::commands::set_overrides(&settings.shortcuts);
         let theme = ThemeId::from_name(&settings.theme);
         let (lsp, lsp_init, lsp_name) = if has_project {
             start_lsp(&root)
@@ -23,7 +24,7 @@ impl PhpIdeApp {
             (None, None, String::new())
         };
         let plugins = plugins::discover_plugins(&root, &settings::config_dir());
-        let logger = Logger::stderr();
+        let logger = app_recovery::make_logger();
         let session = std::process::id() as u64;
         logger.info(
             Component::Ui,
@@ -130,10 +131,28 @@ impl PhpIdeApp {
             refactor_undo: workspace_edit::UndoStack::default(),
             lens_hover: None,
             terminal: Default::default(),
-            commit_message: String::new(),
+            recovery: Default::default(),
+            recent_locations: Default::default(),
+            last_place: None,
+            library_job: None,
+            project_marks: Default::default(),
+            vcs: services::vcs::VcsService::new(root.clone()),
+            commit_ui: Default::default(),
+            diffs: Default::default(),
+            vcs_log: Default::default(),
+            git_dialog: None,
         };
         if has_project {
             app.windows.set_project(Some(&app.ws.root.clone()));
+            app.start_recovery();
+        }
+        // A crash report from the last run is shown once (tests set it
+        // themselves: the folder is shared by every test of the process).
+        if !cfg!(test) {
+            app.recovery.crash_report =
+                phpide_core::diag::unseen_crash_reports(&app_recovery::state_dir().join("crashes"))
+                    .into_iter()
+                    .next();
         }
         let placements = app.settings.tool_window_placements.clone();
         app.tw.restore_placements(&placements);
@@ -229,6 +248,9 @@ impl PhpIdeApp {
     pub fn load_project(&mut self, root: PathBuf, ctx: &egui::Context) {
         self.settings.touch_project(&root);
         self.persist_settings();
+        // The previous project's buffers were saved or discarded.
+        self.recovery.clear();
+        self.palette.libraries = None;
         // Isola o trabalho do projeto anterior (NFR-001-04).
         let report = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
@@ -266,11 +288,13 @@ impl PhpIdeApp {
         // Shells of the previous project end with it.
         self.terminal = Default::default();
         self.git = services::git::GitService::new(root.clone());
+        self.reset_vcs(&root);
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.refresh_composer(false);
         self.tree = Default::default();
         self.project_open = true;
         self.windows.set_project(Some(&root));
+        self.start_recovery();
         self.ws.open_tabs_at_end = self.settings.tabs_open_at_end;
         self.welcome_open = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
@@ -363,7 +387,19 @@ impl PhpIdeApp {
 
     /// Close Project: stops the project's services and shows Home
     /// (RF-PRJ-12). Unsaved files were handled by the caller.
+    /// Recovery for the open project (what a crash left is offered).
+    fn start_recovery(&mut self) {
+        self.windows.refresh();
+        let root = self.ws.root.clone();
+        let elsewhere = self.windows.others().iter().any(|w| w.root == root);
+        let crash = self.recovery.crash_report.take();
+        self.recovery = app_recovery::RecoveryState::for_project(&root, elsewhere);
+        self.recovery.crash_report = crash;
+    }
+
     pub fn close_project(&mut self, ctx: &egui::Context) {
+        self.recovery.clear();
+        self.recovery = Default::default();
         let _ = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
         self.exec.stop_if_running();
@@ -380,7 +416,8 @@ impl PhpIdeApp {
         let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
         self.ws = Workspace::unscanned(home.clone());
         self.files = services::files::ProjectFiles::new(home.clone());
-        self.git = services::git::GitService::new(home);
+        self.git = services::git::GitService::new(home.clone());
+        self.reset_vcs(&home);
         self.tree = Default::default();
         self.editors = editor_area::EditorArea::default();
         self.project_open = false;
@@ -407,6 +444,39 @@ impl PhpIdeApp {
         self.palette.open_with(mode);
     }
 
+    /// Folder marks of the project (its own, or composer.json's).
+    /// Scans the non-project files Search Everywhere may include
+    /// (RF-SEL-05), once per project, when the option is on.
+    pub(crate) fn poll_libraries(&mut self, ctx: &egui::Context) {
+        let wanted = self.palette.open && self.palette.include_non_project;
+        if wanted && self.palette.libraries.is_none() && self.library_job.is_none() {
+            let root = self.ws.root.clone();
+            let excluded = self.project_marks.excluded.clone();
+            let ctx = ctx.clone();
+            self.library_job = Some(self.jobs.spawn(move |job| {
+                let files = palette::scan_libraries(&root, &excluded, || job.is_cancelled());
+                ctx.request_repaint();
+                Ok(files)
+            }));
+        }
+        if let Some(job) = &mut self.library_job {
+            if let Some(outcome) = job.poll() {
+                if let phpide_core::jobs::JobOutcome::Ok(files) = outcome {
+                    self.palette.libraries = Some(std::sync::Arc::new(files));
+                }
+                self.library_job = None;
+            }
+        }
+    }
+
+    pub(crate) fn reload_marks(&mut self) {
+        self.palette.libraries = None;
+        self.project_marks =
+            crate::project_marks::ProjectMarks::load(&self.ws.root, self.composer.as_ref());
+        let excluded = self.project_marks.excluded.clone();
+        self.files.set_excluded_dirs(excluded);
+    }
+
     /// Re-executa a descoberta Composer (T-PHP-030-03): chamada na abertura,
     /// na troca de projeto e quando o watcher detecta mudança no
     /// composer.json. `from_watcher` evita mensagens no startup silencioso.
@@ -415,6 +485,7 @@ impl PhpIdeApp {
             Ok(info) => {
                 let had_vendor = self.composer.as_ref().map(|c| c.vendor_present);
                 self.composer = info.clone();
+                self.reload_marks();
                 if let Some(info) = info {
                     if from_watcher {
                         self.ws.message = format!(
@@ -441,6 +512,7 @@ impl PhpIdeApp {
             }
             Err(e) => {
                 self.composer = None;
+                self.reload_marks();
                 if from_watcher || !self.composer_warned {
                     self.composer_warned = true;
                     self.ws.message = format!("{} — action: {}", e.message, e.action);
@@ -490,6 +562,15 @@ impl PhpIdeApp {
             .unwrap_or(0)
     }
 
+    /// Git views start over with another project.
+    fn reset_vcs(&mut self, root: &Path) {
+        self.vcs = services::vcs::VcsService::new(root.to_path_buf());
+        self.commit_ui = Default::default();
+        self.diffs = Default::default();
+        self.vcs_log = Default::default();
+        self.git_dialog = None;
+    }
+
     pub(crate) fn poll_watcher(&mut self, ctx: &egui::Context) {
         if let Some((_, rx)) = &self.watcher {
             let mut any = false;
@@ -498,6 +579,7 @@ impl PhpIdeApp {
             }
             if any {
                 self.change_pending_since = Some(Instant::now());
+                self.vcs.refresh();
             }
         }
         if let Some(since) = self.change_pending_since {

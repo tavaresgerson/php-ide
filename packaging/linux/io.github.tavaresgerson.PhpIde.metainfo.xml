@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tavaresgerson.PhpIde</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>PHP IDE</name>
+  <summary>Write, run, debug and test PHP projects</summary>
+  <description>
+    <p>
+      PHP IDE is a free and open source development environment for PHP,
+      written in Rust. It follows PhpStorm's keyboard shortcuts and
+      navigation.
+    </p>
+    <ul>
+      <li>Code editor with multiple carets, folding, split views and smooth scrolling on large files</li>
+      <li>Completion, documentation, rename and quick fixes through intelephense or phpactor</li>
+      <li>Run configurations, Xdebug debugger and PHPUnit with coverage</li>
+      <li>Git: commit with hunk staging, side-by-side diff, branches, push and pull, log</li>
+      <li>Integrated terminal, Search Everywhere, Find and Replace in Files, Recent Locations</li>
+      <li>Recovery of unsaved changes after a crash</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.tavaresgerson.PhpIde.desktop</launchable>
+  <url type="homepage">https://github.com/tavaresgerson/php-ide</url>
+  <url type="bugtracker">https://github.com/tavaresgerson/php-ide/issues</url>
+  <developer id="io.github.tavaresgerson">
+    <name>PHP IDE contributors</name>
+  </developer>
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+  </categories>
+  <provides>
+    <binary>phpide</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

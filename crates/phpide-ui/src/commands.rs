@@ -61,6 +61,7 @@ pub enum Command {
     GotoFile,
     GotoClass,
     RecentFiles,
+    RecentLocations,
     FindAction,
     GotoSymbol,
     GotoLine,
@@ -68,6 +69,8 @@ pub enum Command {
     GotoImplementation,
     GotoTypeDeclaration,
     FindUsages,
+    FindInFiles,
+    ReplaceInFiles,
     NavigateBack,
     NavigateForward,
     LastEditLocation,
@@ -90,6 +93,20 @@ pub enum Command {
     ViewBreakpoints,
     Stop,
     ToggleBreakpoint,
+    // Git
+    GitCommit,
+    GitPush,
+    GitUpdate,
+    GitFetch,
+    GitBranches,
+    GitNewBranch,
+    GitCompareWithHead,
+    GitShowHistory,
+    GitRollback,
+    // Help
+    ShowLog,
+    ShowLogFolder,
+    About,
     // Window
     NextProjectWindow,
     PreviousProjectWindow,
@@ -107,19 +124,23 @@ pub enum Category {
     View,
     Navigate,
     Run,
+    Git,
     Tools,
     Window,
+    Help,
 }
 
 impl Category {
-    pub const ALL: [Category; 7] = [
+    pub const ALL: [Category; 9] = [
         Category::File,
         Category::Edit,
         Category::View,
         Category::Navigate,
         Category::Run,
+        Category::Git,
         Category::Tools,
         Category::Window,
+        Category::Help,
     ];
 
     pub fn label(self) -> &'static str {
@@ -129,8 +150,10 @@ impl Category {
             Category::View => "View",
             Category::Navigate => "Navigate",
             Category::Run => "Run",
+            Category::Git => "Git",
             Category::Tools => "Tools",
             Category::Window => "Window",
+            Category::Help => "Help",
         }
     }
 }
@@ -416,7 +439,7 @@ pub const REGISTRY: &[CommandSpec] = &[
         K::ToggleToolWindow(Tw::Find),
         C::View,
         "Find",
-        &[alt(Key::Num3), ctrl_shift(Key::F)],
+        &[alt(Key::Num3)],
         true,
     ),
     spec(
@@ -587,6 +610,13 @@ pub const REGISTRY: &[CommandSpec] = &[
         true,
     ),
     spec(
+        K::RecentLocations,
+        C::Navigate,
+        "Recent Locations",
+        &[ctrl_shift(Key::E)],
+        true,
+    ),
+    spec(
         K::FindAction,
         C::Navigate,
         "Find Action",
@@ -633,6 +663,20 @@ pub const REGISTRY: &[CommandSpec] = &[
         C::Navigate,
         "Find Usages",
         &[alt(Key::F7)],
+        true,
+    ),
+    spec(
+        K::FindInFiles,
+        C::Edit,
+        "Find in Files…",
+        &[ctrl_shift(Key::F)],
+        true,
+    ),
+    spec(
+        K::ReplaceInFiles,
+        C::Edit,
+        "Replace in Files…",
+        &[ctrl_shift(Key::R)],
         true,
     ),
     spec(
@@ -752,6 +796,44 @@ pub const REGISTRY: &[CommandSpec] = &[
         &[key(Key::F9)],
         true,
     ),
+    // Git
+    spec(K::GitCommit, C::Git, "Commit…", &[ctrl(Key::K)], true),
+    spec(K::GitPush, C::Git, "Push…", &[ctrl_shift(Key::K)], true),
+    spec(
+        K::GitUpdate,
+        C::Git,
+        "Update Project…",
+        &[ctrl(Key::T)],
+        true,
+    ),
+    spec(K::GitFetch, C::Git, "Fetch", &[], true),
+    spec(
+        K::GitBranches,
+        C::Git,
+        "Branches…",
+        &[ctrl_shift(Key::Backtick)],
+        true,
+    ),
+    spec(K::GitNewBranch, C::Git, "New Branch…", &[], true),
+    spec(
+        K::GitCompareWithHead,
+        C::Git,
+        "Compare with HEAD",
+        &[],
+        true,
+    ),
+    spec(K::GitShowHistory, C::Git, "Show History", &[], true),
+    spec(
+        K::GitRollback,
+        C::Git,
+        "Rollback…",
+        &[ctrl_alt(Key::Z)],
+        true,
+    ),
+    // Help
+    spec(K::ShowLog, C::Help, "Show Log", &[], true),
+    spec(K::ShowLogFolder, C::Help, "Show Log in Files", &[], true),
+    spec(K::About, C::Help, "About PHP IDE", &[], true),
     // Tools
     spec(
         K::RestartLsp,
@@ -871,12 +953,104 @@ pub fn is_available(id: Command) -> bool {
     }
 }
 
+// The user's keymap (RF-UI-06): shortcuts that replace a command's
+// defaults. Lookups happen on the UI thread, so the table is per thread
+// (which also keeps parallel UI tests apart).
+thread_local! {
+    static OVERRIDES: std::cell::RefCell<std::collections::HashMap<Command, Vec<KeyboardShortcut>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Stable name of a command in the settings, e.g. `FindInFiles`.
+pub fn command_key(id: Command) -> String {
+    format!("{id:?}")
+}
+
+/// The command a settings name refers to.
+pub fn command_of_key(key: &str) -> Option<Command> {
+    REGISTRY
+        .iter()
+        .map(|s| s.id)
+        .find(|id| command_key(*id) == key)
+}
+
+/// `Ctrl+Shift+F`-style text of a shortcut.
+pub fn format_shortcut(sc: &KeyboardShortcut) -> String {
+    sc.format(&eframe::egui::ModifierNames::NAMES, false)
+}
+
+/// Parses `Ctrl+Shift+F` (as [`format_shortcut`] writes it).
+pub fn parse_shortcut(text: &str) -> Option<KeyboardShortcut> {
+    let mut modifiers = Modifiers::NONE;
+    let mut key = None;
+    for part in text.split('+').map(str::trim) {
+        match part {
+            "Ctrl" | "Control" => modifiers.ctrl = true,
+            "Shift" => modifiers.shift = true,
+            "Alt" | "Option" => modifiers.alt = true,
+            "" if text.ends_with("++") => key = Key::from_name("+"),
+            name => key = Some(Key::from_name(name)?),
+        }
+    }
+    Some(KeyboardShortcut::new(modifiers, key?))
+}
+
+/// Installs the user's keymap from the settings: `(command, shortcuts)`.
+pub fn set_overrides(list: &[(String, Vec<String>)]) {
+    let table = list
+        .iter()
+        .filter_map(|(key, shortcuts)| {
+            let id = command_of_key(key)?;
+            Some((
+                id,
+                shortcuts.iter().filter_map(|s| parse_shortcut(s)).collect(),
+            ))
+        })
+        .collect();
+    OVERRIDES.with(|o| *o.borrow_mut() = table);
+}
+
+/// The settings form of the overrides: `(command, shortcuts)` for the
+/// commands whose shortcuts differ from the defaults.
+pub fn overrides_for_settings(
+    table: &[(Command, Vec<KeyboardShortcut>)],
+) -> Vec<(String, Vec<String>)> {
+    table
+        .iter()
+        .filter(|(id, list)| list.as_slice() != spec_of(*id).shortcuts)
+        .map(|(id, list)| (command_key(*id), list.iter().map(format_shortcut).collect()))
+        .collect()
+}
+
+/// The shortcuts a command has now: the user's, else the defaults.
+pub fn shortcuts_of(id: Command) -> Vec<KeyboardShortcut> {
+    OVERRIDES
+        .with(|o| o.borrow().get(&id).cloned())
+        .unwrap_or_else(|| spec_of(id).shortcuts.to_vec())
+}
+
+/// Commands (other than `except`) that already use `sc`.
+pub fn commands_using(sc: &KeyboardShortcut, except: Command) -> Vec<Command> {
+    REGISTRY
+        .iter()
+        .map(|s| s.id)
+        .filter(|id| *id != except && is_available(*id))
+        .filter(|id| {
+            shortcuts_of(*id).iter().any(|other| {
+                other.logical_key == sc.logical_key
+                    && other.modifiers.ctrl == sc.modifiers.ctrl
+                    && other.modifiers.shift == sc.modifiers.shift
+                    && other.modifiers.alt == sc.modifiers.alt
+            })
+        })
+        .collect()
+}
+
 /// Text of the primary shortcut, e.g. `Ctrl+Shift+Z`; empty when none.
 pub fn shortcut_text(id: Command) -> String {
-    spec_of(id)
-        .shortcuts
+    shortcuts_of(id)
         .first()
-        .map(|sc| sc.format(&eframe::egui::ModifierNames::NAMES, false))
+        .map(format_shortcut)
         .unwrap_or_default()
 }
 
@@ -894,7 +1068,11 @@ pub fn shortcuts_by_specificity() -> Vec<(KeyboardShortcut, Command)> {
     let mut pairs: Vec<(KeyboardShortcut, Command)> = REGISTRY
         .iter()
         .filter(|spec| is_available(spec.id))
-        .flat_map(|spec| spec.shortcuts.iter().map(move |sc| (*sc, spec.id)))
+        .flat_map(|spec| {
+            shortcuts_of(spec.id)
+                .into_iter()
+                .map(move |sc| (sc, spec.id))
+        })
         .collect();
     pairs.sort_by_key(|(sc, _)| std::cmp::Reverse(modifier_count(sc)));
     pairs
@@ -941,6 +1119,35 @@ mod tests {
                     && pressed.modifiers.matches_logically(sc.modifiers)
             })
             .map(|(_, cmd)| cmd)
+    }
+
+    #[test]
+    fn user_shortcuts_replace_the_defaults() {
+        let sc = parse_shortcut("Ctrl+Alt+Shift+K").unwrap();
+        assert_eq!(format_shortcut(&sc), "Ctrl+Alt+Shift+K");
+        assert_eq!(
+            parse_shortcut(&format_shortcut(&ctrl(Key::F4))),
+            Some(ctrl(Key::F4))
+        );
+        assert!(parse_shortcut("Ctrl+Nope").is_none());
+        set_overrides(&[("CloseTab".into(), vec!["Ctrl+Alt+Shift+K".into()])]);
+        assert_eq!(shortcut_text(Command::CloseTab), "Ctrl+Alt+Shift+K");
+        assert_eq!(resolve(ctrl(Key::F4)), None);
+        assert_eq!(resolve(sc), Some(Command::CloseTab));
+        assert_eq!(
+            commands_using(&ctrl(Key::S), Command::CloseTab),
+            vec![Command::Save]
+        );
+        let table = vec![
+            (Command::CloseTab, vec![sc]),
+            (Command::Save, vec![ctrl(Key::S)]),
+        ];
+        assert_eq!(
+            overrides_for_settings(&table),
+            vec![("CloseTab".to_string(), vec!["Ctrl+Alt+Shift+K".to_string()])]
+        );
+        set_overrides(&[]);
+        assert_eq!(resolve(ctrl(Key::F4)), Some(Command::CloseTab));
     }
 
     #[test]

@@ -372,7 +372,7 @@ impl PhpIdeApp {
         self.run_config(config, false);
     }
 
-    fn save_all_quietly(&mut self) {
+    pub(crate) fn save_all_quietly(&mut self) {
         for buffer in &mut self.ws.buffers {
             if buffer.dirty && buffer.path.is_some() {
                 let _ = buffer.save();

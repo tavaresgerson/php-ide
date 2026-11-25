@@ -279,16 +279,35 @@ fn caret_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     }
 }
 
+/// The active file's line separator; choosing another converts the file
+/// (RF: one undo step, the file becomes modified).
 fn line_ending_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    let current = app.settings.line_ending.clone();
-    if StatusItem::new(current.clone())
-        .tooltip("Line endings — switch LF/CRLF")
-        .show(ui)
-        .clicked()
-    {
-        app.settings.line_ending = if current == "LF" { "CRLF" } else { "LF" }.to_string();
-        app.persist_settings();
-    }
+    use phpide_core::LineEnding;
+    let Some(current) = app.ws.active_buffer().map(|b| b.line_ending) else {
+        return;
+    };
+    let response = StatusItem::new(current.label())
+        .tooltip("Line Separator")
+        .show(ui);
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(220.0);
+        for (ending, label) in [
+            (LineEnding::Lf, "LF - Unix and macOS (\\n)"),
+            (LineEnding::CrLf, "CRLF - Windows (\\r\\n)"),
+        ] {
+            if ui.selectable_label(current == ending, label).clicked() {
+                if let Some(buffer) = app.ws.active_buffer_mut() {
+                    if buffer.readonly {
+                        app.ws.message =
+                            "the file is read-only (unlock it in the status bar)".into();
+                    } else {
+                        buffer.set_line_ending(ending);
+                    }
+                }
+                ui.close();
+            }
+        }
+    });
 }
 
 fn encoding_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

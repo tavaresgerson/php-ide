@@ -531,3 +531,62 @@ fn breakpoint_statuses_follow_backend_responses() {
     fake.handle.join().unwrap();
     let _ = BreakpointStatus::Pending; // estados cobertos nos UT do store
 }
+
+#[test]
+fn stop_after_another_queued_command_still_ends_as_stopped() {
+    let port = free_port();
+    let fake = start_fake(port, DEFAULT_IDE_KEY, vec![("run", None)]);
+    let (mut engine, _store) = engine_with_store(port, BreakpointStore::new());
+    for _ in 0..3 {
+        engine
+            .wait_event(Duration::from_secs(5))
+            .expect("listening/connected/continued");
+    }
+    // A breakpoint toggled while the script runs, then Stop.
+    engine.send(EngineCommand::UpdateBreakpoints);
+    engine.send(EngineCommand::Stop);
+    match engine.wait_event(Duration::from_secs(5)) {
+        Some(EngineEvent::Ended(SessionEnd::Stopped)) => {}
+        other => panic!("expected Stopped: {other:?}"),
+    }
+    fake.disconnected
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the socket is closed");
+    engine.shutdown();
+    fake.handle.join().unwrap();
+}
+
+#[test]
+fn an_interrupt_right_after_the_run_starts_is_never_lost() {
+    for round in 0..25 {
+        let port = free_port();
+        let fake = start_fake(port, DEFAULT_IDE_KEY, vec![("run", None)]);
+        let (mut engine, _store) = engine_with_store(port, BreakpointStore::new());
+        // No waiting for Continued: the interrupt races the run.
+        engine
+            .wait_event(Duration::from_secs(5))
+            .expect("listening");
+        engine
+            .wait_event(Duration::from_secs(5))
+            .expect("connected");
+        let (command, expected) = if round % 2 == 0 {
+            (EngineCommand::Detach, SessionEnd::Detached)
+        } else {
+            (EngineCommand::Stop, SessionEnd::Stopped)
+        };
+        engine.send(command);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match engine.wait_event(Duration::from_secs(5)) {
+                Some(EngineEvent::Ended(end)) => {
+                    assert_eq!(end, expected, "round {round}");
+                    break;
+                }
+                Some(_) if std::time::Instant::now() < deadline => continue,
+                other => panic!("round {round}: {other:?}"),
+            }
+        }
+        engine.shutdown();
+        fake.handle.join().unwrap();
+    }
+}

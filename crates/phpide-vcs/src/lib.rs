@@ -15,6 +15,9 @@
 //! - [`blame`]: blame por revisão (porcelain) e navegação ao commit.
 
 pub mod blame;
+pub mod branches;
+pub mod commands;
+pub mod compare;
 pub mod diff;
 pub mod log;
 pub mod markers;
@@ -23,11 +26,17 @@ pub mod repo;
 pub mod status;
 
 pub use blame::{blame, blame_rev, line_blame, BlameEntry};
+pub use branches::{branches, operation, remotes, Branch, RepoOperation};
+pub use commands::GitCommand;
+pub use compare::{apply_hunk, diff_between, file_at, hunk_patch, HunkAction, Side};
 pub use diff::{
     diff, diff_head, diff_staged, parse_unified, DiffLine, DiffLineKind, FileDiff, Hunk,
 };
-pub use log::{log, CommitEntry, CommitFile, LogFilter};
+pub use log::{commit_files, commit_message, log, CommitEntry, CommitFile, LogFilter};
 pub use markers::{markers, markers_for_file, LineMarker};
-pub use ops::{commit, stage, unstage, CommitResult};
+pub use ops::{
+    accept_side, commit, last_commit_message, rollback, stage, stage_paths, unstage, unstage_paths,
+    CommitResult, ConflictSide,
+};
 pub use repo::{detect, is_repo, worktree_root, RepoState};
-pub use status::{status, ChangeKind, FileStatus};
+pub use status::{ignored, status, ChangeKind, FileStatus};

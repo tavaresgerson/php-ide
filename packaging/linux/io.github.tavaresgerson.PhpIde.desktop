@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=PHP IDE
+GenericName=PHP Development Environment
+Comment=Write, run, debug and test PHP projects
+Exec=phpide %F
+Icon=io.github.tavaresgerson.PhpIde
+Terminal=false
+Categories=Development;IDE;
+Keywords=php;ide;editor;composer;phpunit;xdebug;laravel;symfony;
+MimeType=inode/directory;application/x-php;text/x-php;
+StartupNotify=true
+StartupWMClass=io.github.tavaresgerson.PhpIde

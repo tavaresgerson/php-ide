@@ -11,10 +11,11 @@ use crate::toolwindows::ToolWindow;
 use crate::PhpIdeApp;
 
 pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
-    let size = if tw == ToolWindow::Database {
-        360.0
-    } else {
-        240.0
+    let size = match tw {
+        ToolWindow::Database => 360.0,
+        ToolWindow::Commit => 330.0,
+        ToolWindow::VersionControl => 300.0,
+        _ => 240.0,
     };
     let placement = app.tw.placement(tw);
     crate::toolwindows::dock(ui, tw, placement, size, |ui| panel(app, ui, tw));
@@ -78,11 +79,13 @@ fn services(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         (
             "Xdebug Listener",
             if app.debug_listen {
-                "Listening on port 9003"
+                format!(
+                    "Listening on port {}",
+                    crate::run_debug::RunDebugState::debug_port()
+                )
             } else {
-                "Stopped"
-            }
-            .to_string(),
+                "Stopped".to_string()
+            },
         ),
         (
             "File Watcher",
@@ -107,67 +110,15 @@ fn services(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 }
 
 fn version_control(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("Git: {}", app.git_branch())).strong());
-        if ui.button("Refresh").on_hover_text("Refresh").clicked() {
-            app.git_refresh();
-        }
-    });
-    ui.label(app.ws.root.display().to_string());
-    ui.separator();
-    ui.label("Log · Branches · Incoming/Outgoing");
-    ui.label(
-        egui::RichText::new("History, merge and rebase come with the Git phase of the roadmap.")
-            .weak(),
-    );
+    crate::vcs_panel::show(app, ui);
 }
 
 fn commit(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.label("Commit the changes already staged in Git:");
-    ui.text_edit_singleline(&mut app.commit_message);
-    if ui
-        .add_enabled(
-            !app.commit_message.trim().is_empty(),
-            egui::Button::new("Commit"),
-        )
-        .clicked()
-    {
-        let message = app.commit_message.trim().to_string();
-        app.exec.run(
-            "git commit".to_string(),
-            "git".to_string(),
-            vec!["commit".to_string(), "-m".to_string(), message],
-            app.ws.root.clone(),
-        );
-        app.commit_message.clear();
-    }
-    if ui.button("Check Git Status").clicked() {
-        app.exec.run(
-            "git status".to_string(),
-            "git".to_string(),
-            vec!["status".to_string(), "--short".to_string()],
-            app.ws.root.clone(),
-        );
-    }
-    output(app, ui);
+    crate::commit_panel::show(app, ui);
 }
 
 fn terminal(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     crate::terminal_panel::show(app, ui);
-}
-
-fn output(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    if app.exec.running {
-        ui.spinner();
-    }
-    egui::ScrollArea::vertical()
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            ui.add(
-                egui::Label::new(egui::RichText::new(&app.exec.output).monospace())
-                    .selectable(true),
-            );
-        });
 }
 
 fn database(app: &mut PhpIdeApp, ui: &mut egui::Ui) {

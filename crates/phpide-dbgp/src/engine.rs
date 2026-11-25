@@ -127,6 +127,9 @@ enum Phase {
 struct SessionState {
     stream: Option<TcpStream>,
     phase: Phase,
+    /// Detach, Stop or Shutdown was asked for: the session ends at the
+    /// next chance, whatever the socket says.
+    interrupt: bool,
 }
 
 /// Engine de debug em thread própria.
@@ -189,7 +192,8 @@ impl DebugEngine {
         );
         let _ = self.commands.send(cmd);
         if interrupts {
-            let guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock().unwrap();
+            guard.interrupt = true;
             if let (Phase::Continuing, Some(stream)) = (guard.phase, guard.stream.as_ref()) {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
@@ -325,11 +329,17 @@ fn run_session(
     });
 
     // Auto-resume após conectar (session_start=none padrão do Xdebug).
-    let _ = events.send(EngineEvent::Continued(ContinueCommand::Resume));
+    // The phase changes before the event: an interrupt sent after the UI
+    // saw "running" always finds the socket to close.
     let to_local = |uri: &str| mappings.to_local(uri);
-    state.lock().unwrap().phase = Phase::Continuing;
-    let initial_outcome = session.continue_exec(ContinueCommand::Resume, &to_local);
-    state.lock().unwrap().phase = Phase::Stopped;
+    let interrupted = begin_run(state);
+    let _ = events.send(EngineEvent::Continued(ContinueCommand::Resume));
+    let initial_outcome = if interrupted {
+        Ok(crate::session::StepOutcome::Disconnected)
+    } else {
+        session.continue_exec(ContinueCommand::Resume, &to_local)
+    };
+    let initial_outcome = end_run(state, initial_outcome);
     match initial_outcome {
         Ok(crate::session::StepOutcome::Stopped(reason)) => {
             let frames = session.stack(&to_local).unwrap_or_default();
@@ -345,7 +355,7 @@ fn run_session(
         Ok(crate::session::StepOutcome::Disconnected) | Err(_) => {
             // Pode ser interrupção legítima (Detach/Stop via closer) — o
             // comando já está na fila; classifica o fim da sessão.
-            return match commands.try_recv() {
+            return match take_interrupt(commands) {
                 Ok(EngineCommand::Detach) => {
                     session.close();
                     let _ = events.send(EngineEvent::Ended(SessionEnd::Detached));
@@ -417,10 +427,14 @@ fn run_session(
                 let _ = events.send(EngineEvent::FrameVariables(variables));
             }
             EngineCommand::Continue(cont) => {
+                let interrupted = begin_run(state);
                 let _ = events.send(EngineEvent::Continued(cont));
-                state.lock().unwrap().phase = Phase::Continuing;
-                let outcome = session.continue_exec(cont, &to_local);
-                state.lock().unwrap().phase = Phase::Stopped;
+                let outcome = if interrupted {
+                    Ok(crate::session::StepOutcome::Disconnected)
+                } else {
+                    session.continue_exec(cont, &to_local)
+                };
+                let outcome = end_run(state, outcome);
                 match outcome {
                     Ok(crate::session::StepOutcome::Stopped(reason)) => {
                         if let StopReason::Location { file, line } = &reason {
@@ -437,7 +451,7 @@ fn run_session(
                     }
                     Ok(crate::session::StepOutcome::Disconnected) | Err(_) => {
                         // Interrupção (Detach/Stop via closer) ou morte do socket.
-                        match commands.try_recv() {
+                        match take_interrupt(commands) {
                             Ok(EngineCommand::Detach) => {
                                 session.close();
                                 let _ = events.send(EngineEvent::Ended(SessionEnd::Detached));
@@ -486,4 +500,54 @@ fn run_session(
 
 fn drain_command(commands: &Receiver<EngineCommand>) -> Option<EngineCommand> {
     commands.try_recv().ok()
+}
+
+/// Marks the session as running; `true` when an interrupt is already
+/// waiting (the run must not start).
+fn begin_run(state: &Arc<Mutex<SessionState>>) -> bool {
+    let mut guard = state.lock().unwrap();
+    guard.phase = Phase::Continuing;
+    guard.interrupt
+}
+
+/// Marks the session as stopped. A run that came back after an interrupt
+/// was asked for counts as interrupted: the queued Detach/Stop decides
+/// how the session ends, not the half-closed socket.
+fn end_run(
+    state: &Arc<Mutex<SessionState>>,
+    outcome: std::io::Result<crate::session::StepOutcome>,
+) -> std::io::Result<crate::session::StepOutcome> {
+    let mut guard = state.lock().unwrap();
+    guard.phase = Phase::Stopped;
+    if guard.interrupt && !matches!(outcome, Ok(crate::session::StepOutcome::Ended)) {
+        Ok(crate::session::StepOutcome::Disconnected)
+    } else {
+        outcome
+    }
+}
+
+/// The interrupt among the queued commands (Shutdown before Stop before
+/// Detach); the others are dropped, the session is ending.
+fn take_interrupt(
+    commands: &Receiver<EngineCommand>,
+) -> Result<EngineCommand, std::sync::mpsc::TryRecvError> {
+    let mut found: Option<EngineCommand> = None;
+    let mut first_other: Option<EngineCommand> = None;
+    let rank = |c: &EngineCommand| match c {
+        EngineCommand::Shutdown => 3,
+        EngineCommand::Stop => 2,
+        EngineCommand::Detach => 1,
+        _ => 0,
+    };
+    while let Ok(cmd) = commands.try_recv() {
+        let r = rank(&cmd);
+        if r == 0 {
+            first_other.get_or_insert(cmd);
+        } else if found.as_ref().is_none_or(|f| rank(f) < r) {
+            found = Some(cmd);
+        }
+    }
+    found
+        .or(first_other)
+        .ok_or(std::sync::mpsc::TryRecvError::Empty)
 }

@@ -31,6 +31,8 @@ pub struct TreeEntry {
     pub is_dir: bool,
     pub excluded: bool,
     pub modified: Option<std::time::SystemTime>,
+    /// File size in bytes (RF-NAV-11).
+    pub size: Option<u64>,
 }
 
 /// How the tree orders and filters entries (RF-NAV-10, RF-NAV-14).
@@ -40,6 +42,10 @@ pub struct TreeOptions {
     pub sort: String,
     pub folders_first: bool,
     pub show_excluded: bool,
+    /// Folders the user marked as excluded (RF-NAV-19).
+    pub excluded_dirs: Vec<PathBuf>,
+    /// File nesting rules; empty turns nesting off (RF-NAV-12).
+    pub nesting: Vec<NestRule>,
 }
 
 impl Default for TreeOptions {
@@ -48,8 +54,74 @@ impl Default for TreeOptions {
             sort: "name".into(),
             folders_first: true,
             show_excluded: false,
+            excluded_dirs: Vec::new(),
+            nesting: Vec::new(),
         }
     }
+}
+
+/// `parent=child,child`: a parent suffix (`.ts`) nests the files with the
+/// same stem and a child suffix (`x.ts` → `x.js`); a parent name
+/// (`composer.json`) nests the named files next to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestRule {
+    pub parent: String,
+    pub children: Vec<String>,
+}
+
+impl NestRule {
+    pub fn parse(rule: &str) -> Option<NestRule> {
+        let (parent, children) = rule.split_once('=')?;
+        let children: Vec<String> = children
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect();
+        let parent = parent.trim().to_string();
+        (!parent.is_empty() && !children.is_empty()).then_some(NestRule { parent, children })
+    }
+
+    /// Names nested under `name`, when this rule applies to it.
+    fn children_of(&self, name: &str) -> Option<Vec<String>> {
+        if self.parent.starts_with('.') {
+            let stem = name.strip_suffix(self.parent.as_str())?;
+            Some(self.children.iter().map(|c| format!("{stem}{c}")).collect())
+        } else if name == self.parent {
+            Some(self.children.clone())
+        } else {
+            None
+        }
+    }
+}
+
+/// For each file name of a folder, the names nested under it
+/// (each child under one parent only, the first rule that claims it).
+pub fn nest(names: &[&str], rules: &[NestRule]) -> Vec<(String, Vec<String>)> {
+    let present: std::collections::HashSet<&str> = names.iter().copied().collect();
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for name in names {
+        if taken.contains(*name) {
+            continue;
+        }
+        let mut kids = Vec::new();
+        for rule in rules {
+            if let Some(list) = rule.children_of(name) {
+                for child in list {
+                    if child != *name && present.contains(child.as_str()) && !taken.contains(&child)
+                    {
+                        taken.insert(child.clone());
+                        kids.push(child);
+                    }
+                }
+            }
+        }
+        if !kids.is_empty() {
+            out.push((name.to_string(), kids));
+        }
+    }
+    out
 }
 
 fn extension_of(name: &str) -> String {
@@ -89,6 +161,8 @@ pub fn sort_entries(entries: &mut [TreeEntry], options: &TreeOptions) {
 pub struct TreeRow {
     pub entry: TreeEntry,
     pub depth: usize,
+    /// Files nested under this file (RF-NAV-12).
+    pub nested: usize,
     pub expanded: bool,
     pub loading: bool,
     pub error: Option<String>,
@@ -96,6 +170,7 @@ pub struct TreeRow {
 
 pub struct ProjectFiles {
     root: PathBuf,
+    excluded_dirs: Vec<PathBuf>,
     loaded: HashMap<PathBuf, Vec<TreeEntry>>,
     pending: HashMap<PathBuf, JobHandle<Vec<TreeEntry>>>,
     failed: HashMap<PathBuf, String>,
@@ -116,6 +191,7 @@ impl ProjectFiles {
         let mut expanded = HashSet::new();
         expanded.insert(root.clone());
         ProjectFiles {
+            excluded_dirs: Vec::new(),
             root,
             loaded: HashMap::new(),
             pending: HashMap::new(),
@@ -278,9 +354,25 @@ impl ProjectFiles {
     pub fn toggle(&mut self, jobs: &JobSystem, ctx: &egui::Context, dir: &Path) {
         if !self.expanded.remove(dir) {
             self.expanded.insert(dir.to_path_buf());
-            if !self.loaded.contains_key(dir) {
+            // A file with nested files only expands; a folder is read.
+            if !self.loaded.contains_key(dir) && !self.is_known_file(dir) {
                 self.request_dir(jobs, ctx, dir);
             }
+        }
+    }
+
+    fn is_known_file(&self, path: &Path) -> bool {
+        path.parent()
+            .and_then(|parent| self.loaded.get(parent))
+            .is_some_and(|entries| entries.iter().any(|e| e.path == path && !e.is_dir))
+    }
+
+    /// Folders the user excluded: left out of the file index (search, Go to
+    /// File) from the next refresh on.
+    pub fn set_excluded_dirs(&mut self, dirs: Vec<PathBuf>) {
+        if self.excluded_dirs != dirs {
+            self.excluded_dirs = dirs;
+            self.index_stale = true;
         }
     }
 
@@ -323,8 +415,10 @@ impl ProjectFiles {
                     is_dir: true,
                     excluded: false,
                     modified: None,
+                    size: None,
                 },
                 depth: 0,
+                nested: 0,
                 expanded,
                 loading: expanded && self.pending.contains_key(root),
                 error: self.failed.get(root).cloned(),
@@ -348,21 +442,65 @@ impl ProjectFiles {
         };
         let mut children: Vec<TreeEntry> = children
             .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                if c.is_dir && options.excluded_dirs.contains(&c.path) {
+                    c.excluded = true;
+                }
+                c
+            })
             .filter(|c| options.show_excluded || !c.excluded)
-            .cloned()
             .collect();
         sort_entries(&mut children, options);
+        // File nesting: children leave the list and follow their parent.
+        let files: Vec<&str> = children
+            .iter()
+            .filter(|c| !c.is_dir)
+            .map(|c| c.name.as_str())
+            .collect();
+        let groups = if options.nesting.is_empty() {
+            Vec::new()
+        } else {
+            nest(&files, &options.nesting)
+        };
+        let nested_names: std::collections::HashSet<&str> = groups
+            .iter()
+            .flat_map(|(_, kids)| kids.iter().map(String::as_str))
+            .collect();
         for child in &children {
-            let expanded = child.is_dir && self.expanded.contains(&child.path);
+            if !child.is_dir && nested_names.contains(child.name.as_str()) {
+                continue;
+            }
+            let kids = groups
+                .iter()
+                .find(|(parent, _)| *parent == child.name)
+                .map(|(_, kids)| kids.clone())
+                .unwrap_or_default();
+            let expanded =
+                (child.is_dir || !kids.is_empty()) && self.expanded.contains(&child.path);
             rows.push(TreeRow {
                 entry: child.clone(),
                 depth,
+                nested: kids.len(),
                 expanded,
-                loading: expanded && self.pending.contains_key(&child.path),
+                loading: child.is_dir && expanded && self.pending.contains_key(&child.path),
                 error: self.failed.get(&child.path).cloned(),
             });
-            if expanded {
+            if expanded && child.is_dir {
                 self.push_children(&child.path, depth + 1, options, rows);
+            } else if expanded {
+                for kid in &kids {
+                    if let Some(entry) = children.iter().find(|c| &c.name == kid) {
+                        rows.push(TreeRow {
+                            entry: entry.clone(),
+                            depth: depth + 1,
+                            nested: 0,
+                            expanded: false,
+                            loading: false,
+                            error: None,
+                        });
+                    }
+                }
             }
         }
     }
@@ -415,6 +553,10 @@ impl ProjectFiles {
                     self.request_index(jobs, ctx);
                 }
             }
+        } else if self.index_stale && self.started {
+            // Excluded folders changed: index again.
+            self.index_stale = false;
+            self.request_index(jobs, ctx);
         }
         index
     }
@@ -428,10 +570,12 @@ impl ProjectFiles {
             .chain(self.attached.iter().cloned())
             .collect();
         let ctx = ctx.clone();
+        let excluded = self.excluded_dirs.clone();
         self.index_job = Some(jobs.spawn(move |_| {
             let files = roots
                 .iter()
                 .flat_map(|root| phpide_core::scan(root))
+                .filter(|f| !excluded.iter().any(|dir| f.path.starts_with(dir)))
                 .collect();
             ctx.request_repaint();
             Ok(files)
@@ -475,6 +619,7 @@ pub fn read_dir_sorted(dir: &Path) -> io::Result<Vec<TreeEntry>> {
             item.metadata().ok()
         };
         let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
+        let size = metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len());
         let modified = metadata.and_then(|m| m.modified().ok());
         let excluded = EXCLUDED.contains(&name.as_str());
         entries.push(TreeEntry {
@@ -483,6 +628,7 @@ pub fn read_dir_sorted(dir: &Path) -> io::Result<Vec<TreeEntry>> {
             is_dir,
             excluded,
             modified,
+            size,
         });
     }
     sort_entries(&mut entries, &TreeOptions::default());

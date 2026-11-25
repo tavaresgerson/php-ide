@@ -7,44 +7,221 @@ impl PhpIdeApp {
         project_tree::show(self, ui);
     }
 
+    /// Opens Find in Files (or Replace in Files) on a folder, or on the
+    /// whole project (RF-NAV-21).
+    pub(crate) fn find_in_files(&mut self, folder: Option<PathBuf>, replace: bool) {
+        self.search.replace_mode = replace;
+        self.search.directory = folder.map(|f| f.display().to_string()).unwrap_or_default();
+        self.search.focus_query = true;
+        self.tw.set_visible(ToolWindow::Find, true);
+    }
+
+    /// Files Find in Files reads: the project's (or a folder's) searchable
+    /// files that pass the mask.
+    pub(crate) fn search_files(&self) -> Vec<PathBuf> {
+        let folder = self.search.directory.trim();
+        let folder = (!folder.is_empty()).then(|| PathBuf::from(folder));
+        let mask = self.search.mask.clone();
+        let keep = |path: &Path| {
+            search::is_searchable(path)
+                && path
+                    .file_name()
+                    .is_some_and(|n| search::mask_matches(&n.to_string_lossy(), &mask))
+        };
+        match folder {
+            Some(dir) if !dir.starts_with(&self.ws.root) => {
+                // A folder outside the project: walk it (bounded).
+                let mut out = Vec::new();
+                let mut stack = vec![dir];
+                while let Some(dir) = stack.pop() {
+                    let Ok(entries) = std::fs::read_dir(&dir) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let name = entry.file_name();
+                        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                            if name != ".git" && name != "node_modules" {
+                                stack.push(path);
+                            }
+                        } else if keep(&path) {
+                            out.push(path);
+                        }
+                        if out.len() >= 20_000 {
+                            return out;
+                        }
+                    }
+                }
+                out.sort();
+                out
+            }
+            folder => self
+                .ws
+                .files
+                .iter()
+                .filter(|e| !e.is_dir && keep(&e.path))
+                .filter(|e| folder.as_ref().is_none_or(|dir| e.path.starts_with(dir)))
+                .map(|e| e.path.clone())
+                .collect(),
+        }
+    }
+
+    fn start_search(&mut self) {
+        let files = self.search_files();
+        self.search.start(files, &self.jobs);
+    }
+
+    /// Replaces every match in the files of the results: open files get an
+    /// undoable edit, the others are written (RF-NAV-21).
+    pub(crate) fn replace_in_files(&mut self) {
+        let mut files: Vec<PathBuf> = self.search.results.iter().map(|h| h.path.clone()).collect();
+        files.dedup();
+        let (needle, with, case) = (
+            self.search.query.clone(),
+            self.search.replacement.clone(),
+            self.search.case_sensitive,
+        );
+        let mut count = 0;
+        let mut changed = 0;
+        let mut errors = Vec::new();
+        for path in &files {
+            if let Some(buffer) = self
+                .ws
+                .buffers
+                .iter_mut()
+                .find(|b| b.path.as_ref() == Some(path))
+            {
+                if buffer.readonly {
+                    errors.push(format!("{} is read-only", path.display()));
+                    continue;
+                }
+                let (text, n) =
+                    search::replace_matches(&buffer.document.text(), &needle, &with, case);
+                if n > 0 {
+                    buffer.replace_all(&text);
+                    count += n;
+                    changed += 1;
+                }
+                continue;
+            }
+            let result = std::fs::read_to_string(path).and_then(|old| {
+                let (text, n) = search::replace_matches(&old, &needle, &with, case);
+                if n > 0 {
+                    std::fs::write(path, text)?;
+                }
+                Ok(n)
+            });
+            match result {
+                Ok(0) => {}
+                Ok(n) => {
+                    count += n;
+                    changed += 1;
+                }
+                Err(e) => errors.push(format!("{}: {e}", path.display())),
+            }
+        }
+        self.ws.message = format!(
+            "Replaced {count} occurrence{} in {changed} file{}",
+            if count == 1 { "" } else { "s" },
+            if changed == 1 { "" } else { "s" },
+        );
+        if !errors.is_empty() {
+            self.ws.message.push_str(&format!(
+                " ({} failed: {})",
+                errors.len(),
+                errors.join("; ")
+            ));
+        }
+        self.start_search();
+    }
+
     pub(crate) fn search_panel(&mut self, ui: &mut egui::Ui) {
         let placement = self.tw.placement(ToolWindow::Find);
-        crate::toolwindows::dock(ui, ToolWindow::Find, placement, 190.0, |ui| {
+        crate::toolwindows::dock(ui, ToolWindow::Find, placement, 260.0, |ui| {
             tool_window_header(self, ui, ToolWindow::Find);
+            let mut search = false;
             ui.horizontal(|ui| {
-                let edit = egui::TextEdit::singleline(&mut self.search.query)
-                    .hint_text("text (Enter to search)")
-                    .desired_width(280.0)
-                    .show(ui);
-                if edit.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let files: Vec<PathBuf> = self
-                        .ws
-                        .files
-                        .iter()
-                        .filter(|e| !e.is_dir && search::is_searchable(&e.path))
-                        .map(|e| e.path.clone())
-                        .collect();
-                    self.search.start(files, &self.jobs);
+                let mode = if self.search.replace_mode {
+                    "Replace in Files"
+                } else {
+                    "Find in Files"
+                };
+                ui.label(egui::RichText::new(mode).strong());
+                ui.checkbox(&mut self.search.replace_mode, "Replace")
+                    .on_hover_text("Ctrl+Shift+R");
+            });
+            ui.horizontal(|ui| {
+                let label = ui.label("Find:");
+                let edit_response = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.search.query)
+                            .id_salt("find-in-files-query")
+                            .hint_text("text (Enter to search)")
+                            .desired_width(280.0),
+                    )
+                    .labelled_by(label.id);
+                if std::mem::take(&mut self.search.focus_query) {
+                    edit_response.request_focus();
                 }
-                ui.checkbox(&mut self.search.case_sensitive, "Aa");
+                if edit_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    search = true;
+                }
+                ui.checkbox(&mut self.search.case_sensitive, "Match case");
                 if ui.button("Search").clicked() {
-                    let files: Vec<PathBuf> = self
-                        .ws
-                        .files
-                        .iter()
-                        .filter(|e| !e.is_dir && search::is_searchable(&e.path))
-                        .map(|e| e.path.clone())
-                        .collect();
-                    self.search.start(files, &self.jobs);
+                    search = true;
                 }
                 if self.search.busy() {
                     ui.spinner();
                 }
                 ui.label(&self.search.status);
             });
+            if self.search.replace_mode {
+                ui.horizontal(|ui| {
+                    let label = ui.label("Replace:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search.replacement)
+                            .id_salt("find-in-files-replacement")
+                            .desired_width(280.0),
+                    )
+                    .labelled_by(label.id);
+                    let ready = !self.search.results.is_empty() && !self.search.busy();
+                    if ui
+                        .add_enabled(ready, egui::Button::new("Replace All"))
+                        .clicked()
+                    {
+                        self.search.confirm_replace = true;
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                let label = ui.label("In:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search.directory)
+                        .id_salt("find-in-files-directory")
+                        .hint_text("Whole project")
+                        .desired_width(280.0),
+                )
+                .labelled_by(label.id)
+                .on_hover_text("Folder to search in; empty for the whole project");
+                if !self.search.directory.is_empty() && ui.small_button("Project").clicked() {
+                    self.search.directory.clear();
+                }
+                let label = ui.label("File mask:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search.mask)
+                        .id_salt("find-in-files-mask")
+                        .hint_text("*.php, *.twig")
+                        .desired_width(140.0),
+                )
+                .labelled_by(label.id);
+            });
+            if search {
+                self.start_search();
+            }
             ui.separator();
             egui::ScrollArea::vertical()
-                .max_height(200.0)
+                .id_salt("find-in-files-results")
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let hits: Vec<(PathBuf, usize, String)> = self
                         .search
@@ -65,6 +242,52 @@ impl PhpIdeApp {
                     }
                 });
         });
+        self.replace_confirmation(ui.ctx());
+    }
+
+    fn replace_confirmation(&mut self, ctx: &egui::Context) {
+        if !self.search.confirm_replace {
+            return;
+        }
+        let mut files: Vec<&PathBuf> = self.search.results.iter().map(|h| &h.path).collect();
+        files.dedup();
+        let text = format!(
+            "Replace \u{201c}{}\u{201d} with \u{201c}{}\u{201d} in {} file{}? Files open in the editor can be undone; the others are written now.",
+            self.search.query,
+            self.search.replacement,
+            files.len(),
+            if files.len() == 1 { "" } else { "s" },
+        );
+        let mut replace = false;
+        let mut cancel = false;
+        let shown = crate::design::components::Dialog::new("replace-in-files", "Replace in Files")
+            .width(420.0)
+            .show(
+                ctx,
+                |ui| {
+                    ui.label(text);
+                },
+                |ui| {
+                    if crate::design::components::Button::primary("Replace")
+                        .show(ui)
+                        .clicked()
+                    {
+                        replace = true;
+                    }
+                    if crate::design::components::Button::new("Cancel")
+                        .show(ui)
+                        .clicked()
+                    {
+                        cancel = true;
+                    }
+                },
+            );
+        if replace {
+            self.search.confirm_replace = false;
+            self.replace_in_files();
+        } else if cancel || shown.dismissed {
+            self.search.confirm_replace = false;
+        }
     }
 
     pub(crate) fn problems_panel(&mut self, ui: &mut egui::Ui) {

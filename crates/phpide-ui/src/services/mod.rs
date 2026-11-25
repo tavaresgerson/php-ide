@@ -6,6 +6,7 @@ pub mod file_ops;
 pub mod files;
 pub mod git;
 pub mod system_fonts;
+pub mod vcs;
 pub mod windows;
 
 #[cfg(test)]

@@ -620,6 +620,22 @@ pub struct Metrics {
     pub group_gap: f32,
 }
 
+/// Background of a project's initials avatar on the Home screen
+/// (RF-PRJ-07); white text on each one is at least 4.5:1.
+pub const PROJECT_AVATARS: [Color32; 8] = [
+    Color32::from_rgb(0x2F, 0x5F, 0xC4),
+    Color32::from_rgb(0x1F, 0x7A, 0x4D),
+    Color32::from_rgb(0xB0, 0x3A, 0x3A),
+    Color32::from_rgb(0x74, 0x4D, 0xB8),
+    Color32::from_rgb(0x9A, 0x4F, 0x00),
+    Color32::from_rgb(0x0B, 0x72, 0x75),
+    Color32::from_rgb(0x96, 0x3C, 0x72),
+    Color32::from_rgb(0x4A, 0x55, 0xB5),
+];
+
+/// Initials on a project avatar.
+pub const PROJECT_AVATAR_TEXT: Color32 = Color32::WHITE;
+
 /// A colour chosen by a program (true colour or the xterm 256-colour cube
 /// in terminal output), not by the theme.
 pub fn program_color(r: u8, g: u8, b: u8) -> Color32 {
@@ -646,6 +662,14 @@ mod tests {
     pub(crate) fn contrast(a: Color32, b: Color32) -> f32 {
         let (la, lb) = (luminance(a), luminance(b));
         (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn white_initials_read_on_every_project_avatar() {
+        for color in PROJECT_AVATARS {
+            let ratio = contrast(PROJECT_AVATAR_TEXT, color);
+            assert!(ratio >= 4.5, "{color:?}: {ratio}");
+        }
     }
 
     const THEMES: [(&str, Palette, SyntaxPalette, f32); 3] = [

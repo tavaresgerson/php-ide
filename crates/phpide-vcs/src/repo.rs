@@ -38,10 +38,33 @@ impl RepoState {
 
 /// Roda `git` com os args, mapeando falhas para `IdeError` recuperável.
 pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output, IdeError> {
+    run_git_env(root, args, &[])
+}
+
+/// Flags every call gets: output meant for parsing, never for a terminal.
+pub(crate) const PLUMBING_FLAGS: [&str; 6] = [
+    "-c",
+    "color.ui=false",
+    "-c",
+    "core.quotePath=false",
+    "-c",
+    "advice.detachedHead=false",
+];
+
+/// [`run_git`] with extra environment variables.
+pub(crate) fn run_git_env(
+    root: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<std::process::Output, IdeError> {
     Command::new("git")
         .arg("-C")
         .arg(root)
+        .args(PLUMBING_FLAGS)
         .args(args)
+        .envs(env.iter().copied())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| {
             IdeError::new(

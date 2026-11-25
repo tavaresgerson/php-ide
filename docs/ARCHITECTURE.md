@@ -12,7 +12,7 @@
 | `phpide-term` | Terminal: PTY on Unix (`openpty`, fork, own session and controlling terminal, resize, foreground working directory) and an xterm-compatible emulator (`Terminal`: screen grid, scrollback, SGR colors, alternate screen, modes, replies); key and paste encoding; `path:line` link detection |
 | `phpide-exec` | External processes: executable discovery, spawn, timeout, Stop with process-group kill, streamed stdout/stderr |
 | `phpide-run` | Run configurations, sessions, PHPUnit (scopes + TeamCity tree), Clover coverage |
-| `phpide-vcs` | Git through the `git` CLI: repo detection, porcelain `-z` status, diff, stage/commit, log, line markers, blame |
+| `phpide-vcs` | Git through the `git` CLI: repo detection, porcelain `-z` status (conflicts, renames, ignored), diff and comparison of any two sides (`compare`: HEAD, index, working tree, revision; one-hunk patches through `git apply`), stage/unstage/rollback, branches and the operation in progress, log with graph data, commands with streamed output that never prompt (`commands`), line markers, blame |
 | `phpide-icons` | Tabler Icons 3.2 (outline) under semantic names, SVG → polyline parser (all path commands), file-type mapping |
 | `phpide-db` | Database Tools (frozen until v1.0): SQLite/PostgreSQL/MariaDB drivers, secrets, console, grid, optimistic edits |
 | `phpide-editor` | The code editor: multi-cursor selections, motions and edit commands, incremental tree-sitter highlighting, folds, find/replace, and the egui widget (virtualized painting, input, gutter layers) |
@@ -36,13 +36,16 @@ an `EditorStyle` built from its theme and a `Decorations` value per frame.
 - `phpide-exec` streams process output through channels; Stop kills the
   whole process group.
 - DBGp listens on port 9003 in its own thread.
+- Git (`services/vcs.rs`): a repository snapshot refreshed in a job after
+  every change, quick operations one at a time in jobs, and commands with
+  streamed output (`phpide-exec`), one at a time, stoppable.
 - Terminal sessions: one PTY per tab; a reader thread forwards output on a
   channel and requests a repaint, and the UI feeds it to the emulator each
   frame (`TerminalState::poll`).
 
 - `phpide-ui/src/services/` owns UI-side I/O: `git.rs` (branch, line
   markers, blame), `files.rs` (search index, lazily loaded tree),
-  `file_ops.rs` (create, rename, copy, move, delete to Trash) and
+  `file_ops.rs` (create, rename, copy, move, delete to Trash), `vcs.rs` (Git for the Commit, log and diff views) and
   `desktop.rs` (file manager, terminal, native folder chooser). Each
   runs its work as jobs and exposes cached state; a test fails if render
   code calls Git or scans folders directly.
@@ -65,6 +68,8 @@ Still synchronous on the UI thread: opening and saving a file, reading
 | `run_configs.rs` | Run configurations: load/save `.phpide/run-configurations.json`, Run/Debug Configurations dialog, run the selected or the at-caret configuration, temporary configurations |
 | `run_debug.rs`, `run_panels.rs` | Run and debug state (sessions, test trees, coverage, DBGp engine, variables and watches); the Run and Debug tool windows, Evaluate and breakpoints dialogs |
 | `terminal_panel.rs` | Terminal tool window: sessions as tabs, grid painting, selection, keys, links |
+| `app_vcs.rs` | Git actions of the window (commit, push, update, branches, rollback, diffs) and what happens when they finish |
+| `commit_panel.rs`, `diff_view.rs`, `vcs_panel.rs` | Commit tool window; side-by-side diff tabs; Version Control tool window (log, graph, console) and the branch popup |
 | `app_editor.rs` | Editor panes: decorations from app state, breadcrumbs, split layout, editor output (breakpoints, Ctrl+click, completion triggers) |
 | `editor_area.rs` | Per-buffer `Syntax` and `EditorView`, the split pane, focus |
 | `services/` | Background I/O and OS owners: `git` (status, branch, remote URL), `files` (tree, index, attached roots), `file_ops`, `desktop` (file manager, terminal), `windows` (registry of project windows and the session to reopen), `system_fonts` (monospaced families from fontconfig) |

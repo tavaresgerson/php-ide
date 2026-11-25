@@ -13,25 +13,33 @@ mod app_intel;
 mod app_lsp;
 mod app_panels;
 mod app_project;
+mod app_recovery;
+mod app_vcs;
 mod blame_gutter;
 mod close;
 mod color_scheme;
 mod commands;
+mod commit_panel;
 mod completion;
 mod database;
 mod design;
+mod diff_view;
 mod editor_area;
 mod exec;
 mod fe_servers;
 mod header;
 mod hints;
 mod intelligence;
+mod keymap_page;
 mod lens;
 mod markdown;
 mod notifications;
 mod palette;
 mod plugins;
+mod project_marks;
 mod project_tree;
+mod quick_preview;
+mod recent_locations;
 mod routing;
 mod run_configs;
 mod run_debug;
@@ -51,6 +59,7 @@ mod tool_panels;
 mod toolwindows;
 #[cfg(test)]
 mod ui_tests;
+mod vcs_panel;
 mod welcome;
 mod workspace_edit;
 
@@ -115,17 +124,53 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Application id: the desktop file, AppStream and Flatpak id, and the
+/// Wayland app id that ties windows to the desktop entry.
+const APP_ID: &str = "io.github.tavaresgerson.PhpIde";
+
+/// Window icon, from the same artwork as the desktop icon.
+fn app_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../assets/app-icon.png");
+    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
+    let rgba = image.to_rgba8();
+    Some(egui::IconData {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
+}
+
 fn main() -> eframe::Result<()> {
     // Uso: phpide [projeto] [arquivos...]. Sem projeto, abre a Welcome Screen;
     // arquivos extras são abertos em abas (preview) após carregar o projeto.
+    app_recovery::install_crash_hook();
     let mut args = std::env::args().skip(1).peekable();
+    match args.peek().map(String::as_str) {
+        Some("--version" | "-V") => {
+            println!("PHP IDE {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--help" | "-h") => {
+            println!(
+                "PHP IDE {}\n\nUsage: phpide [PROJECT_DIR] [FILES...]\n\n\
+                 Without a project the Welcome screen opens; FILES open in tabs.\n\n\
+                 Options:\n  -h, --help     Show this help\n  -V, --version  Show the version\n  \
+                 --gallery      Show every UI component\n\n\
+                 Logs: {}",
+                env!("CARGO_PKG_VERSION"),
+                phpide_core::diag::log_dir().display()
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
     if args.peek().map(String::as_str) == Some("--gallery") {
         return eframe::run_native(
             "PHP IDE — Components",
             eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default()
                     .with_inner_size([1280.0, 900.0])
-                    .with_app_id("php-ide"),
+                    .with_app_id(APP_ID),
                 ..Default::default()
             },
             Box::new(|cc| Ok(Box::new(design::gallery::GalleryApp::new(&cc.egui_ctx)))),
@@ -167,11 +212,15 @@ fn main() -> eframe::Result<()> {
     // Sem argumento de projeto, abre na Welcome Screen (REQUISITOS 1.5).
     let start_welcome = arg.is_none();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([640.0, 480.0])
+        .with_app_id(APP_ID);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([640.0, 480.0])
-            .with_app_id("php-ide"),
+        viewport,
         ..Default::default()
     };
 
@@ -313,7 +362,21 @@ struct PhpIdeApp {
     bookmarks: HashMap<PathBuf, BTreeSet<usize>>,
     /// Terminal tool window sessions.
     terminal: terminal_panel::TerminalState,
-    commit_message: String,
+    /// Unsaved buffers on disk, crash notice, About (Phase 8).
+    recovery: app_recovery::RecoveryState,
+    /// Recent Locations popup and the caret place last seen (RF-SEL-08).
+    recent_locations: recent_locations::RecentLocations,
+    last_place: Option<(PathBuf, usize, usize)>,
+    /// Scan of vendor/ and excluded folders for Search Everywhere.
+    library_job: Option<phpide_core::jobs::JobHandle<Vec<PathBuf>>>,
+    /// Folders marked as sources, tests or excluded (RF-NAV-19).
+    project_marks: project_marks::ProjectMarks,
+    /// Git state for the Commit, Version Control and diff views.
+    vcs: services::vcs::VcsService,
+    commit_ui: commit_panel::CommitState,
+    diffs: diff_view::DiffTabs,
+    vcs_log: vcs_panel::LogState,
+    git_dialog: Option<app_vcs::GitDialog>,
     /// Editor views, split pane and per-buffer syntax state.
     editors: editor_area::EditorArea,
     /// Line to jump to on the first frame (`PHPIDE_SCROLL_TO_LINE`, demos).
@@ -345,6 +408,8 @@ impl eframe::App for PhpIdeApp {
     /// LSP (NFR-001: "O encerramento da IDE deve terminar processos-filhos
     /// gerenciados por ela").
     fn on_exit(&mut self) {
+        // A clean exit: unsaved buffers were saved or discarded.
+        self.recovery.clear();
         self.windows.unregister();
         let report = self.jobs.shutdown(Duration::from_secs(2));
         self.search.cancel();
@@ -430,6 +495,7 @@ impl PhpIdeApp {
         self.poll_watcher(ctx);
         if !self.welcome_open {
             self.poll_project_services(ctx);
+            self.poll_vcs(ctx);
         }
         if !self.terminal.focused {
             self.detect_double_shift(ctx);
@@ -472,6 +538,7 @@ impl PhpIdeApp {
         }
         self.was_palette_open = self.palette.open;
 
+        self.poll_libraries(ctx);
         if let Some(action) = palette::show(
             ctx,
             &self.ws,
@@ -486,6 +553,11 @@ impl PhpIdeApp {
                     self.editors.request_focus();
                 }
                 PaletteAction::Settings(page) => self.settings_dialog.open(page),
+                PaletteAction::AssignShortcut(cmd) => {
+                    self.settings_dialog
+                        .open(settings_dialog::SettingsPage::Keymap);
+                    self.settings_dialog.keymap.assign(cmd);
+                }
                 PaletteAction::Run(cmd) => self.dispatch_command(cmd, ctx),
                 PaletteAction::Plugin(id) => self.run_plugin(&id),
             }
@@ -515,6 +587,12 @@ impl PhpIdeApp {
         self.hover_popup(ctx);
         self.rename_dialog(ctx);
         self.edit_configurations_dialog(ctx);
+        self.git_dialog_ui(ctx);
+        self.recovery_dialogs(ctx);
+        quick_preview::show(self, ctx);
+        self.track_location();
+        recent_locations::show(self, ctx);
+        self.autosave_recovery();
         run_panels::evaluate_dialog(self, ctx);
         run_panels::breakpoints_dialog(self, ctx);
         self.language_server_log(ctx);
@@ -557,7 +635,12 @@ impl PhpIdeApp {
         }
 
         header::header(self, ui);
-        tabs::tab_strip(self, ui);
+        // Tab placement: none hides the strip (RF-TAB-05).
+        if self.settings.tab_placement != "None" {
+            tabs::tab_strip(self, ui);
+        }
+        self.ws.after_close = phpide_core::AfterClose::from_label(&self.settings.tab_after_close);
+        self.ws.note_active();
         statusbar::navigation_bar_top(self, ui);
         // Bottom panels are laid out from the window edge inwards: status, bar, content.
         statusbar::status_bar(self, ui);
@@ -614,7 +697,17 @@ impl PhpIdeApp {
 // Frontend language servers are frozen until v1.0 (see `scope`).
 
 #[cfg(test)]
+mod gate_a11y;
+#[cfg(test)]
+mod gate_git;
+#[cfg(test)]
+mod gate_hardening;
+#[cfg(test)]
 mod gate_lsp;
+#[cfg(test)]
+mod gate_parity;
+#[cfg(test)]
+mod gate_project_view;
 #[cfg(test)]
 mod gate_run;
 #[cfg(test)]

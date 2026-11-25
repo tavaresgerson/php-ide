@@ -63,6 +63,10 @@ pub struct FileStatus {
     pub unstaged: Option<ChangeKind>,
     /// Arquivo não rastreado (`??`): entra no diff como arquivo novo.
     pub untracked: bool,
+    /// Conflito de merge não resolvido (`UU`, `AA`, `DU`…).
+    pub conflict: bool,
+    /// Origem de um rename/cópia stageado.
+    pub orig_path: Option<PathBuf>,
 }
 
 impl FileStatus {
@@ -83,8 +87,19 @@ fn parse_porcelain_z(bytes: &[u8]) -> Vec<FileStatus> {
         if raw.len() < 4 {
             continue;
         }
+        let conflict = matches!(
+            (raw[0], raw[1]),
+            (b'D', b'D')
+                | (b'A', b'U')
+                | (b'U', b'D')
+                | (b'U', b'A')
+                | (b'D', b'U')
+                | (b'A', b'A')
+                | (b'U', b'U')
+        );
         let (x, y, untracked) = match (raw[0], raw[1]) {
             (b'?', b'?') => (None, None, true),
+            (b'!', b'!') => continue,
             (xc, yc) => {
                 let x = ChangeKind::from_code(xc).and_then(|value| value);
                 let y = ChangeKind::from_code(yc).and_then(|value| value);
@@ -94,15 +109,21 @@ fn parse_porcelain_z(bytes: &[u8]) -> Vec<FileStatus> {
                 (x, y, false)
             }
         };
+        let orig_path = if matches!(raw[0], b'R' | b'C') {
+            records
+                .next()
+                .map(|old| PathBuf::from(String::from_utf8_lossy(old).into_owned()))
+        } else {
+            None
+        };
         list.push(FileStatus {
             path: PathBuf::from(String::from_utf8_lossy(&raw[3..]).into_owned()),
             staged: x,
             unstaged: y,
             untracked,
+            conflict,
+            orig_path,
         });
-        if matches!(raw[0], b'R' | b'C') {
-            let _old_path = records.next();
-        }
     }
     list
 }
@@ -128,11 +149,41 @@ pub fn git_version_at_least(version: &str, minimum: (u32, u32, u32)) -> bool {
 
 /// Status de todos os arquivos alterados sob `root`.
 pub fn status(root: &Path) -> Result<Vec<FileStatus>, IdeError> {
-    let out = run_git(root, &["status", "--porcelain=v1", "-z"])?;
+    // `-uall`: every untracked file, not just its folder (the Commit view
+    // lists files).
+    let out = run_git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
     if !out.status.success() {
         return Err(git_error("status", &out));
     }
     Ok(parse_porcelain_z(&out.stdout))
+}
+
+/// Ignored paths, collapsed to their topmost folder (`vendor/` ends with a
+/// slash). Cheap even with a huge `node_modules`: Git stops at the folder.
+pub fn ignored(root: &Path) -> Result<Vec<PathBuf>, IdeError> {
+    let out = run_git(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ],
+    )?;
+    if !out.status.success() {
+        return Err(git_error("ignored", &out));
+    }
+    Ok(out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|r| !r.is_empty())
+        .map(|r| PathBuf::from(String::from_utf8_lossy(r).into_owned()))
+        .collect())
 }
 
 /// Status de um arquivo específico (None = limpo/ausente).
@@ -179,6 +230,15 @@ mod tests {
         assert!(list[3].untracked);
         assert!(list[3].has_changes());
         assert!(list[1].has_changes());
+    }
+
+    #[test]
+    fn conflicts_and_rename_origins() {
+        let list = parse_porcelain_z(b"UU a.php\0AA b.php\0R  new.php\0old.php\0!! vendor/\0");
+        assert_eq!(list.len(), 3);
+        assert!(list[0].conflict && list[1].conflict);
+        assert!(!list[2].conflict);
+        assert_eq!(list[2].orig_path, Some(PathBuf::from("old.php")));
     }
 
     #[test]

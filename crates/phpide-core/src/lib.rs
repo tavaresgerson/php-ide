@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use ropey::Rope;
 
+pub mod diag;
 pub mod error;
 pub mod fixtures;
 pub mod fsutil;
@@ -18,12 +19,14 @@ pub mod history;
 pub mod jobs;
 pub mod log;
 pub mod offsets;
+pub mod recovery;
 pub mod redact;
 pub mod revision;
 pub mod settings;
 pub mod text;
 
 pub use error::{Component, ErrorKind, IdeError};
+// `AfterClose` and `LineEnding` are defined in this file.
 pub use history::{Carets, EditKind};
 pub use jobs::{JobHandle, JobId, JobOutcome, JobRegistry, JobState, JobSystem};
 pub use log::{Correlation, Level, Logger};
@@ -60,6 +63,12 @@ impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
         let text = fs::read_to_string(path)?;
         Ok(Self::new(&text))
+    }
+
+    /// The first few kilobytes (line ending detection).
+    fn text_head(&self) -> String {
+        let end = self.rope.len_chars().min(4096);
+        self.rope.slice(..end).to_string()
     }
 
     /// The text as a rope (cheap to clone, O(log n) slicing).
@@ -184,6 +193,78 @@ impl Document {
     }
 }
 
+/// The tab that becomes active after the active one closes (RF-TAB-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AfterClose {
+    /// The tab on the left (PhpStorm's default).
+    #[default]
+    Left,
+    Right,
+    /// The tab used before it.
+    MostRecent,
+}
+
+impl AfterClose {
+    pub const ALL: [AfterClose; 3] = [AfterClose::Left, AfterClose::Right, AfterClose::MostRecent];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AfterClose::Left => "Left",
+            AfterClose::Right => "Right",
+            AfterClose::MostRecent => "Most recently opened",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Self {
+        AfterClose::ALL
+            .into_iter()
+            .find(|a| a.label() == label)
+            .unwrap_or_default()
+    }
+}
+
+/// Line separator of a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    #[default]
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    /// The separator of the first line break (`Lf` when there is none).
+    pub fn detect(text: &str) -> Self {
+        match text.find('\n') {
+            Some(i) if i > 0 && text.as_bytes()[i - 1] == b'\r' => LineEnding::CrLf,
+            _ => LineEnding::Lf,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF",
+            LineEnding::CrLf => "CRLF",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Self {
+        if label.eq_ignore_ascii_case("CRLF") {
+            LineEnding::CrLf
+        } else {
+            LineEnding::Lf
+        }
+    }
+
+    /// `text` with every line break written with this separator.
+    pub fn apply(self, text: &str) -> String {
+        let lf = text.replace("\r\n", "\n");
+        match self {
+            LineEnding::Lf => lf,
+            LineEnding::CrLf => lf.replace('\n', "\r\n"),
+        }
+    }
+}
+
 static NEXT_BUFFER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Um arquivo aberto na IDE: documento + metadados + histórico.
@@ -200,6 +281,8 @@ pub struct Buffer {
     pub pinned: bool,
     /// Somente leitura (cadeado na status bar): edições são bloqueadas.
     pub readonly: bool,
+    /// Separator the file is saved with (detected on open).
+    pub line_ending: LineEnding,
     history: history::History,
     /// History state of the text on disk (see [`history::History::state_id`]).
     saved_state: u64,
@@ -209,7 +292,9 @@ pub struct Buffer {
 
 impl Buffer {
     fn with_document(document: Document, path: Option<PathBuf>) -> Self {
+        let line_ending = LineEnding::detect(&document.text_head());
         Buffer {
+            line_ending,
             id: NEXT_BUFFER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             document,
             path,
@@ -335,7 +420,14 @@ impl Buffer {
             .path
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no path"))?;
-        fsutil::write_atomic(&path, self.document.text().as_bytes())?;
+        // Lines typed in the editor end with `\n`: the file keeps its own
+        // separator throughout.
+        let text = self.document.text();
+        let normalized = self.line_ending.apply(&text);
+        if normalized != text {
+            self.replace_all(&normalized);
+        }
+        fsutil::write_atomic(&path, normalized.as_bytes())?;
         self.dirty = false;
         self.saved_state = self.history.state_id();
         self.history.break_group();
@@ -353,6 +445,17 @@ impl Buffer {
             IdeError::from_io(Component::Core, "save", &what, &e)
                 .with_detail("your edits are kept in memory and the file stays modified")
         })
+    }
+
+    /// Converts the file to another separator (one undo step); it becomes
+    /// modified when the text changed.
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        self.line_ending = ending;
+        let text = self.document.text();
+        let converted = ending.apply(&text);
+        if converted != text {
+            self.replace_all(&converted);
+        }
     }
 
     /// Replaces the whole text as one undo step, changing only the part
@@ -446,11 +549,18 @@ pub struct Workspace {
     pub open_tabs_at_end: bool,
     /// Recently closed files, most recent last (Reopen Closed Tab).
     pub closed_tabs: Vec<PathBuf>,
+    /// Which tab becomes active when the active one closes (RF-TAB-04).
+    pub after_close: AfterClose,
+    /// Buffer ids, most recently active first.
+    activation: Vec<u64>,
     /// Files edited in this session, most recent first (Recent Files with
     /// "show edited only").
     pub edited_files: Vec<PathBuf>,
     /// Where the last edits happened, most recent last: (path, line0, col0).
     pub edit_locations: Vec<(PathBuf, usize, usize)>,
+    /// Places the caret left (another file, or a jump of a few lines),
+    /// most recent last (Recent Locations, RF-SEL-08).
+    pub visited_locations: Vec<(PathBuf, usize, usize)>,
 }
 
 /// Máximo de abas antes da Closing Policy fechar a mais antiga não fixada
@@ -483,9 +593,12 @@ impl Workspace {
             recent_files: Vec::new(),
             tab_limit: TAB_LIMIT,
             open_tabs_at_end: false,
+            after_close: AfterClose::default(),
+            activation: Vec::new(),
             closed_tabs: Vec::new(),
             edited_files: Vec::new(),
             edit_locations: Vec::new(),
+            visited_locations: Vec::new(),
         }
     }
 
@@ -599,6 +712,18 @@ impl Workspace {
         }
     }
 
+    /// Records a place the caret was at. A place near one already listed
+    /// (same file, within 3 lines) replaces it and moves to the end.
+    pub fn record_visit(&mut self, path: &Path, line0: usize, col0: usize) {
+        self.visited_locations
+            .retain(|(p, line, _)| !(p == path && line.abs_diff(line0) <= 3));
+        self.visited_locations
+            .push((path.to_path_buf(), line0, col0));
+        if self.visited_locations.len() > 50 {
+            self.visited_locations.remove(0);
+        }
+    }
+
     fn touch_recent(&mut self, path: &Path) {
         self.recent_files.retain(|p| p != path);
         self.recent_files.insert(0, path.to_path_buf());
@@ -613,15 +738,36 @@ impl Workspace {
         }
         let was_active = i == self.active;
         let closed = self.buffers.remove(i);
+        self.activation.retain(|id| *id != closed.id);
         self.remember_closed(closed.path);
         if was_active {
-            self.active = i
-                .saturating_sub(1)
-                .min(self.buffers.len().saturating_sub(1));
+            let last = self.buffers.len().saturating_sub(1);
+            self.active = match self.after_close {
+                AfterClose::Left => i.saturating_sub(1).min(last),
+                AfterClose::Right => i.min(last),
+                AfterClose::MostRecent => self
+                    .activation
+                    .iter()
+                    .find_map(|id| self.buffers.iter().position(|b| b.id == *id))
+                    .unwrap_or_else(|| i.saturating_sub(1).min(last)),
+            };
         } else if i < self.active {
             self.active -= 1;
         }
         !self.buffers.is_empty()
+    }
+
+    /// Notes the active tab (the UI calls it every frame) for
+    /// [`AfterClose::MostRecent`].
+    pub fn note_active(&mut self) {
+        let Some(id) = self.active_buffer().map(|b| b.id) else {
+            return;
+        };
+        if self.activation.first() != Some(&id) {
+            self.activation.retain(|x| *x != id);
+            self.activation.insert(0, id);
+            self.activation.truncate(100);
+        }
     }
 
     fn remember_closed(&mut self, path: Option<PathBuf>) {
@@ -811,6 +957,67 @@ mod tests {
     }
 
     #[test]
+    fn the_tab_after_closing_follows_the_setting() {
+        let dir = std::env::temp_dir().join(format!("phpide-afterclose-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let mut ws = Workspace::unscanned(dir.clone());
+        ws.open_tabs_at_end = true;
+        for name in ["a", "b", "c", "d"] {
+            let p = dir.join(name);
+            fs::write(&p, name).unwrap();
+            ws.open_file_ex(&p, false);
+            ws.note_active();
+        }
+        let names = |ws: &Workspace| ws.buffers.iter().map(|b| b.name()).collect::<String>();
+        assert_eq!(names(&ws), "abcd");
+        // Visit a, then c: closing c goes back to a (most recent).
+        ws.active = 0;
+        ws.note_active();
+        ws.active = 2;
+        ws.note_active();
+        ws.after_close = AfterClose::MostRecent;
+        ws.close_tab(2);
+        assert_eq!(ws.active_buffer().unwrap().name(), "a");
+        ws.after_close = AfterClose::Right;
+        ws.active = 1;
+        ws.close_tab(1);
+        assert_eq!(ws.active_buffer().unwrap().name(), "d");
+        ws.after_close = AfterClose::Left;
+        ws.close_tab(1);
+        assert_eq!(ws.active_buffer().unwrap().name(), "a");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn line_endings_are_detected_kept_on_save_and_converted() {
+        let dir = std::env::temp_dir().join(format!("phpide-eol-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let file = dir.join("win.php");
+        fs::write(&file, "<?php\r\necho 1;\r\n").unwrap();
+        let mut buf = Buffer::open(&file).unwrap();
+        assert_eq!(buf.line_ending, LineEnding::CrLf);
+        // A line typed in the editor ends with \n; saving keeps CRLF.
+        let end = buf.document.len_chars();
+        buf.replace_all(&format!("{}echo 2;\n", buf.document.text()));
+        let _ = end;
+        buf.save().unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "<?php\r\necho 1;\r\necho 2;\r\n"
+        );
+        buf.set_line_ending(LineEnding::Lf);
+        assert!(buf.dirty);
+        buf.save().unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "<?php\necho 1;\necho 2;\n"
+        );
+        assert_eq!(LineEnding::detect("a\nb\r\n"), LineEnding::Lf);
+        assert_eq!(LineEnding::detect("no break"), LineEnding::Lf);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn replace_all_changes_only_the_difference() {
         let mut buf = Buffer::untitled();
         buf.replace_all("<?php\necho 1;\n");
@@ -968,6 +1175,21 @@ mod tests {
         ws.close_all_tabs(true);
         assert_eq!(names(&ws), ["c.php"], "the pinned tab stays");
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn visited_locations_merge_nearby_places() {
+        let mut ws = Workspace::unscanned(PathBuf::from("/p"));
+        let (a, b) = (Path::new("/p/a.php"), Path::new("/p/b.php"));
+        ws.record_visit(a, 10, 0);
+        ws.record_visit(b, 1, 0);
+        ws.record_visit(a, 12, 4);
+        assert_eq!(
+            ws.visited_locations,
+            vec![(b.to_path_buf(), 1, 0), (a.to_path_buf(), 12, 4)]
+        );
+        ws.record_visit(a, 40, 0);
+        assert_eq!(ws.visited_locations.len(), 3);
     }
 
     #[test]

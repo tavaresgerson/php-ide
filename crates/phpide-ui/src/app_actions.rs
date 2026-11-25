@@ -75,6 +75,7 @@ impl PhpIdeApp {
             Command::GotoFile => self.open_palette(PaletteMode::Files),
             Command::GotoClass => self.open_palette(PaletteMode::Classes),
             Command::RecentFiles => self.open_palette(PaletteMode::Recent),
+            Command::RecentLocations => self.open_recent_locations(),
             Command::FindAction => self.open_palette(PaletteMode::Actions),
             Command::BlockStart => self.jump_block(true),
             Command::BlockEnd => self.jump_block(false),
@@ -92,9 +93,21 @@ impl PhpIdeApp {
                 }
             }
             Command::Save => self.save_active(),
-            Command::NewFile => self.ws.new_file(),
+            Command::NewFile => {
+                self.ws.new_file();
+                // New files use the separator chosen in the settings.
+                let ending = phpide_core::LineEnding::from_label(&self.settings.line_ending);
+                if let Some(buffer) = self.ws.buffers.last_mut() {
+                    buffer.line_ending = ending;
+                }
+            }
             Command::CloseTab => {
-                self.request_close_active();
+                // A diff tab in front closes first.
+                if let Some(index) = self.diffs.active {
+                    self.diffs.close(index);
+                } else {
+                    self.request_close_active();
+                }
             }
             Command::CloseOthers => {
                 let active = self.ws.active;
@@ -244,6 +257,8 @@ impl PhpIdeApp {
                 self.open_palette(PaletteMode::Symbols);
             }
             Command::FindUsages => self.request_usages(),
+            Command::FindInFiles => self.find_in_files(None, false),
+            Command::ReplaceInFiles => self.find_in_files(None, true),
             Command::SplitRight => self.editors.split(&self.ws, editor_area::SplitAxis::Right),
             Command::SplitDown => self.editors.split(&self.ws, editor_area::SplitAxis::Down),
             Command::Unsplit => {
@@ -296,6 +311,43 @@ impl PhpIdeApp {
             Command::RunContext => self.run_context(false),
             Command::DebugContext => self.run_context(true),
             Command::RunWithCoverage => self.run_with_coverage(),
+            Command::GitCommit => {
+                self.commit_ui.focus_message = true;
+                self.tw.set_visible(ToolWindow::Commit, true);
+            }
+            Command::GitPush => self.git_push(),
+            Command::ShowLog => self.show_log(),
+            Command::ShowLogFolder => self.show_log_folder(),
+            Command::About => self.recovery.about_open = true,
+            Command::GitUpdate => self.git_update(),
+            Command::GitFetch => self.git_fetch(),
+            Command::GitBranches => egui::Popup::open_id(ctx, crate::header::branch_popup()),
+            Command::GitNewBranch => {
+                self.git_dialog = Some(crate::app_vcs::GitDialog::new(
+                    crate::app_vcs::GitDialogKind::NewBranch { start: None },
+                ))
+            }
+            Command::GitCompareWithHead => self.compare_active_with_head(ctx),
+            Command::GitShowHistory => self.show_file_history(),
+            Command::GitRollback => {
+                let selected: Vec<_> = self.commit_ui.selected.iter().cloned().collect();
+                if self.tw.is_visible(ToolWindow::Commit) && !selected.is_empty() {
+                    let mut tracked = Vec::new();
+                    let mut untracked = Vec::new();
+                    for (group, path) in selected {
+                        if group == crate::commit_panel::Group::Unversioned {
+                            untracked.push(path);
+                        } else if !tracked.contains(&path) {
+                            tracked.push(path);
+                        }
+                    }
+                    self.git_dialog = Some(crate::app_vcs::GitDialog::new(
+                        crate::app_vcs::GitDialogKind::Rollback { tracked, untracked },
+                    ));
+                } else {
+                    self.rollback_active();
+                }
+            }
             Command::EditConfigurations => self.open_edit_configurations(),
             Command::EvaluateExpression => {
                 if self.rd.status == run_debug::DebugStatus::Paused {
@@ -404,17 +456,7 @@ impl PhpIdeApp {
             return false;
         }
         let path = buf.path.clone();
-        // Line endings: converte \n -> \r\n ao salvar quando o widget for CRLF.
-        if self.settings.line_ending == "CRLF" {
-            let text = buf
-                .document
-                .text()
-                .replace("\r\n", "\n")
-                .replace('\n', "\r\n");
-            if text != buf.document.text() {
-                buf.replace_all(&text);
-            }
-        }
+        // The file keeps its own line separator (Buffer::save normalizes).
         let corr = Correlation::session(self.session).with_document(
             path.clone().unwrap_or_else(|| PathBuf::from("<untitled>")),
             buf.document.revision(),
@@ -542,6 +584,7 @@ impl PhpIdeApp {
         // Esc in a tool window returns to the editor (RF-UI-02); the tree
         // handles its own Esc (speed search first).
         let popup = self.palette.open
+            || self.recent_locations.open
             || self.settings_dialog.open
             || self.completion.open
             || self.intel.rename.is_some()

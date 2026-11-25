@@ -17,6 +17,24 @@ use serde_json::{json, Value};
 use phpide_core::settings as store;
 use phpide_core::settings::Migration;
 
+/// File nesting rules shipped by default (RF-NAV-12).
+pub fn default_nesting_rules() -> Vec<String> {
+    [
+        "composer.json=composer.lock",
+        "package.json=package-lock.json,yarn.lock,pnpm-lock.yaml",
+        ".env=.env.example,.env.local,.env.testing,.env.dist",
+        "phpunit.xml.dist=phpunit.xml",
+        ".ts=.js,.js.map,.d.ts",
+        ".scss=.css,.css.map",
+        ".less=.css,.css.map",
+        ".js=.js.map,.min.js",
+        ".css=.css.map,.min.css",
+    ]
+    .iter()
+    .map(|r| r.to_string())
+    .collect()
+}
+
 pub fn config_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
         if !x.is_empty() {
@@ -145,6 +163,28 @@ pub struct Settings {
     pub tabs_multiple_rows: bool,
     /// Pinned tabs come first (RF-TAB-16).
     pub tabs_pinned_left: bool,
+    /// Tab that becomes active after closing the active one (RF-TAB-04).
+    pub tab_after_close: String,
+    /// Where the editor tabs go: Top or None (RF-TAB-05).
+    pub tab_placement: String,
+    /// Close button of a tab: Right, Left or None (RF-TAB-11).
+    pub tab_close_button: String,
+    /// Tabs sorted by name (RF-TAB-11).
+    pub tabs_alphabetical: bool,
+    /// Indent guides in the Project view (RF-NAV-13).
+    pub tree_indent_guides: bool,
+    /// File size and modification time in the Project view (RF-NAV-11).
+    pub tree_file_details: bool,
+    /// Related files nest under their parent file (RF-NAV-12).
+    pub file_nesting: bool,
+    /// `parent=child,child` rules: a suffix (`.ts`) or a whole name (`composer.json`).
+    pub nesting_rules: Vec<String>,
+    /// Default folder for new and cloned projects (RF-PRJ-14); empty = home.
+    pub projects_dir: String,
+    /// Project groups on the Home screen (RF-PRJ-06).
+    pub project_groups: Vec<(String, Vec<String>)>,
+    /// User shortcuts per command id (RF-UI-06); a command listed here uses only these.
+    pub shortcuts: Vec<(String, Vec<String>)>,
 }
 
 fn pairs(value: &Value) -> Option<Vec<(String, String)>> {
@@ -232,6 +272,17 @@ impl Default for Settings {
             tool_window_placements: Vec::new(),
             tabs_multiple_rows: false,
             tabs_pinned_left: true,
+            tab_after_close: "Left".to_string(),
+            tab_placement: "Top".to_string(),
+            tab_close_button: "Right".to_string(),
+            tabs_alphabetical: false,
+            tree_indent_guides: false,
+            tree_file_details: false,
+            file_nesting: true,
+            nesting_rules: default_nesting_rules(),
+            projects_dir: String::new(),
+            project_groups: Vec::new(),
+            shortcuts: Vec::new(),
         }
     }
 }
@@ -390,6 +441,70 @@ impl Settings {
         if let Some(value) = v["tabs_pinned_left"].as_bool() {
             s.tabs_pinned_left = value;
         }
+        if let Some(value) = v["tab_after_close"].as_str() {
+            s.tab_after_close = value.to_string();
+        }
+        if let Some(value) = v["tab_placement"].as_str() {
+            s.tab_placement = value.to_string();
+        }
+        if let Some(value) = v["tab_close_button"].as_str() {
+            s.tab_close_button = value.to_string();
+        }
+        if let Some(value) = v["tabs_alphabetical"].as_bool() {
+            s.tabs_alphabetical = value;
+        }
+        if let Some(value) = v["tree_indent_guides"].as_bool() {
+            s.tree_indent_guides = value;
+        }
+        if let Some(value) = v["tree_file_details"].as_bool() {
+            s.tree_file_details = value;
+        }
+        if let Some(value) = v["file_nesting"].as_bool() {
+            s.file_nesting = value;
+        }
+        if let Some(list) = v["nesting_rules"].as_array() {
+            s.nesting_rules = list
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
+        }
+        if let Some(value) = v["projects_dir"].as_str() {
+            s.projects_dir = value.to_string();
+        }
+        if let Some(list) = v["project_groups"].as_array() {
+            s.project_groups = list
+                .iter()
+                .filter_map(|g| {
+                    let name = g["name"].as_str()?.to_string();
+                    let items = g["items"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some((name, items))
+                })
+                .collect();
+        }
+        if let Some(list) = v["shortcuts"].as_array() {
+            s.shortcuts = list
+                .iter()
+                .filter_map(|g| {
+                    let name = g["name"].as_str()?.to_string();
+                    let items = g["items"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some((name, items))
+                })
+                .collect();
+        }
         if let Some(arr) = v["attached_projects"].as_array() {
             s.attached_projects = arr
                 .iter()
@@ -464,6 +579,25 @@ impl Settings {
         v["tool_window_placements"] = pairs_json(&self.tool_window_placements);
         v["tabs_multiple_rows"] = json!(self.tabs_multiple_rows);
         v["tabs_pinned_left"] = json!(self.tabs_pinned_left);
+        v["tab_after_close"] = json!(self.tab_after_close);
+        v["tab_placement"] = json!(self.tab_placement);
+        v["tab_close_button"] = json!(self.tab_close_button);
+        v["tabs_alphabetical"] = json!(self.tabs_alphabetical);
+        v["tree_indent_guides"] = json!(self.tree_indent_guides);
+        v["tree_file_details"] = json!(self.tree_file_details);
+        v["file_nesting"] = json!(self.file_nesting);
+        v["nesting_rules"] = json!(self.nesting_rules);
+        v["projects_dir"] = json!(self.projects_dir);
+        v["project_groups"] = json!(self
+            .project_groups
+            .iter()
+            .map(|(name, items)| json!({"name": name, "items": items}))
+            .collect::<Vec<_>>());
+        v["shortcuts"] = json!(self
+            .shortcuts
+            .iter()
+            .map(|(name, items)| json!({"name": name, "items": items}))
+            .collect::<Vec<_>>());
         v["attached_projects"] = json!(self
             .attached_projects
             .iter()
@@ -488,8 +622,55 @@ impl Settings {
     /// Removes a project from the recent list (RF-PRJ-05). Files stay.
     pub fn forget_project(&mut self, path: &str) {
         self.recent_projects.retain(|p| p != path);
+        for (_, items) in &mut self.project_groups {
+            items.retain(|p| p != path);
+        }
         if self.last_project == path {
             self.last_project.clear();
+        }
+    }
+
+    /// Group a Home screen project belongs to (RF-PRJ-06).
+    pub fn group_of(&self, path: &str) -> Option<usize> {
+        self.project_groups
+            .iter()
+            .position(|(_, items)| items.iter().any(|p| p == path))
+    }
+
+    /// Moves a project into a group, or back to the plain recent list.
+    pub fn set_project_group(&mut self, path: &str, group: Option<usize>) {
+        for (_, items) in &mut self.project_groups {
+            items.retain(|p| p != path);
+        }
+        match group.and_then(|g| self.project_groups.get_mut(g)) {
+            Some((_, items)) => items.push(path.to_string()),
+            None => {
+                if !self.recent_projects.iter().any(|p| p == path) {
+                    self.recent_projects.insert(0, path.to_string());
+                }
+            }
+        }
+    }
+
+    /// Adds an empty group (or returns the one with that name).
+    pub fn add_project_group(&mut self, name: &str) -> usize {
+        if let Some(i) = self.project_groups.iter().position(|(n, _)| n == name) {
+            return i;
+        }
+        self.project_groups.push((name.to_string(), Vec::new()));
+        self.project_groups.len() - 1
+    }
+
+    /// Removes a group; its projects go back to the recent list.
+    pub fn remove_project_group(&mut self, group: usize) {
+        if group >= self.project_groups.len() {
+            return;
+        }
+        let (_, items) = self.project_groups.remove(group);
+        for path in items {
+            if !self.recent_projects.contains(&path) {
+                self.recent_projects.push(path);
+            }
         }
     }
 

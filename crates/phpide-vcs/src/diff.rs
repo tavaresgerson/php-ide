@@ -22,6 +22,8 @@ pub struct DiffLine {
     pub old_lineno: Option<u32>,
     /// Linha no arquivo novo (1-based); None = linha removida.
     pub new_lineno: Option<u32>,
+    /// Followed by `\ No newline at end of file`.
+    pub no_newline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,9 +49,21 @@ pub struct FileDiff {
     pub old_path: PathBuf,
     pub new_path: PathBuf,
     pub hunks: Vec<Hunk>,
+    /// `Binary files … differ`: no hunks to show.
+    pub binary: bool,
 }
 
 impl FileDiff {
+    /// The file did not exist on the old side.
+    pub fn is_new(&self) -> bool {
+        self.old_path == Path::new("/dev/null")
+    }
+
+    /// The file does not exist on the new side.
+    pub fn is_deleted(&self) -> bool {
+        self.new_path == Path::new("/dev/null")
+    }
+
     /// Há mudanças? (diff vazio de arquivo sem alteração)
     pub fn is_empty(&self) -> bool {
         self.hunks
@@ -78,6 +92,7 @@ pub fn parse_unified(text: &str) -> Vec<FileDiff> {
                 old_path,
                 new_path: PathBuf::new(),
                 hunks: Vec::new(),
+                binary: false,
             });
         } else if let Some(rest) = line.strip_prefix("+++ ") {
             if let Some(f) = cur.as_mut() {
@@ -108,7 +123,26 @@ pub fn parse_unified(text: &str) -> Vec<FileDiff> {
                 });
             }
         } else if line.starts_with("\\ No newline") {
-            // Mantido implícito: a linha anterior já foi registrada.
+            if let Some(last) = cur
+                .as_mut()
+                .and_then(|f| f.hunks.last_mut())
+                .and_then(|h| h.lines.last_mut())
+            {
+                last.no_newline = true;
+            }
+        } else if let Some(rest) = line.strip_prefix("Binary files ") {
+            // A binary file has no ---/+++ lines.
+            if let Some(f) = cur.take() {
+                files.push(f);
+            }
+            let names = rest.trim_end_matches(" differ");
+            let (old, new) = names.split_once(" and ").unwrap_or((names, names));
+            files.push(FileDiff {
+                old_path: strip_prefix_path(old),
+                new_path: strip_prefix_path(new),
+                hunks: Vec::new(),
+                binary: true,
+            });
         } else if line.starts_with("diff ") || line.starts_with("index ") {
             // Metadados entre arquivos; nada a fazer.
         } else if let Some(rest) = line.strip_prefix("rename from ") {
@@ -134,6 +168,7 @@ pub fn parse_unified(text: &str) -> Vec<FileDiff> {
                 content: content.to_string(),
                 old_lineno: (kind != DiffLineKind::Add).then_some(old_lineno),
                 new_lineno: (kind != DiffLineKind::Del).then_some(new_lineno),
+                no_newline: false,
             };
             match kind {
                 DiffLineKind::Add => new_lineno += 1,
@@ -250,6 +285,7 @@ fn untracked_diff(rel: &Path, root: &Path) -> FileDiff {
             content: l.to_string(),
             old_lineno: None,
             new_lineno: Some(i as u32 + 1),
+            no_newline: false,
         })
         .collect();
     FileDiff {
@@ -262,6 +298,7 @@ fn untracked_diff(rel: &Path, root: &Path) -> FileDiff {
             new_count: count,
             lines,
         }],
+        binary: false,
     }
 }
 

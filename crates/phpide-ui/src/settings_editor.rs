@@ -26,6 +26,25 @@ pub struct EditorPagesState {
     preview: Option<Preview>,
     fonts: Option<Vec<SystemFont>>,
     fonts_job: Option<JobHandle<Vec<SystemFont>>>,
+    /// Duplicate, Rename, Export or Import in progress, with its field.
+    scheme_op: Option<SchemeOp>,
+    scheme_input: String,
+    scheme_error: String,
+}
+
+#[cfg(test)]
+impl EditorPagesState {
+    pub(crate) fn set_scheme_input(&mut self, text: &str) {
+        self.scheme_input = text.to_string();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemeOp {
+    Duplicate,
+    Rename,
+    Export,
+    Import,
 }
 
 impl Default for EditorPagesState {
@@ -34,6 +53,9 @@ impl Default for EditorPagesState {
             scope: DEFAULTS.to_string(),
             role: SyntaxRole::Keyword,
             preview: None,
+            scheme_op: None,
+            scheme_input: String::new(),
+            scheme_error: String::new(),
             fonts: None,
             fonts_job: None,
         }
@@ -50,28 +72,218 @@ fn preview_language(scope: &str) -> &str {
 
 /// Applies a change of the scheme and re-themes the window.
 fn save_scheme(app: &mut PhpIdeApp, ctx: &egui::Context, change: impl FnOnce(&mut SchemeChanges)) {
-    let theme = app.theme.name().to_string();
-    let mut changes = SchemeChanges::new(&mut app.settings.color_scheme, &theme);
+    let key = color_scheme::active_scheme(&app.settings.color_scheme, app.theme.name());
+    let mut changes = SchemeChanges::new(&mut app.settings.color_scheme, &key);
     change(&mut changes);
     app.persist_settings();
     app.apply_design(ctx);
 }
 
+/// Scheme chooser and its menu: Duplicate, Rename, Delete, Export and
+/// Import (RF-HL-12).
+fn scheme_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui, ctx: &egui::Context) {
+    let active = color_scheme::active_scheme(&app.settings.color_scheme, app.theme.name());
+    let customs = color_scheme::custom_schemes(&app.settings.color_scheme);
+    let custom = customs.iter().any(|(name, _)| name == &active);
+    let shown = if custom {
+        active.clone()
+    } else {
+        app.theme.label().to_string()
+    };
+    let mut choose: Option<(crate::design::ThemeId, String)> = None;
+    let mut delete = false;
+    ui.horizontal(|ui| {
+        let label = ui.label("Scheme:");
+        egui::ComboBox::from_id_salt("scheme-theme")
+            .selected_text(&shown)
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for id in crate::design::ThemeId::ALL {
+                    if ui
+                        .selectable_label(!custom && app.theme == id, id.label())
+                        .clicked()
+                    {
+                        choose = Some((id, id.name().to_string()));
+                    }
+                }
+                if !customs.is_empty() {
+                    ui.separator();
+                }
+                for (name, base) in &customs {
+                    let id = crate::design::ThemeId::from_name(base);
+                    let text = format!("{name}  ({})", id.label());
+                    if ui.selectable_label(name == &active, text).clicked() {
+                        choose = Some((id, name.clone()));
+                    }
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        let menu = crate::design::components::IconButton::new(
+            phpide_icons::IconId::More,
+            "Scheme actions",
+        )
+        .show(ui);
+        egui::Popup::menu(&menu).show(|ui| {
+            ui.set_min_width(180.0);
+            let state = &mut app.settings_dialog.editor_pages;
+            let mut start = |op: SchemeOp, input: String| {
+                state.scheme_op = Some(op);
+                state.scheme_input = input;
+                state.scheme_error.clear();
+            };
+            if ui.button("Duplicate…").clicked() {
+                start(SchemeOp::Duplicate, format!("{shown} copy"));
+                ui.close();
+            }
+            if ui
+                .add_enabled(custom, egui::Button::new("Rename…"))
+                .clicked()
+            {
+                start(SchemeOp::Rename, active.clone());
+                ui.close();
+            }
+            if ui
+                .add_enabled(custom, egui::Button::new("Delete"))
+                .clicked()
+            {
+                delete = true;
+                ui.close();
+            }
+            ui.separator();
+            let home = std::env::var("HOME").unwrap_or_default();
+            if ui.button("Export…").clicked() {
+                let file = format!(
+                    "{home}/{}.phpide-scheme.json",
+                    shown.replace(['/', ' '], "-")
+                );
+                start(SchemeOp::Export, file);
+                ui.close();
+            }
+            if ui.button("Import…").clicked() {
+                start(SchemeOp::Import, format!("{home}/"));
+                ui.close();
+            }
+        });
+    });
+    if let Some((id, scheme)) = choose {
+        color_scheme::set_active(&mut app.settings.color_scheme, id.name(), &scheme);
+        app.apply_theme(id, ctx);
+    }
+    if delete {
+        color_scheme::delete(&mut app.settings.color_scheme, &active);
+        app.persist_settings();
+        app.apply_design(ctx);
+        app.ws.message = format!("Deleted the color scheme {active}");
+    }
+    scheme_op_row(app, ui, ctx, &active, &shown);
+}
+
+/// The inline field of the scheme operation in progress.
+fn scheme_op_row(
+    app: &mut PhpIdeApp,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    active: &str,
+    shown: &str,
+) {
+    let Some(op) = app.settings_dialog.editor_pages.scheme_op else {
+        return;
+    };
+    let (prompt, action) = match op {
+        SchemeOp::Duplicate => ("New scheme name:", "Duplicate"),
+        SchemeOp::Rename => ("New name:", "Rename"),
+        SchemeOp::Export => ("Export to file:", "Export"),
+        SchemeOp::Import => ("Import file:", "Import"),
+    };
+    let mut run = false;
+    let mut cancel = false;
+    ui.horizontal(|ui| {
+        let state = &mut app.settings_dialog.editor_pages;
+        let label = ui.label(prompt);
+        let field = ui
+            .add(
+                egui::TextEdit::singleline(&mut state.scheme_input)
+                    .id_salt("scheme-op-input")
+                    .desired_width(320.0),
+            )
+            .labelled_by(label.id);
+        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            run = true;
+        }
+        if ui.button(action).clicked() {
+            run = true;
+        }
+        if ui.button("Cancel").clicked() {
+            cancel = true;
+        }
+    });
+    let error = app.settings_dialog.editor_pages.scheme_error.clone();
+    if !error.is_empty() {
+        let p = crate::design::current(ctx).palette;
+        ui.colored_label(p.error, error);
+    }
+    if cancel {
+        app.settings_dialog.editor_pages.scheme_op = None;
+        return;
+    }
+    if !run {
+        return;
+    }
+    let input = app
+        .settings_dialog
+        .editor_pages
+        .scheme_input
+        .trim()
+        .to_string();
+    let theme = app.theme.name().to_string();
+    let value = &mut app.settings.color_scheme;
+    let result: Result<String, String> = match op {
+        SchemeOp::Duplicate | SchemeOp::Rename => match color_scheme::invalid_name(value, &input) {
+            Some(why) => Err(why.to_string()),
+            None if op == SchemeOp::Duplicate => {
+                color_scheme::duplicate(value, active, &input, &theme);
+                Ok(format!("Created the color scheme {input}"))
+            }
+            None => {
+                color_scheme::rename(value, active, &input);
+                Ok(format!("Renamed the color scheme to {input}"))
+            }
+        },
+        SchemeOp::Export => {
+            let file = color_scheme::export(value, active, shown, &theme);
+            let text = serde_json::to_string_pretty(&file).unwrap_or_default();
+            std::fs::write(&input, text)
+                .map(|()| format!("Exported the color scheme to {input}"))
+                .map_err(|e| format!("Could not write {input}: {e}"))
+        }
+        SchemeOp::Import => std::fs::read_to_string(&input)
+            .map_err(|e| format!("Could not read {input}: {e}"))
+            .and_then(|text| serde_json::from_str(&text).map_err(|e| format!("Not JSON: {e}")))
+            .and_then(|file: serde_json::Value| color_scheme::import(value, &file))
+            .map(|(name, base)| {
+                let id = crate::design::ThemeId::from_name(&base);
+                app.theme = id;
+                format!("Imported the color scheme {name}")
+            }),
+    };
+    match result {
+        Ok(message) => {
+            app.settings_dialog.editor_pages.scheme_op = None;
+            app.ws.message = message;
+            app.persist_settings();
+            app.apply_design(ctx);
+        }
+        Err(error) => app.settings_dialog.editor_pages.scheme_error = error,
+    }
+}
+
 pub fn color_scheme_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let theme = crate::design::current(&ctx);
+    scheme_bar(app, ui, &ctx);
     ui.horizontal(|ui| {
-        ui.label("Scheme:");
-        egui::ComboBox::from_id_salt("scheme-theme")
-            .selected_text(app.theme.label())
-            .show_ui(ui, |ui| {
-                for id in crate::design::ThemeId::ALL {
-                    if ui.selectable_label(app.theme == id, id.label()).clicked() {
-                        app.apply_theme(id, &ctx);
-                    }
-                }
-            });
-        ui.weak("Each scheme follows the theme of the same name.");
+        ui.weak("A scheme is built on a theme; choosing it switches the theme.");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("Reset All Changes")
@@ -215,7 +427,7 @@ fn role_at(preview: &mut Preview, pos: usize) -> SyntaxRole {
 fn element_editor(app: &mut PhpIdeApp, ui: &mut egui::Ui, scope: &str, role: SyntaxRole) {
     let ctx = ui.ctx().clone();
     let theme = crate::design::current(&ctx);
-    let theme_name = app.theme.name().to_string();
+    let theme_name = color_scheme::active_scheme(&app.settings.color_scheme, app.theme.name());
     let label = ROLES
         .iter()
         .find(|(r, _, _)| *r == role)
@@ -274,6 +486,7 @@ fn element_editor(app: &mut PhpIdeApp, ui: &mut egui::Ui, scope: &str, role: Syn
             }
             if let Some((kind, color)) = &mut element.effect {
                 egui::ComboBox::from_id_salt("scheme-effect")
+                    .width(130.0)
                     .selected_text(match kind {
                         Effect::Underline => "Underline",
                         Effect::Strikethrough => "Strikethrough",
@@ -362,7 +575,7 @@ pub fn font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     };
     let mut chosen: Option<String> = None;
     ui.horizontal(|ui| {
-        ui.label("Font:");
+        let label = ui.label("Font:");
         egui::ComboBox::from_id_salt("editor-font-family")
             .selected_text(&current)
             .width(260.0)
@@ -390,7 +603,9 @@ pub fn font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                         }
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
     });
     if let Some(family) = chosen {
         app.settings.editor_font_family = family;
@@ -398,28 +613,47 @@ pub fn font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         app.apply_design(&ctx);
     }
     ui.horizontal(|ui| {
-        ui.label("Size:");
+        let label = ui.label("Size:");
         let mut size = app.settings.editor_font_size;
-        if ui
+        let slider = ui
             .add(
                 egui::Slider::new(&mut size, 8.0..=32.0)
                     .step_by(1.0)
+                    .show_value(false),
+            )
+            .labelled_by(label.id);
+        let value = ui
+            .add(
+                egui::DragValue::new(&mut size)
+                    .range(8.0..=32.0)
                     .suffix(" pt"),
             )
-            .changed()
-        {
+            .labelled_by(label.id);
+        if slider.changed() || value.changed() {
             app.settings.editor_font_size = crate::settings::clamp_editor_font(size);
             app.persist_settings();
             app.apply_design(&ctx);
         }
     });
     ui.horizontal(|ui| {
-        ui.label("Line height:");
+        let label = ui.label("Line height:");
         let mut height = app.settings.editor_line_height;
-        if ui
-            .add(egui::Slider::new(&mut height, 1.0..=2.0).step_by(0.05))
-            .changed()
-        {
+        let slider = ui
+            .add(
+                egui::Slider::new(&mut height, 1.0..=2.0)
+                    .step_by(0.05)
+                    .show_value(false),
+            )
+            .labelled_by(label.id);
+        let value = ui
+            .add(
+                egui::DragValue::new(&mut height)
+                    .range(1.0..=2.0)
+                    .speed(0.05)
+                    .fixed_decimals(2),
+            )
+            .labelled_by(label.id);
+        if slider.changed() || value.changed() {
             app.settings.editor_line_height = height;
             app.persist_settings();
             app.apply_design(&ctx);
@@ -428,12 +662,20 @@ pub fn font_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.weak("Ligatures: not available — the text renderer draws one glyph per character.");
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        ui.label("IDE zoom:");
+        let label = ui.label("IDE zoom:");
         let mut zoom = app.zoom;
-        if ui
-            .add(egui::Slider::new(&mut zoom, 0.5..=3.0).suffix("×"))
-            .changed()
-        {
+        let slider = ui
+            .add(egui::Slider::new(&mut zoom, 0.5..=3.0).show_value(false))
+            .labelled_by(label.id);
+        let value = ui
+            .add(
+                egui::DragValue::new(&mut zoom)
+                    .range(0.5..=3.0)
+                    .speed(0.05)
+                    .suffix("×"),
+            )
+            .labelled_by(label.id);
+        if slider.changed() || value.changed() {
             app.set_zoom(zoom);
         }
     });

@@ -16,19 +16,37 @@
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features phpide-ui/experimental -- -D warnings
-cargo test --workspace -- --test-threads=1
-cargo test -p phpide-php --test composer_flow -- --test-threads=1
-cargo test -p phpide-run --test gate_run_debug -- --test-threads=1
-cargo test -p phpide-ui gate_ -- --test-threads=1
+cargo test --workspace
+cargo test -p phpide-ui --features experimental
 ```
 
-Tests run serially because the DBGp tests bind port 9003. A test skipped
-because a tool is missing counts as **not verified**, never as supported.
+Tests run in parallel. The DBGp tests bind free ports and the UI tests keep
+their state (recovery, crash reports, keymap) per process or per thread.
+A test skipped because a tool is missing counts as **not verified**, never
+as supported. CI (`.github/workflows/ci.yml`) runs the same commands with
+PHP, Xdebug, Composer and intelephense installed.
+
+Visual snapshots live in `crates/phpide-ui/tests/snapshots/`; a mismatch
+writes the new image to `target/snapshots/` (set `UPDATE_SNAPSHOTS=1` when
+the change is intended). Review screenshots of each phase, in the three
+themes: `cargo test -p phpide-ui phase8_screenshots -- --ignored`.
 
 `scripts/baseline.sh` runs all of the above plus the release build and the
 benchmarks, keeps going when a step fails, and writes
 `target/baseline/<timestamp>/summary.md`. Use `--quick` to skip the build and
 benchmarks.
+
+## Packages
+
+```bash
+bash scripts/package-deb.sh                        # target/package/phpide_<version>_<arch>.deb
+APPIMAGETOOL=/path/to/appimagetool bash scripts/package-appimage.sh
+flatpak-builder --user --install --force-clean --build-args=--share=network \
+  build-dir packaging/flatpak/io.github.tavaresgerson.PhpIde.yml
+```
+
+All three install the same files through `scripts/install-files.sh`. The
+version comes from `crates/phpide-ui/Cargo.toml`.
 
 ## Rules
 

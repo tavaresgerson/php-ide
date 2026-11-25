@@ -3,3 +3,4 @@ third_party/node_modules/
 *.swp
 .serena/
 .phpunit.result.cache
+Claude outputs/

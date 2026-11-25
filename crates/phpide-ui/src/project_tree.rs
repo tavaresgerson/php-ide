@@ -16,7 +16,7 @@ use eframe::egui;
 use phpide_icons::{file_icon, IconId};
 
 use crate::design::components::{
-    menu_item, menu_separator, Button, Dialog, IconButton, PanelHeader, TextInput,
+    menu_item, menu_separator, Button, Dialog, IconButton, PanelHeader, TextInput, ToolbarWidget,
     TreeRow as RowWidget,
 };
 use crate::services::file_ops;
@@ -88,6 +88,43 @@ pub struct TreeState {
     new_filter: String,
     new_selected: usize,
     focus_dialog: bool,
+    /// File Nesting Rules dialog text (one rule per line).
+    pub nesting_editor: Option<String>,
+    /// Quick preview of a file (Space, RF-NAV-05).
+    pub preview: Option<crate::quick_preview::Preview>,
+    /// What the Project view lists (RF-NAV-02).
+    pub scope: Scope,
+}
+
+/// Views of the Project tool window (RF-NAV-02).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scope {
+    #[default]
+    Project,
+    OpenFiles,
+    ChangedFiles,
+    Production,
+    Tests,
+}
+
+impl Scope {
+    pub const ALL: [Scope; 5] = [
+        Scope::Project,
+        Scope::OpenFiles,
+        Scope::ChangedFiles,
+        Scope::Production,
+        Scope::Tests,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Scope::Project => "Project",
+            Scope::OpenFiles => "Open Files",
+            Scope::ChangedFiles => "Changed Files",
+            Scope::Production => "Production",
+            Scope::Tests => "Tests",
+        }
+    }
 }
 
 impl TreeState {
@@ -133,7 +170,38 @@ pub fn tree_options(app: &PhpIdeApp) -> TreeOptions {
         sort: app.settings.tree_sort.clone(),
         folders_first: app.settings.tree_folders_first,
         show_excluded: app.settings.tree_show_excluded,
+        excluded_dirs: app.project_marks.excluded.clone(),
+        nesting: if app.settings.file_nesting {
+            app.settings
+                .nesting_rules
+                .iter()
+                .filter_map(|r| crate::services::files::NestRule::parse(r))
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
+}
+
+/// `12.3 KB · 2026-11-24 14:05` (RF-NAV-11).
+fn file_details(size: Option<u64>, modified: Option<std::time::SystemTime>) -> String {
+    let size = size.map(|b| {
+        if b < 1024 {
+            format!("{b} B")
+        } else if b < 1024 * 1024 {
+            format!("{:.1} KB", b as f64 / 1024.0)
+        } else {
+            format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+        }
+    });
+    let time = modified
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| crate::vcs_panel::format_time(d.as_secs() as i64));
+    [size, time]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 enum Action {
@@ -157,6 +225,9 @@ enum Action {
     CollapseAll,
     SelectOpened,
     Detach(PathBuf),
+    Mark(PathBuf, Option<crate::project_marks::Mark>),
+    Preview(PathBuf),
+    FindIn(PathBuf, bool),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -183,6 +254,10 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             });
             return;
         }
+        if app.tree.scope != Scope::Project {
+            scope_body(app, ui);
+            return;
+        }
         follow_active_file(app, ui.ctx(), false);
         let options = tree_options(app);
         let rows = app.files.visible_rows(&options);
@@ -198,8 +273,115 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     dialogs(app, ui.ctx());
 }
 
+/// Files of a scope (RF-NAV-02), grouped by folder.
+pub(crate) fn scope_files(app: &PhpIdeApp) -> Vec<PathBuf> {
+    use crate::project_marks::Mark;
+    let mut files: Vec<PathBuf> = match app.tree.scope {
+        Scope::Project => Vec::new(),
+        Scope::OpenFiles => app
+            .ws
+            .buffers
+            .iter()
+            .filter_map(|b| b.path.clone())
+            .collect(),
+        Scope::ChangedFiles => app
+            .vcs
+            .snapshot()
+            .map(|s| s.changes.iter().map(|c| s.toplevel.join(&c.path)).collect())
+            .unwrap_or_default(),
+        Scope::Tests => app
+            .ws
+            .files
+            .iter()
+            .filter(|f| !f.is_dir && app.project_marks.applies_to(&f.path) == Some(Mark::Tests))
+            .map(|f| f.path.clone())
+            .collect(),
+        Scope::Production => {
+            let has_sources = !app.project_marks.sources.is_empty();
+            app.ws
+                .files
+                .iter()
+                .filter(|f| !f.is_dir)
+                .filter(|f| match app.project_marks.applies_to(&f.path) {
+                    Some(Mark::Sources) => true,
+                    Some(_) => false,
+                    None => !has_sources,
+                })
+                .map(|f| f.path.clone())
+                .collect()
+        }
+    };
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn scope_body(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
+    let p = crate::design::current(ui.ctx()).palette;
+    let files = scope_files(app);
+    if files.is_empty() {
+        ui.add_space(8.0);
+        let hint = match app.tree.scope {
+            Scope::OpenFiles => "No open files",
+            Scope::ChangedFiles if app.vcs.not_repo() => "The project is not in a Git repository",
+            Scope::ChangedFiles => "No changed files",
+            Scope::Tests => "No test files — mark a folder as Test Sources Root",
+            _ => "No files in this scope",
+        };
+        ui.label(egui::RichText::new(hint).color(p.text_muted));
+        return;
+    }
+    let root = app.ws.root.clone();
+    let mut open: Option<(PathBuf, bool)> = None;
+    egui::ScrollArea::vertical()
+        .id_salt("scope-files")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let mut last_dir: Option<PathBuf> = None;
+            for file in &files {
+                let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+                if last_dir.as_ref() != Some(&dir) {
+                    let label = dir
+                        .strip_prefix(&root)
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_else(|_| dir.display().to_string());
+                    RowWidget::new(if label.is_empty() {
+                        ".".to_string()
+                    } else {
+                        label
+                    })
+                    .icon(IconId::Folder, p.folder)
+                    .show(ui);
+                    last_dir = Some(dir);
+                }
+                let name = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let (icon, kind) = file_icon(&name);
+                let mut row = RowWidget::new(&name)
+                    .depth(1)
+                    .icon(icon, p.file_color(kind));
+                if let Some(color) = app.vcs_color(&p, file) {
+                    row = row.label_color(color);
+                }
+                let response = row.show(ui).response;
+                if response.double_clicked() {
+                    open = Some((file.clone(), false));
+                } else if response.clicked() {
+                    open = Some((file.clone(), true));
+                }
+            }
+        });
+    if let Some((path, preview)) = open {
+        app.open_file_tab(&path, preview);
+    }
+}
+
 fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    PanelHeader::new(ToolWindow::Project.title()).show(ui, |ui| {
+    // The scope chooser is the title, as in PhpStorm ("Project ▾").
+    PanelHeader::new("").show(ui, |ui| {
         if IconButton::new(IconId::Minus, "Hide")
             .shortcut("Shift+Esc")
             .show(ui)
@@ -240,6 +422,25 @@ fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         {
             app.tree.new_popup = true;
         }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let scope = ToolbarWidget::new(app.tree.scope.label())
+                .chevron(true)
+                .accessible_name(format!("View scope: {}", app.tree.scope.label()))
+                .tooltip("Scope of the Project view")
+                .show(ui);
+            egui::Popup::menu(&scope).show(|ui| {
+                ui.set_min_width(180.0);
+                for option in Scope::ALL {
+                    if ui
+                        .selectable_label(app.tree.scope == option, option.label())
+                        .clicked()
+                    {
+                        app.tree.scope = option;
+                        ui.close();
+                    }
+                }
+            });
+        });
     });
 }
 
@@ -279,6 +480,24 @@ fn options_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     ui.separator();
     changed |= ui
         .checkbox(&mut app.settings.tree_show_excluded, "Show Excluded Files")
+        .changed();
+    changed |= ui
+        .checkbox(&mut app.settings.file_nesting, "File Nesting")
+        .on_hover_text("Related files nest under their parent (composer.lock under composer.json…)")
+        .changed();
+    if ui.button("File Nesting Rules…").clicked() {
+        app.tree.nesting_editor = Some(app.settings.nesting_rules.join("\n"));
+        ui.close();
+    }
+    ui.separator();
+    changed |= ui
+        .checkbox(
+            &mut app.settings.tree_file_details,
+            "Show File Size and Date",
+        )
+        .changed();
+    changed |= ui
+        .checkbox(&mut app.settings.tree_indent_guides, "Show Indent Guides")
         .changed();
     ui.separator();
     crate::app_panels::move_to_menu(app, ui, ToolWindow::Project);
@@ -404,13 +623,24 @@ fn draw_row(
 ) {
     let p = crate::design::current(ui.ctx()).palette;
     let entry = &row.entry;
+    let mark = entry
+        .is_dir
+        .then(|| app.project_marks.mark_of(&entry.path))
+        .flatten();
     let (icon, color) = if entry.is_dir {
         let icon = if row.expanded {
             IconId::FolderOpen
         } else {
             IconId::Folder
         };
-        (icon, p.folder)
+        // Marked folders (RF-NAV-19): sources blue, tests green, excluded orange.
+        let color = match mark {
+            Some(crate::project_marks::Mark::Sources) => p.accent,
+            Some(crate::project_marks::Mark::Tests) => p.success,
+            Some(crate::project_marks::Mark::Excluded) => p.warning,
+            None => p.folder,
+        };
+        (icon, color)
     } else {
         let (icon, kind) = file_icon(&entry.name);
         (icon, p.file_color(kind))
@@ -422,13 +652,24 @@ fn draw_row(
         .is_some_and(|(paths, cut)| *cut && paths.contains(&entry.path));
     let mut widget = RowWidget::new(entry.name.as_str())
         .depth(row.depth)
-        .expanded(entry.is_dir.then_some(row.expanded))
+        .expanded((entry.is_dir || row.nested > 0).then_some(row.expanded))
+        .guides(app.settings.tree_indent_guides)
         .icon(icon, color)
         .selected(app.tree.is_selected(&entry.path))
         .focused(focused)
         .highlight(highlight);
     if entry.excluded || cut {
         widget = widget.label_color(p.text_muted);
+    } else if let Some(color) = (!entry.is_dir
+        || app.vcs.status_of(&entry.path) == Some(crate::services::vcs::VcsStatus::Ignored))
+    .then(|| app.vcs_color(&p, &entry.path))
+    .flatten()
+    {
+        // Git status colors the name (RF-NAV-25).
+        widget = widget.label_color(color);
+    } else if entry.is_dir && app.vcs.dir_changed(&entry.path) {
+        // Folders with changed files (RF-NAV-26).
+        widget = widget.label_color(p.git_modified);
     }
     // Dependency roots read as libraries (RF-NAV-01).
     let library = entry.is_dir
@@ -453,6 +694,12 @@ fn draw_row(
                 "{}% lines covered",
                 (file.percent_tenths() + 5) / 10
             ));
+        }
+    }
+    if app.settings.tree_file_details && !entry.is_dir {
+        let details = file_details(entry.size, entry.modified);
+        if !details.is_empty() {
+            widget = widget.detail(details);
         }
     }
     if row.loading {
@@ -597,6 +844,47 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
     item(actions, ui, "Rename…", "Shift+F6", single, Action::Rename);
     item(actions, ui, "Delete…", "Delete", true, Action::Delete);
     menu_separator(ui);
+    if is_dir && single {
+        if let Some(dir) = app.tree.lead.clone() {
+            item(
+                actions,
+                ui,
+                "Find in Files…",
+                "Ctrl+Shift+F",
+                true,
+                Action::FindIn(dir.clone(), false),
+            );
+            item(
+                actions,
+                ui,
+                "Replace in Files…",
+                "Ctrl+Shift+R",
+                true,
+                Action::FindIn(dir, true),
+            );
+            menu_separator(ui);
+        }
+    }
+    // Mark Directory as (RF-NAV-19).
+    if is_dir && single {
+        if let Some(dir) = app.tree.lead.clone() {
+            let current = app.project_marks.mark_of(&dir);
+            ui.menu_button("Mark Directory as", |ui| {
+                ui.set_min_width(200.0);
+                use crate::project_marks::Mark;
+                for mark in [Mark::Sources, Mark::Tests, Mark::Excluded] {
+                    if menu_item(ui, None, mark.label(), "", current != Some(mark)).clicked() {
+                        actions.push(Action::Mark(dir.clone(), Some(mark)));
+                        ui.close();
+                    }
+                }
+                if current.is_some() && menu_item(ui, None, "Unmark", "", true).clicked() {
+                    actions.push(Action::Mark(dir.clone(), None));
+                    ui.close();
+                }
+            });
+        }
+    }
     if !is_dir {
         item(
             actions,
@@ -779,6 +1067,14 @@ fn keyboard(app: &mut PhpIdeApp, ui: &mut egui::Ui, rows: &[TreeRow], actions: &
     let mut moved: Option<(usize, bool)> = None;
     for event in events {
         match event {
+            egui::Event::Text(text) if text == " " && app.tree.speed.is_none() => {
+                // Space: quick preview of the file (RF-NAV-05).
+                if let Some(lead) = app.tree.lead.clone() {
+                    if rows.iter().any(|r| r.entry.path == lead && !r.entry.is_dir) {
+                        actions.push(Action::Preview(lead));
+                    }
+                }
+            }
             egui::Event::Text(text) => {
                 let query = app.tree.speed.get_or_insert_with(String::new);
                 query.push_str(&text);
@@ -845,16 +1141,17 @@ fn keyboard(app: &mut PhpIdeApp, ui: &mut egui::Ui, rows: &[TreeRow], actions: &
                     }
                     egui::Key::ArrowRight => {
                         if let Some(row) = lead_index.map(|i| &rows[i]) {
-                            if row.entry.is_dir && !row.expanded {
+                            let parent = row.entry.is_dir || row.nested > 0;
+                            if parent && !row.expanded {
                                 actions.push(Action::Toggle(row.entry.path.clone()));
-                            } else if row.entry.is_dir && current + 1 < rows.len() {
+                            } else if parent && current + 1 < rows.len() {
                                 moved = Some((current + 1, false));
                             }
                         }
                     }
                     egui::Key::ArrowLeft => {
                         if let Some(row) = lead_index.map(|i| &rows[i]) {
-                            if row.entry.is_dir && row.expanded {
+                            if (row.entry.is_dir || row.nested > 0) && row.expanded {
                                 actions.push(Action::Toggle(row.entry.path.clone()));
                             } else if let Some(parent) =
                                 (0..current).rev().find(|&i| rows[i].depth + 1 == row.depth)
@@ -1083,6 +1380,31 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: Action) {
             }
         }
         Action::Detach(root) => app.detach_project(&root),
+        Action::Mark(dir, mark) => {
+            app.project_marks.set(&dir, mark);
+            let root = app.ws.root.clone();
+            match app.project_marks.save(&root) {
+                Ok(()) => {
+                    app.ws.message = match mark {
+                        Some(mark) => format!("Marked {} as {}", dir.display(), mark.label()),
+                        None => format!("Unmarked {}", dir.display()),
+                    }
+                }
+                Err(e) => app.ws.message = format!("Could not save the folder marks: {e}"),
+            }
+            let excluded = app.project_marks.excluded.clone();
+            app.files.set_excluded_dirs(excluded);
+            app.files.refresh(&app.jobs, ctx);
+        }
+        Action::FindIn(dir, replace) => app.find_in_files(Some(dir), replace),
+        Action::Preview(path) => {
+            let open = app.tree.preview.as_ref().is_some_and(|p| p.path == path);
+            app.tree.preview = if open {
+                None
+            } else {
+                Some(crate::quick_preview::Preview::load(&app.jobs, ctx, path))
+            };
+        }
         Action::SelectOpened => {
             app.tw.set_visible(ToolWindow::Project, true);
             follow_active_file(app, ctx, true);
@@ -1140,6 +1462,63 @@ fn paste(app: &mut PhpIdeApp, ctx: &egui::Context, root: &Path) {
 }
 
 fn dialogs(app: &mut PhpIdeApp, ctx: &egui::Context) {
+    if let Some(text) = app.tree.nesting_editor.as_mut() {
+        let p = crate::design::current(ctx).palette;
+        let mut save = false;
+        let mut cancel = false;
+        let id = egui::Id::new("nesting-rules");
+        egui::Modal::new(id)
+            .area(egui::Modal::default_area(id).fixed_pos(ctx.content_rect().center() - egui::vec2(240.0, 180.0)))
+            .backdrop_color(p.shadow)
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                Dialog::frame(ui).show(ui, |ui| {
+                    ui.set_width(480.0);
+                    ui.label(egui::RichText::new("File Nesting Rules").strong());
+                    ui.label(
+                        egui::RichText::new(
+                            "One rule per line: parent=child,child. A parent starting with a dot is a suffix (.ts=.js nests x.js under x.ts); otherwise a file name (composer.json=composer.lock).",
+                        )
+                        .small()
+                        .color(p.text_secondary),
+                    );
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .id_salt("nesting-rules-text")
+                            .code_editor()
+                            .desired_rows(10)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "File nesting rules"));
+                    ui.horizontal(|ui| {
+                        if Button::primary("Save").show(ui).clicked() {
+                            save = true;
+                        }
+                        if Button::new("Cancel").show(ui).clicked() {
+                            cancel = true;
+                        }
+                        if Button::new("Reset to Defaults").show(ui).clicked() {
+                            *text = crate::settings::default_nesting_rules().join("\n");
+                        }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel = true;
+                    }
+                });
+            });
+        if save {
+            let text = app.tree.nesting_editor.take().unwrap_or_default();
+            app.settings.nesting_rules = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| crate::services::files::NestRule::parse(l).is_some())
+                .map(str::to_string)
+                .collect();
+            app.persist_settings();
+        } else if cancel {
+            app.tree.nesting_editor = None;
+        }
+    }
     let Some(dialog) = app.tree.dialog.take() else {
         return;
     };

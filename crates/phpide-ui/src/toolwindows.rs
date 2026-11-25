@@ -168,7 +168,10 @@ impl ToolWindow {
 
     pub fn anchor(self) -> Anchor {
         match self {
-            ToolWindow::Project | ToolWindow::Bookmarks | ToolWindow::Services => Anchor::Left,
+            ToolWindow::Project
+            | ToolWindow::Bookmarks
+            | ToolWindow::Services
+            | ToolWindow::Commit => Anchor::Left,
             ToolWindow::Structure | ToolWindow::RemoteHost => Anchor::Right,
             _ => Anchor::Bottom,
         }

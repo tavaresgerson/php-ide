@@ -347,8 +347,18 @@ mod tests {
                 .trim()
                 .parse()
                 .unwrap();
-            // kill(-0, pid) falha com ESRCH se o processo não existe.
-            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            // kill(-0, pid) falha com ESRCH se o processo não existe. Um
+            // zumbi (morto, esperando o init recolher) ainda responde; sem
+            // um init que recolha órfãos (contêineres) ele fica assim, e
+            // conta como encerrado.
+            let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    stat.rsplit_once(')')
+                        .map(|(_, rest)| rest.trim_start().starts_with('Z'))
+                })
+                .unwrap_or(false);
+            let alive = unsafe { libc::kill(pid, 0) } == 0 && !zombie;
             assert!(!alive, "processo-filho (neto) também encerrado");
             let _ = std::fs::remove_file(&marker);
         }

@@ -22,6 +22,8 @@ phpide-icons = { path = "../phpide-icons" }
 phpide-php = { path = "../phpide-php" }
 phpide-syntax = { path = "../phpide-syntax" }
 phpide-term = { path = "../phpide-term" }
+# Project icons (.phpide/icon.png); already in the tree through eframe.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 # Features frozen until v1.0 (Database Tools, frontend language servers,

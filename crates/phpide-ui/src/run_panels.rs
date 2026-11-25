@@ -600,7 +600,7 @@ pub fn debug_panel(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             if !app.rd.status.is_active() && app.rd.frames.is_empty() {
                 crate::design::components::EmptyState::new(IconId::Debug, "No debug session")
                     .description(
-                        "Shift+F9 debugs the selected configuration. Xdebug connects to port 9003 with the IDE key phpide.",
+                        format!("Shift+F9 debugs the selected configuration. Xdebug connects to port {} with the IDE key phpide.", crate::run_debug::RunDebugState::debug_port()),
                     )
                     .show(ui);
                 return;

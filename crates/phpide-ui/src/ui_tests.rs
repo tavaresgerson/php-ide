@@ -484,7 +484,7 @@ fn tabs_open_beside_the_active_one_switch_with_alt_arrows_and_reopen() {
     assert!(!harness.state().ws.active_buffer().unwrap().preview);
 }
 
-fn home_harness(root: &Path, recents: Vec<String>) -> Harness<'static, PhpIdeApp> {
+pub(crate) fn home_harness(root: &Path, recents: Vec<String>) -> Harness<'static, PhpIdeApp> {
     let root = root.to_path_buf();
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))

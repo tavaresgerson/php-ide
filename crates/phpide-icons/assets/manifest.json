@@ -480,6 +480,26 @@
       "name": "expand-all",
       "tabler": "unfold",
       "file": "assets/expand-all.svg"
+    },
+    {
+      "name": "diff",
+      "tabler": "git-compare",
+      "file": "assets/diff.svg"
+    },
+    {
+      "name": "merge",
+      "tabler": "git-merge",
+      "file": "assets/merge.svg"
+    },
+    {
+      "name": "push",
+      "tabler": "arrow-up",
+      "file": "assets/push.svg"
+    },
+    {
+      "name": "update",
+      "tabler": "arrow-down",
+      "file": "assets/update.svg"
     }
   ]
 }

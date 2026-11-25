@@ -28,6 +28,8 @@ enum Tab {
 
 /// Sub-folders of a directory: `(path, looks like a project)`.
 type Folders = Vec<(PathBuf, bool)>;
+/// Whether each Home project exists, and its icon.
+type ProjectChecks = Vec<(bool, Option<egui::ColorImage>)>;
 
 pub struct WelcomeState {
     tab: Tab,
@@ -51,10 +53,24 @@ pub struct WelcomeState {
     /// Sub-folders of `browser_dir`: `(path, looks like a project)`.
     listing: Option<(PathBuf, Folders)>,
     listing_job: Option<(PathBuf, JobHandle<Folders>)>,
-    /// Whether each recent project still exists, in settings order.
+    /// Whether each Home project still exists, in [`home_paths`] order.
     recent_exists: Option<(Vec<String>, Vec<bool>)>,
-    recent_job: Option<(Vec<String>, JobHandle<Vec<bool>>)>,
+    recent_job: Option<(Vec<String>, JobHandle<ProjectChecks>)>,
+    /// Project icons (`.phpide/icon.png`) by project path (RF-PRJ-07).
+    icons: std::collections::HashMap<String, egui::TextureHandle>,
+    /// Collapsed project groups, by name (RF-PRJ-06).
+    collapsed: std::collections::HashSet<String>,
+    /// Group being created or renamed, and the name typed.
+    group_edit: Option<GroupEdit>,
+    group_name: String,
     clone_job: Option<(String, JobHandle<PathBuf>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroupEdit {
+    /// A new group; the project to move into it, if any.
+    New(Option<String>),
+    Rename(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +109,10 @@ impl WelcomeState {
             listing_job: None,
             recent_exists: None,
             recent_job: None,
+            icons: Default::default(),
+            collapsed: Default::default(),
+            group_edit: None,
+            group_name: String::new(),
             clone_job: None,
         }
     }
@@ -131,22 +151,45 @@ fn poll_jobs(app: &mut PhpIdeApp, ctx: &egui::Context) -> Option<PathBuf> {
         }
     }
 
-    let recents = app.settings.recent_projects.clone();
+    let recents = home_paths(&app.settings);
     let recent_current = matches!(&state.recent_exists, Some((r, _)) if r == &recents);
     let recent_pending = matches!(&state.recent_job, Some((r, _)) if r == &recents);
     if !recent_current && !recent_pending {
         let paths = recents.clone();
         let ctx = ctx.clone();
         let job = app.jobs.spawn(move |_| {
-            let exists = paths.iter().map(|p| Path::new(p).is_dir()).collect();
+            let found = paths
+                .iter()
+                .map(|p| {
+                    let root = Path::new(p);
+                    (root.is_dir(), project_icon(root))
+                })
+                .collect();
             ctx.request_repaint();
-            Ok(exists)
+            Ok(found)
         });
         state.recent_job = Some((recents, job));
     }
     if let Some((paths, job)) = &mut state.recent_job {
         if let Some(outcome) = job.poll() {
-            if let JobOutcome::Ok(exists) = outcome {
+            if let JobOutcome::Ok(found) = outcome {
+                let mut exists = Vec::with_capacity(found.len());
+                for (path, (is_dir, icon)) in paths.iter().zip(found) {
+                    exists.push(is_dir);
+                    match icon {
+                        Some(image) => {
+                            let texture = ctx.load_texture(
+                                format!("project-icon:{path}"),
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            state.icons.insert(path.clone(), texture);
+                        }
+                        None => {
+                            state.icons.remove(path);
+                        }
+                    }
+                }
                 state.recent_exists = Some((paths.clone(), exists));
             }
             state.recent_job = None;
@@ -251,6 +294,23 @@ pub fn welcome_screen(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         });
     });
     dialogs(app, &ctx);
+    group_dialog(app, &ctx);
+}
+
+/// Where new projects and clones go: the default project directory of
+/// System Settings, else the home folder (RF-PRJ-14).
+pub(crate) fn default_location(settings: &crate::settings::Settings) -> PathBuf {
+    let configured = settings.projects_dir.trim();
+    if !configured.is_empty() {
+        return PathBuf::from(configured);
+    }
+    std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+fn use_default_location(app: &mut PhpIdeApp) {
+    let dir = default_location(&app.settings);
+    app.welcome.path_input = dir.display().to_string();
+    app.welcome.browser_dir = dir;
 }
 
 /// Starts the native folder chooser, or the built-in browser when the
@@ -260,6 +320,9 @@ fn pick_folder(app: &mut PhpIdeApp, ctx: &egui::Context, purpose: PickFor) {
         return;
     }
     let start = match purpose {
+        PickFor::Open if !app.settings.projects_dir.trim().is_empty() => {
+            PathBuf::from(app.settings.projects_dir.trim())
+        }
         PickFor::Open => app
             .settings
             .recent_projects
@@ -415,10 +478,12 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         if Button::new("Get from VCS").show(ui).clicked() {
             app.welcome.err.clear();
+            use_default_location(app);
             app.welcome.dialog = Some(HomeDialog::Vcs);
         }
         if Button::new("New Project").show(ui).clicked() {
             app.welcome.err.clear();
+            use_default_location(app);
             app.welcome.dialog = Some(HomeDialog::NewProject);
         }
         let picking = app.welcome.picker.is_some();
@@ -437,59 +502,122 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         ui.add_space(8.0);
     }
 
-    let recents = app.settings.recent_projects.clone();
+    let paths = home_paths(&app.settings);
     let exists_flags = app
         .welcome
         .recent_exists
         .as_ref()
-        .filter(|(paths, _)| paths == &recents)
+        .filter(|(known, _)| known == &paths)
         .map(|(_, flags)| flags.clone());
+    let exists_of = |path: &str| {
+        exists_flags
+            .as_ref()
+            .and_then(|flags| {
+                paths
+                    .iter()
+                    .position(|p| p == path)
+                    .and_then(|i| flags.get(i))
+            })
+            .copied()
+            .unwrap_or(true)
+    };
     let query = app.welcome.search.trim().to_lowercase();
-    let shown: Vec<(usize, &String)> = recents
-        .iter()
-        .enumerate()
-        .filter(|(_, path)| query.is_empty() || path.to_lowercase().contains(&query))
-        .collect();
-    if recents.is_empty() {
+    let matches = |path: &String| query.is_empty() || path.to_lowercase().contains(&query);
+    if paths.is_empty() && app.settings.project_groups.is_empty() {
         crate::design::components::EmptyState::new(IconId::Folder, "No recent projects")
             .description("Open a folder or drop it on this window to start.")
             .show(ui);
         return;
     }
-    if shown.is_empty() {
+    // Rows in screen order: each group's header then its projects, then
+    // the projects in no group. Searching shows every group open.
+    let mut rows: Vec<HomeRow> = Vec::new();
+    for (g, (name, items)) in app.settings.project_groups.iter().enumerate() {
+        let shown: Vec<&String> = items.iter().filter(|p| matches(p)).collect();
+        if !query.is_empty() && shown.is_empty() {
+            continue;
+        }
+        rows.push(HomeRow::Group(g));
+        if query.is_empty() && app.welcome.collapsed.contains(name) {
+            continue;
+        }
+        rows.extend(
+            shown
+                .into_iter()
+                .map(|p| HomeRow::Project(p.clone(), Some(g))),
+        );
+    }
+    for path in &app.settings.recent_projects {
+        if app.settings.group_of(path).is_none() && matches(path) {
+            rows.push(HomeRow::Project(path.clone(), None));
+        }
+    }
+    let project_count = rows
+        .iter()
+        .filter(|r| matches!(r, HomeRow::Project(..)))
+        .count();
+    if project_count == 0 && !query.is_empty() {
         ui.weak("No project matches the search.");
         return;
     }
-    let keyboard = app.welcome.dialog.is_none() && app.open_prompt.is_none();
-    if keyboard {
+    let keyboard = app.welcome.dialog.is_none()
+        && app.open_prompt.is_none()
+        && app.welcome.group_edit.is_none();
+    if keyboard && project_count > 0 {
         ui.input(|i| {
             if i.key_pressed(egui::Key::ArrowDown) {
-                app.welcome.selected = (app.welcome.selected + 1).min(shown.len() - 1);
+                app.welcome.selected = (app.welcome.selected + 1).min(project_count - 1);
             }
             if i.key_pressed(egui::Key::ArrowUp) {
                 app.welcome.selected = app.welcome.selected.saturating_sub(1);
             }
         });
     }
-    app.welcome.selected = app.welcome.selected.min(shown.len() - 1);
+    app.welcome.selected = app.welcome.selected.min(project_count.saturating_sub(1));
     let enter = keyboard && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let groups: Vec<String> = app
+        .settings
+        .project_groups
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect();
     let mut action: Option<RecentAction> = None;
-    for (row, (i, path)) in shown.into_iter().enumerate() {
-        let exists = exists_flags
-            .as_ref()
-            .and_then(|flags| flags.get(i).copied())
-            .unwrap_or(true);
-        let name = Path::new(path)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.clone());
-        let current = app.project_open && Path::new(path) == app.ws.root;
-        let selected = row == app.welcome.selected;
-        if let Some(a) = recent_row(ui, path, &name, exists, current, selected) {
-            action = Some(a);
-        }
-        if selected && enter && exists {
-            action = Some(RecentAction::Open(path.clone()));
+    let mut project_row = 0;
+    for row in rows {
+        match row {
+            HomeRow::Group(g) => {
+                let (name, items) = &app.settings.project_groups[g];
+                let open = !query.is_empty() || !app.welcome.collapsed.contains(name);
+                if let Some(a) = group_row(ui, g, name, items.len(), open) {
+                    action = Some(a);
+                }
+            }
+            HomeRow::Project(path, group) => {
+                let exists = exists_of(&path);
+                let name = Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                let current = app.project_open && Path::new(&path) == app.ws.root;
+                let selected = project_row == app.welcome.selected;
+                let row = RecentRow {
+                    path: &path,
+                    name: &name,
+                    exists,
+                    current,
+                    selected,
+                    group,
+                    groups: &groups,
+                    icon: app.welcome.icons.get(&path),
+                };
+                if let Some(a) = recent_row(ui, row) {
+                    action = Some(a);
+                }
+                if selected && enter && exists {
+                    action = Some(RecentAction::Open(path.clone()));
+                }
+                project_row += 1;
+            }
         }
     }
     match action {
@@ -505,7 +633,236 @@ fn projects_tab(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 app.welcome.err = e;
             }
         }
+        Some(RecentAction::MoveTo(path, group)) => {
+            app.settings.set_project_group(&path, group);
+            app.persist_settings();
+        }
+        Some(RecentAction::NewGroup(path)) => {
+            app.welcome.group_name = String::new();
+            app.welcome.group_edit = Some(GroupEdit::New(path));
+        }
+        Some(RecentAction::RenameGroup(g)) => {
+            app.welcome.group_name = app.settings.project_groups[g].0.clone();
+            app.welcome.group_edit = Some(GroupEdit::Rename(g));
+        }
+        Some(RecentAction::RemoveGroup(g)) => {
+            app.settings.remove_project_group(g);
+            app.persist_settings();
+        }
+        Some(RecentAction::ToggleGroup(g)) => {
+            let name = app.settings.project_groups[g].0.clone();
+            if !app.welcome.collapsed.remove(&name) {
+                app.welcome.collapsed.insert(name);
+            }
+        }
         None => {}
+    }
+}
+
+/// Projects shown on Home: every grouped one, then the recent ones in no
+/// group (the order the existence check runs in).
+fn home_paths(settings: &crate::settings::Settings) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for (_, items) in &settings.project_groups {
+        for path in items {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+    }
+    for path in &settings.recent_projects {
+        if !paths.contains(path) {
+            paths.push(path.clone());
+        }
+    }
+    paths
+}
+
+/// The project's own icon: `.phpide/icon.png`, or PhpStorm's
+/// `.idea/icon.png`, scaled to at most 64 px (RF-PRJ-07).
+pub(crate) fn project_icon(root: &Path) -> Option<egui::ColorImage> {
+    for rel in [".phpide/icon.png", ".idea/icon.png"] {
+        let file = root.join(rel);
+        let too_big = std::fs::metadata(&file).map_or(true, |m| m.len() > 1 << 20);
+        if too_big {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(image) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png) else {
+            continue;
+        };
+        let image = if image.width() > 64 || image.height() > 64 {
+            image.resize(64, 64, image::imageops::FilterType::Triangle)
+        } else {
+            image
+        };
+        let rgba = image.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        return Some(egui::ColorImage::from_rgba_unmultiplied(
+            size,
+            rgba.as_raw(),
+        ));
+    }
+    None
+}
+
+/// Two letters for a project's avatar: the first letters of the first two
+/// words of its name, or its first two letters.
+pub(crate) fn initials(name: &str) -> String {
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let letters: String = match words.as_slice() {
+        [] => "?".to_string(),
+        [one] => one.chars().take(2).collect(),
+        [first, second, ..] => first
+            .chars()
+            .take(1)
+            .chain(second.chars().take(1))
+            .collect(),
+    };
+    letters.to_uppercase()
+}
+
+/// Avatar colour of a project, stable for its name.
+fn avatar_color(name: &str) -> egui::Color32 {
+    let hash = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    let colors = crate::design::tokens::PROJECT_AVATARS;
+    colors[hash as usize % colors.len()]
+}
+
+enum HomeRow {
+    Group(usize),
+    Project(String, Option<usize>),
+}
+
+/// A group header: chevron, name and count; click folds it (RF-PRJ-06).
+fn group_row(
+    ui: &mut egui::Ui,
+    group: usize,
+    name: &str,
+    count: usize,
+    open: bool,
+) -> Option<RecentAction> {
+    let p = crate::design::current(ui.ctx()).palette;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::CollapsingHeader,
+            true,
+            format!("Group {name}"),
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        if response.hovered() || response.has_focus() {
+            ui.painter().rect_filled(rect, 6.0, p.bg_hover);
+        }
+        let chevron = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 14.0, rect.center().y),
+            egui::vec2(14.0, 14.0),
+        );
+        crate::design::components::paint_icon(
+            ui.painter(),
+            chevron,
+            if open {
+                IconId::ChevronDown
+            } else {
+                IconId::ChevronRight
+            },
+            p.text_secondary,
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 28.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{name}  ({count})"),
+            egui::FontId::proportional(13.0),
+            p.text_secondary,
+        );
+    }
+    let mut action = None;
+    if response.clicked() {
+        action = Some(RecentAction::ToggleGroup(group));
+    }
+    response.context_menu(|ui| {
+        ui.set_min_width(200.0);
+        if menu_item(ui, None, "Rename Group…", "", true).clicked() {
+            action = Some(RecentAction::RenameGroup(group));
+            ui.close();
+        }
+        if menu_item(ui, None, "Remove Group", "", true).clicked() {
+            action = Some(RecentAction::RemoveGroup(group));
+            ui.close();
+        }
+        menu_separator(ui);
+        if menu_item(ui, None, "New Project Group…", "", true).clicked() {
+            action = Some(RecentAction::NewGroup(None));
+            ui.close();
+        }
+    });
+    action
+}
+
+/// The group name dialog (new group or rename).
+fn group_dialog(app: &mut PhpIdeApp, ctx: &egui::Context) {
+    let Some(edit) = app.welcome.group_edit.clone() else {
+        return;
+    };
+    let title = match edit {
+        GroupEdit::New(_) => "New Project Group",
+        GroupEdit::Rename(_) => "Rename Project Group",
+    };
+    let mut ok = false;
+    let mut enter = false;
+    let mut cancel = false;
+    let shown = Dialog::new("home-group", title).width(360.0).show(
+        ctx,
+        |ui| {
+            ui.label("Name");
+            let field = TextInput::new(&mut app.welcome.group_name)
+                .id_salt("home-group-name")
+                .show(ui);
+            if !field.has_focus() && app.welcome.group_name.is_empty() {
+                field.request_focus();
+            }
+            if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                enter = true;
+            }
+        },
+        |ui| {
+            if Button::primary("OK").show(ui).clicked() {
+                ok = true;
+            }
+            if Button::new("Cancel").show(ui).clicked() {
+                cancel = true;
+            }
+        },
+    );
+    let name = app.welcome.group_name.trim().to_string();
+    if (ok || enter) && !name.is_empty() {
+        match edit {
+            GroupEdit::New(path) => {
+                let g = app.settings.add_project_group(&name);
+                if let Some(path) = path {
+                    app.settings.set_project_group(&path, Some(g));
+                }
+            }
+            GroupEdit::Rename(g) => {
+                let taken = app.settings.project_groups.iter().any(|(n, _)| n == &name);
+                if let (false, Some((old, _))) = (taken, app.settings.project_groups.get_mut(g)) {
+                    *old = name;
+                }
+            }
+        }
+        app.persist_settings();
+        app.welcome.group_edit = None;
+    } else if cancel || shown.dismissed {
+        app.welcome.group_edit = None;
     }
 }
 
@@ -515,18 +872,37 @@ enum RecentAction {
     Remove(String),
     Copy(String),
     ShowInFiles(String),
+    MoveTo(String, Option<usize>),
+    NewGroup(Option<String>),
+    RenameGroup(usize),
+    RemoveGroup(usize),
+    ToggleGroup(usize),
+}
+
+struct RecentRow<'a> {
+    path: &'a str,
+    name: &'a str,
+    exists: bool,
+    current: bool,
+    selected: bool,
+    group: Option<usize>,
+    groups: &'a [String],
+    icon: Option<&'a egui::TextureHandle>,
 }
 
 /// One recent project: name over its path, a remove button on hover and a
 /// context menu (RF-PRJ-03, RF-PRJ-05).
-fn recent_row(
-    ui: &mut egui::Ui,
-    path: &str,
-    name: &str,
-    exists: bool,
-    current: bool,
-    selected: bool,
-) -> Option<RecentAction> {
+fn recent_row(ui: &mut egui::Ui, row: RecentRow<'_>) -> Option<RecentAction> {
+    let RecentRow {
+        path,
+        name,
+        exists,
+        current,
+        selected,
+        group,
+        groups,
+        icon,
+    } = row;
     let theme = crate::design::current(ui.ctx());
     let p = theme.palette;
     let height = 44.0;
@@ -560,21 +936,36 @@ fn recent_row(
         } else if hovered {
             ui.painter().rect_filled(rect, 6.0, p.bg_hover);
         }
+        // The project's icon, else its initials (RF-PRJ-07).
+        let indent = if group.is_some() { 16.0 } else { 0.0 };
         let icon_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 22.0, rect.center().y),
-            egui::vec2(20.0, 20.0),
+            egui::pos2(rect.left() + indent + 22.0, rect.center().y),
+            egui::vec2(28.0, 28.0),
         );
-        crate::design::components::paint_icon(
-            ui.painter(),
-            icon_rect,
-            if exists {
-                IconId::Project
-            } else {
-                IconId::Warning
-            },
-            if exists { p.accent } else { p.warning },
-        );
-        let x = rect.left() + 44.0;
+        match icon {
+            _ if !exists => crate::design::components::paint_icon(
+                ui.painter(),
+                icon_rect.shrink(4.0),
+                IconId::Warning,
+                p.warning,
+            ),
+            Some(texture) => {
+                egui::Image::new(texture)
+                    .corner_radius(6.0)
+                    .paint_at(ui, icon_rect);
+            }
+            None => {
+                ui.painter().rect_filled(icon_rect, 6.0, avatar_color(name));
+                ui.painter().text(
+                    icon_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    initials(name),
+                    egui::FontId::proportional(12.0),
+                    crate::design::tokens::PROJECT_AVATAR_TEXT,
+                );
+            }
+        }
+        let x = rect.left() + indent + 46.0;
         let title = if current {
             format!("{name}  (open)")
         } else if exists {
@@ -631,6 +1022,27 @@ fn recent_row(
         }
         if menu_item(ui, None, "Copy Path", "", true).clicked() {
             action = Some(RecentAction::Copy(path.to_string()));
+            ui.close();
+        }
+        menu_separator(ui);
+        ui.menu_button("Move to Group", |ui| {
+            ui.set_min_width(200.0);
+            for (g, group_name) in groups.iter().enumerate() {
+                if menu_item(ui, None, group_name, "", group != Some(g)).clicked() {
+                    action = Some(RecentAction::MoveTo(path.to_string(), Some(g)));
+                    ui.close();
+                }
+            }
+            if !groups.is_empty() {
+                menu_separator(ui);
+            }
+            if menu_item(ui, None, "New Project Group…", "", true).clicked() {
+                action = Some(RecentAction::NewGroup(Some(path.to_string())));
+                ui.close();
+            }
+        });
+        if group.is_some() && menu_item(ui, None, "Remove from Group", "", true).clicked() {
+            action = Some(RecentAction::MoveTo(path.to_string(), None));
             ui.close();
         }
         menu_separator(ui);
@@ -1092,6 +1504,17 @@ fn create_project(dir: &std::path::Path) -> std::io::Result<()> {
     )?;
     std::fs::write(dir.join(".gitignore"), "/vendor/\n/.idea/\n")?;
     Ok(())
+}
+
+#[cfg(test)]
+impl PhpIdeApp {
+    pub(crate) fn welcome_icon(&self, path: &str) -> bool {
+        self.welcome.icons.contains_key(path)
+    }
+
+    pub(crate) fn welcome_location(&self) -> String {
+        self.welcome.path_input.clone()
+    }
 }
 
 #[cfg(test)]

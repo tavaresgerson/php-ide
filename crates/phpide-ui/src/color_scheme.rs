@@ -204,6 +204,172 @@ impl<'a> SchemeChanges<'a> {
     }
 }
 
+// Named schemes (RF-HL-12). A scheme is built on one theme; the theme's
+// own scheme is keyed by the theme name. Duplicates live next to it:
+// `"_schemes": { "<name>": "<base theme>" }`, and the scheme each theme
+// uses is `"_active": { "<theme>": "<name>" }`.
+const SCHEMES: &str = "_schemes";
+const ACTIVE: &str = "_active";
+/// Format tag of an exported scheme file.
+pub const EXPORT_FORMAT: &str = "phpide-color-scheme";
+
+fn object<'a>(value: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
+    if !value.is_object() {
+        *value = Value::Object(Map::new());
+    }
+    let entry = value
+        .as_object_mut()
+        .expect("object")
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !entry.is_object() {
+        *entry = Value::Object(Map::new());
+    }
+    entry.as_object_mut().expect("object")
+}
+
+/// The user's own schemes: `(name, base theme name)`, sorted by name.
+pub fn custom_schemes(value: &Value) -> Vec<(String, String)> {
+    let mut list: Vec<(String, String)> = value[SCHEMES]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter_map(|(name, base)| Some((name.clone(), base.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    list.sort();
+    list
+}
+
+/// Key of the scheme `theme` uses: one of the user's built on it, or the
+/// theme's own.
+pub fn active_scheme(value: &Value, theme: &str) -> String {
+    let chosen = value[ACTIVE][theme].as_str().unwrap_or(theme);
+    if value[SCHEMES][chosen].as_str() == Some(theme) {
+        chosen.to_string()
+    } else {
+        theme.to_string()
+    }
+}
+
+/// Uses `scheme` (built on `theme`) for that theme.
+pub fn set_active(value: &mut Value, theme: &str, scheme: &str) {
+    object(value, ACTIVE).insert(theme.to_string(), json!(scheme));
+}
+
+/// Why `name` cannot name a new scheme, if it cannot.
+pub fn invalid_name(value: &Value, name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Some("Enter a name");
+    }
+    if name.starts_with('_') {
+        return Some("A name cannot start with _");
+    }
+    let builtin = crate::design::ThemeId::ALL
+        .iter()
+        .any(|t| t.name().eq_ignore_ascii_case(name) || t.label().eq_ignore_ascii_case(name));
+    if builtin || value[SCHEMES].get(name).is_some() {
+        return Some("A scheme with this name exists");
+    }
+    None
+}
+
+/// Copies scheme `from` (a theme name or one of the user's) as `name`,
+/// built on `base`, and makes it the scheme of that theme.
+pub fn duplicate(value: &mut Value, from: &str, name: &str, base: &str) {
+    let changes = value[from].clone();
+    let changes = if changes.is_object() {
+        changes
+    } else {
+        json!({})
+    };
+    object(value, SCHEMES).insert(name.to_string(), json!(base));
+    value
+        .as_object_mut()
+        .expect("object")
+        .insert(name.to_string(), changes);
+    set_active(value, base, name);
+}
+
+pub fn rename(value: &mut Value, old: &str, new: &str) {
+    let Some(base) = value[SCHEMES][old].as_str().map(str::to_string) else {
+        return;
+    };
+    let changes = value
+        .as_object_mut()
+        .and_then(|m| m.remove(old))
+        .unwrap_or(json!({}));
+    object(value, SCHEMES).remove(old);
+    object(value, SCHEMES).insert(new.to_string(), json!(base));
+    value
+        .as_object_mut()
+        .expect("object")
+        .insert(new.to_string(), changes);
+    if value[ACTIVE][&base].as_str() == Some(old) {
+        set_active(value, &base, new);
+    }
+}
+
+/// Deletes one of the user's schemes; its theme goes back to its own.
+pub fn delete(value: &mut Value, name: &str) {
+    let base = value[SCHEMES][name].as_str().map(str::to_string);
+    object(value, SCHEMES).remove(name);
+    if let Some(map) = value.as_object_mut() {
+        map.remove(name);
+    }
+    if let Some(base) = base {
+        if value[ACTIVE][&base].as_str() == Some(name) {
+            object(value, ACTIVE).remove(&base);
+        }
+    }
+}
+
+/// A scheme as a file: its name, base theme and changes.
+pub fn export(value: &Value, key: &str, name: &str, base: &str) -> Value {
+    let changes = if value[key].is_object() {
+        value[key].clone()
+    } else {
+        json!({})
+    };
+    json!({ "format": EXPORT_FORMAT, "version": 1, "name": name, "base": base, "changes": changes })
+}
+
+/// Adds an exported scheme; a taken name gets a number. Returns the name
+/// and the base theme.
+pub fn import(value: &mut Value, file: &Value) -> Result<(String, String), String> {
+    if file["format"].as_str() != Some(EXPORT_FORMAT) {
+        return Err("not a PHP IDE color scheme file".to_string());
+    }
+    let base = file["base"].as_str().unwrap_or("dark");
+    let base = crate::design::ThemeId::from_name(base).name().to_string();
+    let wanted = file["name"].as_str().unwrap_or("Imported").trim();
+    let wanted = if wanted.is_empty() || wanted.starts_with('_') {
+        "Imported"
+    } else {
+        wanted
+    };
+    let mut name = wanted.to_string();
+    let mut n = 2;
+    while invalid_name(value, &name).is_some() {
+        name = format!("{wanted} ({n})");
+        n += 1;
+    }
+    let changes = if file["changes"].is_object() {
+        file["changes"].clone()
+    } else {
+        json!({})
+    };
+    object(value, SCHEMES).insert(name.clone(), json!(base));
+    value
+        .as_object_mut()
+        .expect("object")
+        .insert(name.clone(), changes);
+    set_active(value, &base, &name);
+    Ok((name, base))
+}
+
 /// The style of a language: the theme, then the user's Language Defaults,
 /// then the user's changes for that language.
 pub fn resolve(
@@ -213,7 +379,7 @@ pub fn resolve(
     language: Option<&str>,
 ) -> SyntaxStyle {
     let mut style = base.clone();
-    let scheme = &changes[theme];
+    let scheme = &changes[&active_scheme(changes, theme)];
     if !scheme.is_object() {
         return style;
     }
@@ -293,6 +459,45 @@ pub fn sample(language: &str) -> (&'static str, &'static str) {
 mod tests {
     use super::*;
     use eframe::egui::FontId;
+
+    #[test]
+    fn schemes_are_duplicated_renamed_exported_imported_and_deleted() {
+        let mut value = json!({});
+        SchemeChanges::new(&mut value, "dark").set(
+            DEFAULTS,
+            SyntaxRole::Keyword,
+            Some(Element {
+                foreground: Some(Color32::RED),
+                background: None,
+                bold: false,
+                italic: false,
+                effect: None,
+            }),
+        );
+        assert_eq!(active_scheme(&value, "dark"), "dark");
+        assert!(invalid_name(&value, "Dark").is_some());
+        duplicate(&mut value, "dark", "Mine", "dark");
+        assert_eq!(active_scheme(&value, "dark"), "Mine");
+        assert_eq!(custom_schemes(&value), vec![("Mine".into(), "dark".into())]);
+        // The copy starts with the theme's changes and changes on its own.
+        SchemeChanges::new(&mut value, "Mine").set(DEFAULTS, SyntaxRole::Keyword, None);
+        assert!(SchemeChanges::new(&mut value, "dark")
+            .get(DEFAULTS, SyntaxRole::Keyword)
+            .is_some());
+        rename(&mut value, "Mine", "Ours");
+        assert_eq!(active_scheme(&value, "dark"), "Ours");
+        let file = export(&value, "Ours", "Ours", "dark");
+        let (name, base) = import(&mut value, &file).unwrap();
+        assert_eq!((name.as_str(), base.as_str()), ("Ours (2)", "dark"));
+        assert_eq!(active_scheme(&value, "dark"), "Ours (2)");
+        assert!(import(&mut value, &json!({"name": "x"})).is_err());
+        delete(&mut value, "Ours (2)");
+        assert_eq!(active_scheme(&value, "dark"), "dark");
+        assert_eq!(custom_schemes(&value).len(), 1);
+        // A scheme does not leak into a theme it is not built on.
+        set_active(&mut value, "light", "Ours");
+        assert_eq!(active_scheme(&value, "light"), "light");
+    }
 
     #[test]
     fn languages_inherit_defaults_and_override_them() {

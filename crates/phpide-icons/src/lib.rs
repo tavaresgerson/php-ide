@@ -95,6 +95,10 @@ icons! {
     Structure => "structure", "list-tree", "Structure";
     Commit => "commit", "git-commit", "Commit";
     VersionControl => "version-control", "git-pull-request", "Version control";
+    Diff => "diff", "git-compare", "Show diff";
+    Merge => "merge", "git-merge", "Merge";
+    Push => "push", "arrow-up", "Push";
+    Update => "update", "arrow-down", "Update project";
     Services => "services", "server", "Services";
     Database => "database", "database", "Database";
     Notifications => "notifications", "bell", "Notifications";

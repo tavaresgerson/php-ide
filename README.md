@@ -3,15 +3,37 @@
 A PHP-focused IDE written in Rust for Linux (X11/Wayland). Free and open
 source under MIT OR Apache-2.0, with no proprietary components.
 
-> **Status: pre-1.0, usable for daily PHP work.** The code editor was
-> rewritten (multi-cursor, incremental highlighting, folding, split,
-> find/replace; smooth on 50k-line files), the shell follows PhpStorm's
-> navigation, and PHP intelligence runs on intelephense or phpactor
-> (completion, documentation, parameter info, rename, quick fixes,
-> formatting). Run/debug/test tool windows and Git are reworked next.
-> Expect rough edges. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: release candidate for 1.0.** The code editor (multi-cursor,
+> incremental highlighting, folding, split, find/replace; smooth on
+> 50k-line files), PhpStorm's navigation and shortcuts, PHP intelligence on
+> intelephense or phpactor (completion, documentation, parameter info,
+> rename, quick fixes, formatting), run configurations, the Xdebug
+> debugger, PHPUnit with coverage, a real terminal and Git (commit with
+> hunk staging, side-by-side diff, branches, push/pull, log) are in. Unsaved
+> work survives a crash, every control is named for screen readers, and
+> there are .deb, AppImage and Flatpak packages. See
+> [docs/ROADMAP.md](docs/ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md).
 
-## Run
+## Install
+
+Packages are attached to each GitHub release (built by CI):
+
+```bash
+sudo apt install ./phpide_<version>_amd64.deb      # Debian, Ubuntu
+chmod +x PHP_IDE-<version>-x86_64.AppImage && ./PHP_IDE-<version>-x86_64.AppImage
+flatpak install --user PHP_IDE.flatpak              # see the note below
+```
+
+The IDE uses the PHP, Composer, Git and Node.js of your system. Inside the
+Flatpak sandbox it only sees the sandbox's tools (Git, no PHP) for now, so
+prefer the .deb or the AppImage for PHP work. To build the packages
+yourself, see [CONTRIBUTING.md](CONTRIBUTING.md#packages).
+
+Logs are in `~/.local/state/phpide/logs/` (Help › Show Log); a crash leaves
+a report in `~/.local/state/phpide/crashes/`, shown on the next start and
+never sent anywhere.
+
+## Run from source
 
 ```bash
 cargo run --release -p phpide-ui -- /path/to/php-project [files...]
@@ -65,7 +87,8 @@ through tree-sitter.
 | Ctrl+F12 | File Structure |
 | Ctrl+B | Go to definition |
 | Ctrl+F / Ctrl+R / F3 | Find / Replace / Find next in the editor |
-| Ctrl+Shift+F | Find in files |
+| Ctrl+Shift+F / Ctrl+Shift+R | Find in files / Replace in files (folder scope, file mask) |
+| Ctrl+Shift+E (twice: changed only) | Recent Locations |
 | F2 / Shift+F2 | Next / previous problem |
 | Ctrl+/ / Ctrl+D / Ctrl+Y | Comment line / Duplicate / Delete line |
 | Alt+Shift+↑/↓ | Move line up / down |
@@ -76,10 +99,15 @@ through tree-sitter.
 | Alt+F8 / Ctrl+Shift+F8 | Evaluate expression / View breakpoints (conditions) |
 | F9 | Toggle breakpoint (Resume while debugging) |
 | F7 / F8 / Shift+F8 | Step into / over / out |
+| Ctrl+K / Ctrl+Shift+K / Ctrl+T | Commit / Push / Update Project (Git) |
+| Ctrl+Shift+` / Ctrl+Alt+Z | Git branches / Rollback |
+| F7 / Shift+F7 (in a diff) | Next / previous change |
 | Alt+1…0, Alt+F12, F12 | Tool windows, Terminal (keeps the keys while focused), last tool window |
 | Alt+Insert / Shift+F6 / Delete | New / Rename / Delete in the Project view (typing searches) |
 | Ctrl+Shift+F12 / Shift+Esc | Hide all tool windows (maximize editor) / Hide active |
-| Ctrl+Alt+S | Settings |
+| Space (Project view) | Quick Preview |
+| Alt+Enter (in Find Action) | Assign a shortcut to the action |
+| Ctrl+Alt+S | Settings (Keymap: change any shortcut) |
 
 ## Documentation
 

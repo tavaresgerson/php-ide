@@ -77,7 +77,7 @@ mod tests {
                 }
                 let text = std::fs::read_to_string(&path).unwrap();
                 // Test modules may assert on literal colors.
-                let code = text.split("#[cfg(test)]").next().unwrap_or("");
+                let code = text.split("#[cfg(test)]\nmod ").next().unwrap_or("");
                 for (number, line) in code.lines().enumerate() {
                     if line.trim_start().starts_with("//") {
                         continue;

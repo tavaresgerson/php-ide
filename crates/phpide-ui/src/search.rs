@@ -40,9 +40,104 @@ pub fn is_searchable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Byte ranges of `needle` in `text`. Without case sensitivity an ASCII
+/// needle matches ASCII letters of any case; a non-ASCII needle matches
+/// case-insensitively only when lowercasing keeps the byte offsets.
+pub fn find_ranges(text: &str, needle: &str, case_sensitive: bool) -> Vec<std::ops::Range<usize>> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    if case_sensitive {
+        return text
+            .match_indices(needle)
+            .map(|(i, m)| i..i + m.len())
+            .collect();
+    }
+    if needle.is_ascii() {
+        let (hay, pat) = (text.as_bytes(), needle.as_bytes());
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + pat.len() <= hay.len() {
+            if hay[i..i + pat.len()].eq_ignore_ascii_case(pat) {
+                out.push(i..i + pat.len());
+                i += pat.len();
+            } else {
+                i += 1;
+            }
+        }
+        return out;
+    }
+    let lower = text.to_lowercase();
+    if lower.len() != text.len() {
+        return text
+            .match_indices(needle)
+            .map(|(i, m)| i..i + m.len())
+            .collect();
+    }
+    let needle = needle.to_lowercase();
+    lower
+        .match_indices(&needle)
+        .map(|(i, m)| i..i + m.len())
+        .filter(|r| text.is_char_boundary(r.start) && text.is_char_boundary(r.end))
+        .collect()
+}
+
+/// `text` with every match of `needle` replaced, and how many there were.
+pub fn replace_matches(
+    text: &str,
+    needle: &str,
+    with: &str,
+    case_sensitive: bool,
+) -> (String, usize) {
+    let ranges = find_ranges(text, needle, case_sensitive);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for r in &ranges {
+        out.push_str(&text[last..r.start]);
+        out.push_str(with);
+        last = r.end;
+    }
+    out.push_str(&text[last..]);
+    (out, ranges.len())
+}
+
+/// Whether a file name passes a file mask such as `*.php, *.twig`
+/// (empty: every file).
+pub fn mask_matches(name: &str, mask: &str) -> bool {
+    let patterns: Vec<&str> = mask
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if patterns.is_empty() {
+        return true;
+    }
+    patterns
+        .iter()
+        .any(|pattern| match pattern.split_once('*') {
+            Some((prefix, suffix)) => {
+                name.len() >= prefix.len() + suffix.len()
+                    && name.starts_with(prefix)
+                    && name.ends_with(suffix)
+            }
+            None => name == *pattern,
+        })
+}
+
 pub struct SearchState {
     pub query: String,
     pub case_sensitive: bool,
+    /// Replace in Files (RF-NAV-21).
+    pub replace_mode: bool,
+    pub replacement: String,
+    /// Folder to search in; empty searches the whole project.
+    pub directory: String,
+    /// File mask, e.g. `*.php` (empty: every searchable file).
+    pub mask: String,
+    /// Put the keyboard in the query field on the next frame.
+    pub focus_query: bool,
+    /// Replace All asked; waiting for the confirmation.
+    pub confirm_replace: bool,
     pub results: Vec<SearchHit>,
     pub status: String,
     rx: Option<Receiver<SearchMsg>>,
@@ -56,6 +151,12 @@ impl SearchState {
         SearchState {
             query: String::new(),
             case_sensitive: false,
+            replace_mode: false,
+            replacement: String::new(),
+            directory: String::new(),
+            mask: String::new(),
+            focus_query: false,
+            confirm_replace: false,
             results: Vec::new(),
             status: String::new(),
             rx: None,
@@ -95,11 +196,7 @@ impl SearchState {
         self.status = "buscando...".to_string();
         let (tx, rx) = channel();
         self.rx = Some(rx);
-        let needle = if self.case_sensitive {
-            self.query.clone()
-        } else {
-            self.query.to_lowercase()
-        };
+        let needle = self.query.clone();
         let case_sensitive = self.case_sensitive;
         let handle = system.spawn(move |ctx| {
             let mut searched = 0usize;
@@ -122,12 +219,7 @@ impl SearchState {
                 };
                 searched += 1;
                 for (i, raw) in text.lines().enumerate() {
-                    let hay = if case_sensitive {
-                        raw.to_string()
-                    } else {
-                        raw.to_lowercase()
-                    };
-                    if hay.contains(&needle) {
+                    if !find_ranges(raw, &needle, case_sensitive).is_empty() {
                         sent += 1;
                         let hit = SearchHit {
                             path: path.clone(),
@@ -195,6 +287,20 @@ impl SearchState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn matching_replacing_and_masks() {
+        assert_eq!(find_ranges("Foo foo FOO", "foo", false).len(), 3);
+        assert_eq!(find_ranges("Foo foo FOO", "foo", true), vec![4..7]);
+        assert_eq!(find_ranges("Ação ação", "ação", false).len(), 2);
+        let (out, n) = replace_matches("$user->name; $User", "user", "member", false);
+        assert_eq!((out.as_str(), n), ("$member->name; $member", 2));
+        assert!(mask_matches("App.php", "*.php"));
+        assert!(mask_matches("base.html.twig", "*.php, *.twig"));
+        assert!(!mask_matches("App.js", "*.php"));
+        assert!(mask_matches("composer.json", "composer.json"));
+        assert!(mask_matches("x", ""));
+    }
+
     use super::*;
 
     #[test]

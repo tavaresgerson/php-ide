@@ -23,6 +23,9 @@ pub struct Tab {
     closable: bool,
     pinned: bool,
     preview: bool,
+    color: Option<Color32>,
+    /// Close button on the left (RF-TAB-11).
+    close_left: bool,
     forced: Option<State>,
 }
 
@@ -36,12 +39,26 @@ impl Tab {
             closable: true,
             pinned: false,
             preview: false,
+            color: None,
+            close_left: false,
             forced: None,
         }
     }
 
+    /// Puts the close button before the name.
+    pub fn close_left(mut self, left: bool) -> Self {
+        self.close_left = left;
+        self
+    }
+
     pub fn icon(mut self, icon: IconId, color: Color32) -> Self {
         self.icon = Some((icon, color));
+        self
+    }
+
+    /// Label color (a file's Git status, RF-TAB-12).
+    pub fn label_color(mut self, color: Option<Color32>) -> Self {
+        self.color = color;
         self
     }
 
@@ -81,10 +98,10 @@ impl Tab {
         let theme = theme(ui);
         let p = theme.palette;
         let m = theme.metrics;
-        let fg = if self.active {
-            p.text_primary
-        } else {
-            p.text_secondary
+        let fg = match self.color {
+            Some(color) => color,
+            None if self.active => p.text_primary,
+            None => p.text_secondary,
         };
         let shown_label = if self.modified {
             format!("*{}", self.label)
@@ -124,8 +141,13 @@ impl Tab {
             egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, &label)
         });
         let state = state_of(&response, true, self.forced);
+        let close_x = if self.close_left {
+            rect.left() + space::S4 + close_side / 2.0
+        } else {
+            rect.right() - space::S4 - close_side / 2.0
+        };
         let close_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.right() - space::S4 - close_side / 2.0, rect.center().y),
+            egui::pos2(close_x, rect.center().y),
             egui::vec2(close_side, close_side),
         );
         let mut close_clicked = false;
@@ -163,6 +185,9 @@ impl Tab {
                     .rect_filled(underline, CornerRadius::same(1), p.accent);
             }
             let mut x = rect.left() + space::S5;
+            if self.close_left {
+                x = rect.left() + space::S4 + close_space;
+            }
             if let Some((icon, color)) = self.icon {
                 let icon_rect = egui::Rect::from_center_size(
                     egui::pos2(x + m.icon / 2.0, rect.center().y),
@@ -220,9 +245,16 @@ pub struct TreeRow {
     focused: bool,
     forced: Option<State>,
     highlight: Option<(usize, usize)>,
+    /// Vertical guides for each level of indentation (RF-NAV-13).
+    guides: bool,
 }
 
 impl TreeRow {
+    pub fn guides(mut self, guides: bool) -> Self {
+        self.guides = guides;
+        self
+    }
+
     pub fn new(label: impl Into<String>) -> Self {
         TreeRow {
             label: label.into(),
@@ -235,6 +267,7 @@ impl TreeRow {
             focused: false,
             forced: None,
             highlight: None,
+            guides: false,
         }
     }
 
@@ -308,6 +341,16 @@ impl TreeRow {
             info
         });
         let state = state_of(&response, true, self.forced);
+        if self.guides && ui.is_rect_visible(rect) {
+            for level in 0..self.depth {
+                let x =
+                    (rect.left() + space::S2 + level as f32 * indent + m.icon / 2.0).round() + 0.5;
+                ui.painter().line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    egui::Stroke::new(1.0, p.border_subtle),
+                );
+            }
+        }
         let arrow_rect = egui::Rect::from_center_size(
             egui::pos2(
                 rect.left() + space::S2 + self.depth as f32 * indent + m.icon / 2.0,

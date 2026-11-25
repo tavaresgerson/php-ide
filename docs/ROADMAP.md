@@ -318,17 +318,114 @@ Search Everywhere's double Shift now counts only lone Shift taps.
 Left for later: the terminal on Windows (ConPTY) and mouse reporting to
 programs; terminal in its own window (1.x item below).
 
-### Phase 7 — Git (M)
+### Phase 7 — Git (M) — done (2026-11-24)
 
 Changes view with stage by file and by hunk, side-by-side diff (editor in
 read-only mode), commit with visible hook output, branches,
 fetch/pull/push in the background, log.
 
-### Phase 8 — Hardening and v1.0 release (M)
+Done (2026-11-24):
+- [x] Commit tool window (Alt+0, Ctrl+K; docked left as in the New UI),
+      staging-area model: Merge Conflicts, Staged, Changes and Unversioned
+      Files; stage and unstage per file and per group; Rollback with
+      confirmation (unversioned files go to the Trash); message with Amend
+      (fills in the last message); Commit (Ctrl+Enter) and Commit and Push;
+      the commit's output — hooks included — right under the buttons; a
+      banner while a merge or rebase is in progress, with Continue/Abort;
+      Accept Yours / Accept Theirs on conflicts.
+- [x] Side-by-side diff in a tab of the editor strip: both sides read-only
+      and highlighted like the editor, rows aligned, the changed part of a
+      modified line marked, Collapse Unchanged Fragments, F7 / Shift+F7
+      between changes, per-hunk Stage, Unstage and Revert (a patch of that
+      hunk through `git apply`), shared horizontal scrolling, F4 / double
+      click opens the file at the line. Opened from the Commit window, the
+      log, and Git › Compare with HEAD.
+- [x] Branch popup in the header (and Git › Branches…, Ctrl+Shift+`):
+      Update Project (Ctrl+T), Commit, Push (Ctrl+Shift+K), Fetch, New
+      Branch, local and remote branches with ↓incoming/↑outgoing and their
+      actions (checkout, new branch from, merge into current, rename,
+      delete), Abort of a merge in progress. The header shows the counts.
+- [x] Version Control tool window (Alt+9): Log with a commit graph, ref
+      labels, filters (text or hash, author, branch, path from Git › Show
+      History), paging, commit details (message, files against the first
+      parent) and the diff of each file; Console with every command the IDE
+      ran and its output, with Stop.
+- [x] Every Git call off the UI thread: a repository snapshot refreshed
+      after each change and every few seconds; quick operations in jobs;
+      commands with streamed output, never waiting for input
+      (`GIT_TERMINAL_PROMPT=0`, SSH in batch mode unless the user set an SSH
+      command). Open files are saved before Git runs and reloaded after.
+- [x] File names colored by status in the Project view and tabs; folders
+      with changes highlighted; ignored files muted.
+- [x] Gates: `phpide-vcs/tests/workflow.rs` (hunks, rollback, hooks, a bare
+      remote, merge conflicts, log filters) and `gate_git.rs` through the UI
+      (commit of one hunk from the diff, hook output and a refused commit,
+      push, update from another clone, a branch from the popup, the log and
+      a commit's diff, rollback, a merge conflict resolved and committed).
+
+Left for later: line-by-line staging inside a hunk, editing the right side
+of a diff, a three-way merge tool for conflicts, interactive rebase,
+stash, cherry-pick from the log, and credential prompts (HTTPS
+credentials come from the user's credential helper; SSH keys from the
+agent).
+
+### Phase 8 — Hardening and v1.0 release (M) — done (2026-11-24)
 
 Accessibility (AccessKit), keyboard navigation everywhere, error log and
 local crash report, recovery of unsaved buffers, AppImage/.deb/Flatpak
 packages, CI with interaction tests and visual snapshots.
+
+Done (2026-11-24):
+- [x] Accessibility: every control of the main screens, the tool windows,
+      the dialogs, every Settings page and the Git views has an accessible
+      name (`gate_a11y.rs` walks the AccessKit tree and fails on an unnamed
+      control); labels are tied to their fields; Tab moves through the
+      Settings dialog; a commit can be made with the keyboard only.
+- [x] Error log: `~/.local/state/phpide/logs/phpide.log`, rotated at 2 MB
+      (three files kept); Help › Show Log and Show Log in Files.
+- [x] Crash report: a panic writes the message, the backtrace and the last
+      200 log lines to `~/.local/state/phpide/crashes/` (ten kept); the
+      next start shows it once, with the report's path. Nothing is sent
+      anywhere.
+- [x] Unsaved buffers are written to the recovery folder every two seconds
+      while they change; after an unclean exit the project offers them back
+      (Recover / Discard); a clean exit empties the folder. A project open
+      in another window is left alone.
+- [x] DBGp: Stop or Detach right after Resume is never lost, and a Stop
+      queued behind another command still ends the session as stopped; the
+      detach tests no longer need `--test-threads=1`.
+- [x] Line separator per file: detected on open, shown and converted from
+      the status bar, kept on save; new files use the Settings choice.
+- [x] PhpStorm parity items (REQUIREMENTS): project groups and project
+      icons on Home, default project directory (RF-PRJ-06, 07, 14); scope
+      views (RF-NAV-02); Quick Preview on Space (RF-NAV-05); size and date,
+      file nesting with editable rules, indent guides (RF-NAV-11, 12, 13);
+      Mark Directory as Sources / Tests / Excluded, kept in
+      `.phpide/project.json` (RF-NAV-19); Replace in Files with a folder
+      scope and a file mask (RF-NAV-21); Search Everywhere file-type filter
+      and non-project items (RF-SEL-05); Recent Locations, Ctrl+Shift+E
+      (RF-SEL-08); tab after close, placement, close button, alphabetical
+      order (RF-TAB-04, 05, 11); duplicate, rename, delete, export and
+      import of color schemes (RF-HL-12); a configurable keymap, with
+      Alt+Enter in Find Action to assign a shortcut (RF-UI-06).
+- [x] Packages: `scripts/package-deb.sh` (checked here with `dpkg-deb`),
+      `scripts/package-appimage.sh`, the Flatpak manifest in
+      `packaging/flatpak/`, a desktop entry, AppStream metadata and the app
+      icon; `phpide --version` and `--help`.
+- [x] CI (`.github/workflows/ci.yml`): fmt, clippy with and without the
+      frozen features, every test in parallel (with PHP, Xdebug, Composer
+      and intelephense installed), the frozen-feature tests, snapshot diffs
+      and review screenshots as artifacts, the .deb and the AppImage built
+      and the .deb installed; Flatpak and a GitHub release on tags.
+- [x] Gates: `gate_hardening.rs`, `gate_a11y.rs`, `gate_project_view.rs`,
+      `gate_parity.rs`; screenshots in the three themes with
+      `cargo test -p phpide-ui phase8_screenshots -- --ignored`.
+
+Not verified here: the AppImage and the Flatpak were not built in this
+environment (no appimagetool, no flatpak-builder); CI builds them. Inside
+the Flatpak sandbox the IDE runs the sandbox's tools, which have no PHP;
+running host tools through `flatpak-spawn` is left for later. The version
+stays 0.1.0 until the maintainer tags 1.0.
 
 ### After v1.0
 
@@ -387,8 +484,8 @@ interaction tests and screenshots in the three themes.
       completes them.
   - Data sources: connection dialog per driver (host, port, user,
     password from the system keyring, database, SSL/TLS, SSH tunnel),
-    test connection, drivers for MySQL/MariaDB, PostgreSQL, SQLite and
-    SQL Server first.
+    test connection, drivers for MySQL/MariaDB, PostgreSQL, SQLite,
+    Oracle, Redis, Databricks, MongoDB, SQL Server and ClickHouse first.
   - Database Explorer tool window: schemas, tables, views, columns,
     keys, indexes, routines, triggers; filter, refresh, DDL of an object.
   - Query console and SQL files attached to a data source: SQL
@@ -428,15 +525,45 @@ interaction tests and screenshots in the three themes.
 Still frozen behind `experimental`, to be ordered later: framework
 support (Laravel/Symfony), frontend TypeScript, Docker/Remote.
 
+## Deferred work
+
+Everything postponed in Phases 0–7, in one place (2026-11-24). The
+Portuguese plan in the claude.ai project keeps the same list.
+
+### After v1.0, not scheduled yet
+
+On top of the 1.x/2.x list above:
+
+- Editor and intelligence: a language server for attached projects (comes
+  with PHPantom in 1.x); code font ligatures (the text engine does not
+  shape them; off by decision today).
+- Terminal: Windows (ConPTY); mouse reporting to programs; its own window
+  (1.x).
+- Packaging: run PHP, Composer and Git of the host from the Flatpak
+  (`flatpak-spawn --host`); Flathub submission (offline cargo sources).
+- Recent Locations with syntax colors in the snippets; IntelliJ `.icls`
+  color scheme import.
+- Git: line-by-line staging inside a hunk; editing the right side of a
+  diff; a three-way merge tool; interactive rebase; stash; cherry-pick and
+  checkout of a revision from the log; credential prompts inside the IDE.
+- Database (part of the 2.x item): an explicit row count in the grid;
+  TLS and SSH tunnels.
+- Optional / after-v1.0 requirements: RF-PRJ-09, RF-PRJ-15, RF-NAV-03,
+  RF-NAV-09, RF-NAV-23, RF-NAV-27, RF-SEL-06, RF-TAB-12 (analysis colors),
+  RF-TAB-13, RF-TAB-18, RF-HL-13, RF-HL-15.
+- Partial requirements without a phase yet: RF-TAB-20 (split by
+  dragging), RF-TAB-21 (move to the other split from the tab), RF-TAB-22
+  (several splits, equalize), RF-HL-03 (one list to add/edit/remove
+  patterns), RF-HL-05 (UI for custom file types), RF-HL-06 (user TextMate
+  grammars), RF-HL-07 (configurable ignore patterns), RF-UI-07 (mnemonic
+  bookmarks).
+- Not planned: RF-PRJ-13 (macOS-only in PhpStorm).
+
 ## Known issues carried over
 
-- Detach/Stop race: Stop during the instant `run` unblocks can degrade to
-  `ConnectionLost`; the process is still killed (Phase 8).
 - Database grid shows an unknown total by default on purpose; an explicit
   count action is pending (after v1.0).
 - TLS/SSH for database connections are not implemented (after v1.0).
-- The status bar line-ending toggle changes a global setting applied on save,
-  not the current buffer (Phase 4).
 
 ## Baseline results
 

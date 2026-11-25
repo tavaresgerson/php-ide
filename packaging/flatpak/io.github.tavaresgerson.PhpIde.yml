@@ -1,0 +1,43 @@
+# Flatpak manifest for PHP IDE.
+#
+# Local build (the cargo step downloads crates, so it needs the network):
+#   flatpak-builder --user --install --force-clean \
+#     --build-args=--share=network build-dir \
+#     packaging/flatpak/io.github.tavaresgerson.PhpIde.yml
+#
+# Flathub builds offline: generate cargo-sources.json with
+# flatpak-cargo-generator (flatpak-builder-tools) from Cargo.lock, add it to
+# the sources below and drop --share=network.
+#
+# Inside the sandbox the IDE runs the PHP, Composer and Git of the sandbox,
+# not the host's: the Freedesktop runtime has Git but no PHP. Running host
+# tools through flatpak-spawn is not supported yet; use the .deb or the
+# AppImage for full PHP tooling.
+app-id: io.github.tavaresgerson.PhpIde
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: phpide
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Projects live anywhere under the home folder.
+  - --filesystem=home
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/phpide/cargo
+modules:
+  - name: phpide
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked -p phpide-ui
+      - BIN=target/release/phpide-ui bash scripts/install-files.sh / /app
+    sources:
+      - type: dir
+        path: ../..

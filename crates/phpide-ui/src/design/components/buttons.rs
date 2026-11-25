@@ -313,9 +313,16 @@ pub struct ToolbarWidget {
     chevron: bool,
     tooltip: Option<String>,
     forced: Option<State>,
+    name: Option<String>,
 }
 
 impl ToolbarWidget {
+    /// Accessible name when the visible text alone is ambiguous.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
     pub fn new(text: impl Into<String>) -> Self {
         ToolbarWidget {
             icon: None,
@@ -325,6 +332,7 @@ impl ToolbarWidget {
             chevron: true,
             tooltip: None,
             forced: None,
+            name: None,
         }
     }
 
@@ -382,6 +390,7 @@ impl ToolbarWidget {
         }
         let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
         let label = match &self.detail {
+            _ if self.name.is_some() => self.name.clone().unwrap_or_default(),
             Some(detail) => format!("{} {detail}", self.text),
             None => self.text.clone(),
         };
