@@ -285,10 +285,8 @@ mod tests {
         assert!(built.spec.args.iter().any(|a| a == "/opt/composer.phar"));
     }
 
-    #[test]
-    fn phpunit_delegates_to_phpunit_module() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = RunConfig::new(
+    fn phpunit_all() -> RunConfig {
+        RunConfig::new(
             "c1",
             "t",
             RunKind::PhpUnit {
@@ -298,9 +296,43 @@ mod tests {
                 runner_options: vec![],
                 coverage: false,
             },
+        )
+    }
+
+    #[test]
+    fn phpunit_delegates_to_phpunit_module() {
+        let dir = tempfile::tempdir().unwrap();
+        // A runner in the project, so the result does not depend on the
+        // machine's PATH (GitHub's runners ship a global phpunit).
+        let runner = dir.path().join("vendor/bin/phpunit");
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(&runner, "<?php\n").unwrap();
+        let built =
+            build_command(&phpunit_all(), dir.path(), &BuildContext::php_only("php")).unwrap();
+        let expected = crate::phpunit::resolve_phpunit(dir.path()).unwrap();
+        assert_eq!(built.spec.program, "php");
+        assert_eq!(
+            built.spec.args.first().map(String::as_str),
+            expected.to_str(),
+            "{built:?}"
         );
-        // Sem phpunit resolvido no contexto de build: erro acionável.
-        let err = build_command(&cfg, dir.path(), &BuildContext::php_only("php")).unwrap_err();
-        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert!(built.spec.args.iter().any(|a| a == "--teamcity"));
+        assert!(built.plan.is_some());
+    }
+
+    #[test]
+    fn phpunit_missing_is_an_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        match build_command(&phpunit_all(), dir.path(), &BuildContext::php_only("php")) {
+            Err(err) => assert_eq!(err.kind, ErrorKind::NotFound),
+            // Only when the machine has one of its own: a phpunit on PATH
+            // or PHPIDE_PHPUNIT.
+            Ok(built) => assert!(
+                std::env::var_os("PHPIDE_PHPUNIT").is_some()
+                    || phpide_exec::discover(&phpide_exec::ToolRequest::new("phpunit", "PHPUnit"))
+                        .is_ok(),
+                "{built:?}"
+            ),
+        }
     }
 }
