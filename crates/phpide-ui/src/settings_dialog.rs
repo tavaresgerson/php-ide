@@ -14,6 +14,7 @@ pub enum SettingsPage {
     EditorAppearance,
     EditorFont,
     PhpLanguageLevel,
+    PhpLanguageServer,
     SystemSettings,
     EditorTabs,
     ColorScheme,
@@ -29,6 +30,7 @@ impl SettingsPage {
             SettingsPage::EditorAppearance => "General | Appearance",
             SettingsPage::EditorFont => "Font",
             SettingsPage::PhpLanguageLevel => "Language Level",
+            SettingsPage::PhpLanguageServer => "Language Server",
             SettingsPage::SystemSettings => "System Settings",
             SettingsPage::EditorTabs => "General | Editor Tabs",
             SettingsPage::ColorScheme => "Color Scheme",
@@ -47,6 +49,8 @@ pub struct SettingsDialogState {
     pub editor_pages: crate::settings_editor::EditorPagesState,
     /// Keymap page.
     pub keymap: crate::keymap_page::KeymapState,
+    /// Language Server page.
+    pub lsp: crate::settings_lsp::LspPageState,
 }
 
 impl Default for SettingsDialogState {
@@ -58,6 +62,7 @@ impl Default for SettingsDialogState {
             just_opened: false,
             editor_pages: Default::default(),
             keymap: Default::default(),
+            lsp: Default::default(),
         }
     }
 }
@@ -104,7 +109,7 @@ pub const PAGES: &[PageSpec] = &[
         page: SettingsPage::EditorAppearance,
         section: "Editor",
         label: "Appearance",
-        keywords: "sticky lines inlay hints column selection zoom wheel",
+        keywords: "sticky lines inlay hints code lens vision column selection zoom wheel",
     },
     PageSpec {
         page: SettingsPage::EditorTabs,
@@ -135,6 +140,12 @@ pub const PAGES: &[PageSpec] = &[
         section: "PHP",
         label: "Language Level",
         keywords: "php version language level composer",
+    },
+    PageSpec {
+        page: SettingsPage::PhpLanguageServer,
+        section: "PHP",
+        label: "Language Server",
+        keywords: "lsp phpantom intelephense phpactor engine analysis completion restart log phpantom.toml",
     },
 ];
 
@@ -310,6 +321,7 @@ fn show_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         SettingsPage::EditorAppearance => editor_appearance_page(app, ui),
         SettingsPage::EditorFont => crate::settings_editor::font_page(app, ui),
         SettingsPage::PhpLanguageLevel => php_page(app, ui),
+        SettingsPage::PhpLanguageServer => crate::settings_lsp::page(app, ui),
         SettingsPage::SystemSettings => system_page(app, ui),
         SettingsPage::EditorTabs => tabs_page(app, ui),
         SettingsPage::ColorScheme => crate::settings_editor::color_scheme_page(app, ui),
@@ -579,6 +591,12 @@ fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .changed();
     changed |= ui
         .checkbox(&mut app.settings.inlay_hints, "Inlay Hints")
+        .changed();
+    changed |= ui
+        .checkbox(
+            &mut app.settings.code_lens,
+            "Code Lens (usages and implementations after declarations)",
+        )
         .changed();
     changed |= ui
         .checkbox(&mut app.zoom_on_ctrl_wheel, "Zoom with Ctrl+mouse wheel")

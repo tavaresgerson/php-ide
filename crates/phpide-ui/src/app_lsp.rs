@@ -4,9 +4,29 @@
 use super::*;
 
 impl PhpIdeApp {
-    /// Reinicia o servidor de linguagem (T-PHP-001-02): stop + spawn com as
-    /// mesmas configurações; sessão anterior é descartada (T-PHP-001-04).
+    /// Restart Language Server (T-PHP-001-02): stops the server and starts
+    /// the one the settings choose; the restarts after crashes count again.
     pub fn restart_lsp(&mut self) {
+        self.lsp_supervisor.reset();
+        self.restart_lsp_now();
+        self.ws.message = if self.lsp.is_some() {
+            format!("restarting the language server: {}", self.lsp_name)
+        } else {
+            self.lsp_start_error
+                .clone()
+                .unwrap_or_else(|| "no language server to restart".to_string())
+        };
+    }
+
+    /// Stops the server and forgets its session (T-PHP-001-04), then starts
+    /// it again.
+    pub(crate) fn restart_lsp_now(&mut self) {
+        self.stop_lsp_session();
+        self.spawn_lsp();
+    }
+
+    /// Stops the server and drops everything it answered.
+    fn stop_lsp_session(&mut self) {
         if let Some(old) = self.lsp.take() {
             old.stop();
         }
@@ -26,30 +46,132 @@ impl PhpIdeApp {
         self.pending_semantic = None;
         self.occurrences = None;
         self.pending_occurrences = None;
-        self.pending_requests.clear_origin(routing::LspOrigin::Php);
         self.lsp_crash_notified = false;
-        let (lsp, lsp_init, lsp_name) = start_lsp(&self.ws.root);
-        self.lsp = lsp;
-        self.lsp_init = lsp_init;
-        self.lsp_name = lsp_name;
-        self.ws.message = if self.lsp.is_some() {
-            format!("restarting the language server: {}", self.lsp_name)
-        } else {
-            "no language server to restart".to_string()
-        };
+        self.code_lens.clear();
+        self.document_links = Default::default();
+        self.selection_ranges = Default::default();
+    }
+
+    /// PHPantom's file filters for this project now.
+    pub(crate) fn lsp_indexing_settings(&self) -> Value {
+        lsp_engine::indexing_settings(
+            &self.ws.root,
+            &self.project_marks,
+            &self.settings.file_type_patterns,
+        )
+    }
+
+    /// Starts the PHP language server the settings choose.
+    pub(crate) fn spawn_lsp(&mut self) {
+        let choice = lsp_engine::effective_choice(&self.settings, &self.ws.root);
+        let folders = self.settings.attached_to(&self.ws.root);
+        let filters = self.lsp_indexing_settings();
+        let start = start_lsp(&self.ws.root, &choice, folders.clone(), filters.clone());
+        let phpantom = start
+            .server
+            .as_ref()
+            .map(|s| s.kind == phpide_lsp::engine::EngineKind::Phpantom)
+            .unwrap_or(start.client.is_some());
+        self.lsp = start.client;
+        self.lsp_init = start.init;
+        self.lsp_name = start.name;
+        self.lsp_server = start.server;
+        self.lsp_start_error = start.error;
+        self.lsp_settings_sent = if phpantom { filters } else { Value::Null };
+        self.lsp_folders = folders;
     }
 
     /// Tests: talk to the built-in fixture server.
     #[cfg(test)]
     pub(crate) fn use_fixture_lsp(&mut self) {
-        self.restart_lsp();
-        if let Some(old) = self.lsp.take() {
-            old.stop();
-        }
-        let (client, init) = phpide_lsp::fixture::start(&self.ws.root).expect("fixture server");
+        self.stop_lsp_session();
+        let folders = self.settings.attached_to(&self.ws.root);
+        let filters = self.lsp_indexing_settings();
+        let options = phpide_lsp::InitOptions {
+            extra_folders: folders.clone(),
+            initialization_options: filters.clone(),
+        };
+        let (client, init) =
+            phpide_lsp::fixture::start_with(&self.ws.root, &options).expect("fixture server");
         self.lsp = Some(client);
         self.lsp_init = Some(init);
         self.lsp_name = "fixture-php".to_string();
+        self.lsp_server = None;
+        self.lsp_start_error = None;
+        self.lsp_settings_sent = filters;
+        self.lsp_folders = folders;
+    }
+
+    /// Work the server reports: its start and end go to the Event Log; the
+    /// status bar shows it while it runs.
+    fn poll_lsp_progress(&mut self) {
+        let Some(lsp) = &self.lsp else { return };
+        // PHPantom names itself in its titles ("PHPantom: Indexing").
+        let name = self.lsp_name.clone();
+        let titled = |title: &str| {
+            if title.starts_with(&format!("{name}:")) {
+                title.to_string()
+            } else {
+                format!("{name}: {title}")
+            }
+        };
+        // Indexing is logged; shorter work (a hierarchy, a rename) only
+        // shows in the status bar while it runs.
+        let logged = |title: &str| title.to_lowercase().contains("index");
+        let mut lines: Vec<String> = lsp
+            .take_started()
+            .iter()
+            .filter(|title| logged(title))
+            .map(|title| format!("{}…", titled(title)))
+            .collect();
+        for (title, message) in lsp.take_finished() {
+            if !logged(&title) {
+                continue;
+            }
+            lines.push(
+                if message.is_empty() || message.eq_ignore_ascii_case("done") {
+                    format!("{} done", titled(&title))
+                } else {
+                    format!("{} done: {message}", titled(&title))
+                },
+            );
+        }
+        // Each one is logged, even when several arrive in one frame.
+        for line in lines {
+            self.event_log.observe(&line, &mut self.toasts);
+            self.ws.message = line;
+        }
+    }
+
+    /// Keeps PHPantom's file filters and the workspace folders in step with
+    /// the project (excluded marks, File Types, attached projects).
+    fn push_lsp_configuration(&mut self) {
+        let Some(lsp) = &self.lsp else { return };
+        if !self.lsp_settings_sent.is_null() {
+            let filters = self.lsp_indexing_settings();
+            if filters != self.lsp_settings_sent {
+                lsp.did_change_configuration(filters.clone());
+                self.lsp_settings_sent = filters;
+            }
+        }
+        let folders = self.settings.attached_to(&self.ws.root);
+        if folders != self.lsp_folders {
+            if lsp.capabilities().workspace_folders_changes {
+                let added: Vec<PathBuf> = folders
+                    .iter()
+                    .filter(|f| !self.lsp_folders.contains(f))
+                    .cloned()
+                    .collect();
+                let removed: Vec<PathBuf> = self
+                    .lsp_folders
+                    .iter()
+                    .filter(|f| !folders.contains(f))
+                    .cloned()
+                    .collect();
+                lsp.did_change_workspace_folders(&added, &removed);
+            }
+            self.lsp_folders = folders;
+        }
     }
 
     /// Find Usages (T-PHP-004-03): referências alimentam o painel Find.
@@ -337,7 +459,7 @@ impl PhpIdeApp {
                         let caps = lsp.capabilities();
                         *lsp.shared.status.lock().unwrap() =
                             LspStatus::Running(self.lsp_name.clone());
-                        lsp.notify("initialized", Value::Null);
+                        lsp.initialized();
                         // Diagnósticos passam a ser do LSP; reanálise local do zero.
                         self.ws.clear_diagnostics();
                         self.syntax = None;
@@ -356,20 +478,33 @@ impl PhpIdeApp {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        // Crash após estar Running: servidor caiu — edição segue offline
-        // (T-PHP-001-05) e o usuário pode reiniciar pela palette.
+        // The server stopped by itself: editing goes on offline
+        // (T-PHP-001-05) and it is started again, waiting longer each time;
+        // after three crashes in five minutes the user restarts it.
         if let LspStatus::Failed(reason) = lsp.status() {
             if !self.lsp_crash_notified {
                 self.lsp_crash_notified = true;
-                self.ws.message = format!(
-                    "The language server stopped ({reason}). Editing and local diagnostics still work; restart it from Find Action (Ctrl+Shift+A > 'Restart Language Server')."
-                );
                 self.logger.error(
                     Component::Lsp,
                     &Correlation::session(self.session),
                     "lsp_crashed",
                     &[("reason", &reason)],
                 );
+                self.ws.message = match self.lsp_supervisor.crashed(Instant::now()) {
+                    Some(wait) => format!(
+                        "Warning: the language server {} stopped ({reason}); restarting it in {} s",
+                        self.lsp_name,
+                        wait.as_secs()
+                    ),
+                    None => format!(
+                        "The language server {} stopped ({reason}) and failed {} times in 5 minutes. Editing and local diagnostics still work; restart it from Find Action (Ctrl+Shift+A > 'Restart Language Server').",
+                        self.lsp_name,
+                        lsp_engine::MAX_RESTARTS + 1
+                    ),
+                };
+            }
+            if self.lsp_supervisor.due(Instant::now()) {
+                self.restart_lsp_now();
             }
             return;
         }
@@ -377,8 +512,11 @@ impl PhpIdeApp {
             return;
         }
 
-        // 2. Document sync (also flushed before every request).
+        // 2. Document sync (also flushed before every request), filters
+        // and workspace folders.
         self.sync_documents();
+        self.push_lsp_configuration();
+        self.poll_lsp_progress();
         let Some(lsp) = &self.lsp else { return };
 
         // 3. Diagnósticos publicados -> painel de problemas (anexados à
@@ -539,7 +677,7 @@ impl PhpIdeApp {
                             let spans: Vec<(usize, usize, String)> = tokens
                                 .iter()
                                 .map(|t| {
-                                    let abs = buf.document.line_start(t.line0) + t.start_char;
+                                    let abs = t.start_char.min(buf.document.len_chars());
                                     let start = buf.document.char_to_byte(abs);
                                     let end = buf.document.char_to_byte(
                                         (abs + t.len_chars).min(buf.document.len_chars()),
@@ -679,11 +817,43 @@ impl PhpIdeApp {
             match key.operation {
                 routing::RequestOperation::Definition
                 | routing::RequestOperation::Implementation
-                | routing::RequestOperation::TypeDefinition => {
+                | routing::RequestOperation::TypeDefinition
+                | routing::RequestOperation::Declaration => {
                     let locations = intelligence::parse_locations(&result);
-                    if let Some(location) = locations.first() {
-                        self.ws
-                            .open_file_at(&location.path, location.line0, location.col0);
+                    let title = match key.operation {
+                        routing::RequestOperation::Implementation => "Implementations",
+                        routing::RequestOperation::Declaration => "Super methods",
+                        _ => "Declarations",
+                    };
+                    match locations.as_slice() {
+                        [] => {
+                            self.ws.message = match key.operation {
+                                routing::RequestOperation::Declaration => {
+                                    "no super method found".to_string()
+                                }
+                                routing::RequestOperation::Implementation => {
+                                    "no implementations found".to_string()
+                                }
+                                _ => "no declaration found".to_string(),
+                            };
+                        }
+                        [location] => {
+                            self.ws
+                                .open_file_at(&location.path, location.line0, location.col0);
+                        }
+                        [first, ..]
+                            if matches!(
+                                key.operation,
+                                routing::RequestOperation::Definition
+                                    | routing::RequestOperation::TypeDefinition
+                            ) =>
+                        {
+                            self.ws.open_file_at(&first.path, first.line0, first.col0);
+                        }
+                        many => {
+                            let many = many.to_vec();
+                            self.show_location_list(title, &many);
+                        }
                     }
                 }
                 routing::RequestOperation::Hints => {
@@ -787,6 +957,7 @@ impl PhpIdeApp {
             "definition" => caps.definition_provider,
             "implementation" => caps.implementation_provider,
             "typeDefinition" => caps.type_definition_provider,
+            "declaration" => caps.declaration_provider,
             _ => false,
         };
         if !supported {
@@ -806,6 +977,7 @@ impl PhpIdeApp {
             "definition" => routing::RequestOperation::Definition,
             "implementation" => routing::RequestOperation::Implementation,
             "typeDefinition" => routing::RequestOperation::TypeDefinition,
+            "declaration" => routing::RequestOperation::Declaration,
             _ => return,
         };
         let receiver = call(lsp, &path, line, col);

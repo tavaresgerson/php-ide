@@ -54,6 +54,13 @@ pub struct InlayHint {
     pub label: String,
 }
 
+/// An action about a declaration ("3 references", "2 implementations").
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeLens {
+    pub line: usize,
+    pub label: String,
+}
+
 /// One line of the blame gutter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlameLine {
@@ -69,6 +76,12 @@ pub struct Decorations<'a> {
     pub coverage: Vec<(usize, CoverageMark)>,
     pub diagnostics: Vec<Diagnostic>,
     pub inlay_hints: Vec<InlayHint>,
+    /// Code lenses, written after the end of their line; a click on one is
+    /// reported by its index in [`crate::EditorOutput::lens_click`].
+    pub code_lenses: Vec<CodeLens>,
+    /// Ranges Ctrl+click follows (document links), underlined while the
+    /// pointer is over them with Ctrl held.
+    pub links: Vec<(usize, usize)>,
     /// Semantic tokens `(start, end, role)`, sorted, painted over syntax.
     pub semantic: Vec<(usize, usize, SyntaxRole)>,
     /// Occurrences of the symbol under the caret.

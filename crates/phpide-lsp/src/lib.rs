@@ -6,6 +6,7 @@
 //! padrão do Estágio 2 (busca, watcher).
 
 pub mod edits;
+pub mod engine;
 pub mod fixture;
 pub mod snippet;
 pub mod sync;
@@ -192,6 +193,19 @@ pub struct ServerCapabilities {
     pub range_formatting_provider: bool,
     pub execute_commands: Vec<String>,
     pub sync: SyncKind,
+    pub declaration_provider: bool,
+    pub type_hierarchy_provider: bool,
+    pub call_hierarchy_provider: bool,
+    pub code_lens_provider: bool,
+    pub code_lens_resolve: bool,
+    pub selection_range_provider: bool,
+    pub document_link_provider: bool,
+    pub inlay_hint_provider: bool,
+    /// The server accepts `workspace/didChangeWorkspaceFolders`.
+    pub workspace_folders_changes: bool,
+    /// `serverInfo` of the `initialize` result.
+    pub server_name: String,
+    pub server_version: String,
 }
 
 /// A provider declared as `true` or as an options object.
@@ -251,6 +265,30 @@ impl ServerCapabilities {
                 Some(2) => SyncKind::Incremental,
                 _ => SyncKind::Full,
             },
+            declaration_provider: provider(&caps["declarationProvider"]),
+            type_hierarchy_provider: provider(&caps["typeHierarchyProvider"]),
+            call_hierarchy_provider: provider(&caps["callHierarchyProvider"]),
+            code_lens_provider: caps["codeLensProvider"].is_object(),
+            code_lens_resolve: caps["codeLensProvider"]["resolveProvider"]
+                .as_bool()
+                .unwrap_or(false),
+            selection_range_provider: provider(&caps["selectionRangeProvider"]),
+            document_link_provider: caps["documentLinkProvider"].is_object(),
+            inlay_hint_provider: provider(&caps["inlayHintProvider"]),
+            workspace_folders_changes: {
+                let folders = &caps["workspace"]["workspaceFolders"];
+                folders["supported"].as_bool().unwrap_or(false)
+                    && !folders["changeNotifications"].is_null()
+                    && folders["changeNotifications"] != Value::Bool(false)
+            },
+            server_name: result["serverInfo"]["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            server_version: result["serverInfo"]["version"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
         }
     }
 }
@@ -275,6 +313,50 @@ pub struct Shared {
     pub apply_edits: Mutex<Vec<Value>>,
     /// `window/showMessage` notifications: (type, message).
     pub messages: Mutex<Vec<(u8, String)>>,
+    /// Work in progress the server reports (`$/progress`), by token.
+    pub progress: Mutex<Vec<Progress>>,
+    /// Titles of work that began, for the Event Log.
+    pub started: Mutex<Vec<String>>,
+    /// Finished work, `(title, message)`, for the Event Log.
+    pub finished: Mutex<Vec<(String, String)>>,
+    /// `workspace/*/refresh` requests the UI has not handled yet.
+    pub refreshes: Mutex<Vec<String>>,
+}
+
+/// One piece of work the server reports with `$/progress`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progress {
+    pub token: String,
+    pub title: String,
+    pub message: String,
+    pub percentage: Option<u32>,
+}
+
+impl Progress {
+    /// Status bar text: "Indexing… 42%".
+    pub fn text(&self) -> String {
+        let mut text = if self.title.is_empty() {
+            "Working…".to_string()
+        } else {
+            format!(
+                "{}…",
+                self.title.trim_end_matches('…').trim_end_matches("...")
+            )
+        };
+        if let Some(p) = self.percentage {
+            text.push_str(&format!(" {p}%"));
+        }
+        text
+    }
+}
+
+/// What the IDE tells the server when it starts.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InitOptions {
+    /// More workspace folders beside the root (attached projects).
+    pub extra_folders: Vec<PathBuf>,
+    /// `initializationOptions` (PHPantom: `indexing.exclude/extensions`).
+    pub initialization_options: Value,
 }
 
 impl Shared {
@@ -311,6 +393,17 @@ impl LspClient {
         args: &[&str],
         root: &Path,
     ) -> Result<(Self, mpsc::Receiver<Value>), String> {
+        Self::spawn_with(command, args, root, &InitOptions::default())
+    }
+
+    /// [`spawn`](Self::spawn) with workspace folders and initialization
+    /// options.
+    pub fn spawn_with(
+        command: &str,
+        args: &[&str],
+        root: &Path,
+        options: &InitOptions,
+    ) -> Result<(Self, mpsc::Receiver<Value>), String> {
         let mut child = Command::new(command)
             .args(args)
             .current_dir(root)
@@ -323,12 +416,13 @@ impl LspClient {
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take().ok_or("no stderr")?;
-        Ok(Self::connect(
+        Ok(Self::connect_with(
             Box::new(stdin),
             Box::new(stdout),
             Some(Box::new(stderr)),
             Some(child),
             root,
+            options,
         ))
     }
 
@@ -340,6 +434,19 @@ impl LspClient {
         stderr: Option<Box<dyn io::Read + Send>>,
         child: Option<Child>,
         root: &Path,
+    ) -> (Self, mpsc::Receiver<Value>) {
+        Self::connect_with(input, output, stderr, child, root, &InitOptions::default())
+    }
+
+    /// [`connect`](Self::connect) with workspace folders and initialization
+    /// options.
+    pub fn connect_with(
+        input: Box<dyn Write + Send>,
+        output: Box<dyn io::Read + Send>,
+        stderr: Option<Box<dyn io::Read + Send>>,
+        child: Option<Child>,
+        root: &Path,
+        options: &InitOptions,
     ) -> (Self, mpsc::Receiver<Value>) {
         let shared = Arc::new(Shared::default());
         let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Value>>>> =
@@ -407,7 +514,7 @@ impl LspClient {
             child: Arc::new(Mutex::new(child)),
             stopping,
         };
-        let init_rx = client.request("initialize", initialize_params(root));
+        let init_rx = client.request("initialize", initialize_params(root, options));
         (client, init_rx)
     }
 
@@ -578,6 +685,13 @@ impl LspClient {
         self.shared.status.lock().unwrap().clone()
     }
 
+    /// `initialized`, after the capabilities are registered. Its params are
+    /// an empty object: servers that check them (PHPantom) ignore `null`
+    /// and never finish starting.
+    pub fn initialized(&self) {
+        self.notify("initialized", json!({}));
+    }
+
     /// Encerra: shutdown + exit, depois garante o fim do processo.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
@@ -604,17 +718,26 @@ impl Drop for LspClient {
 }
 
 /// `initialize` params: what this client supports.
-fn initialize_params(root: &Path) -> Value {
-    let root_uri = path_to_uri(root);
-    let name = root
+/// A `WorkspaceFolder`.
+pub fn workspace_folder(path: &Path) -> Value {
+    let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    json!({
+    json!({ "uri": path_to_uri(path), "name": name })
+}
+
+fn initialize_params(root: &Path, options: &InitOptions) -> Value {
+    let root_uri = path_to_uri(root);
+    let folders: Vec<Value> = std::iter::once(root)
+        .chain(options.extra_folders.iter().map(PathBuf::as_path))
+        .map(workspace_folder)
+        .collect();
+    let mut params = json!({
         "processId": std::process::id(),
         "rootUri": root_uri,
         "rootPath": root.display().to_string(),
-        "workspaceFolders": [{ "uri": root_uri, "name": name }],
+        "workspaceFolders": folders,
         "capabilities": {
             "general": { "positionEncodings": ["utf-16"] },
             "textDocument": {
@@ -660,7 +783,14 @@ fn initialize_params(root: &Path) -> Value {
                     "resolveSupport": { "properties": ["edit"] }
                 },
                 "formatting": {},
-                "rangeFormatting": {}
+                "rangeFormatting": {},
+                "declaration": { "linkSupport": true },
+                "typeHierarchy": { "dynamicRegistration": false },
+                "callHierarchy": { "dynamicRegistration": false },
+                "codeLens": {},
+                "selectionRange": {},
+                "documentLink": { "tooltipSupport": true },
+                "inlayHint": {}
             },
             "workspace": {
                 "configuration": true,
@@ -668,12 +798,19 @@ fn initialize_params(root: &Path) -> Value {
                 "workspaceEdit": { "documentChanges": true },
                 "workspaceFolders": true,
                 "symbol": {},
-                "executeCommand": {}
+                "executeCommand": {},
+                "didChangeConfiguration": { "dynamicRegistration": false },
+                "codeLens": { "refreshSupport": true },
+                "inlayHint": { "refreshSupport": true }
             },
-            "window": { "showMessage": {}, "workDoneProgress": false }
+            "window": { "showMessage": {}, "workDoneProgress": true }
         },
         "clientInfo": { "name": "phpide", "version": env!("CARGO_PKG_VERSION") }
-    })
+    });
+    if !options.initialization_options.is_null() {
+        params["initializationOptions"] = options.initialization_options.clone();
+    }
+    params
 }
 
 /// A position in an LSP request.
@@ -816,6 +953,127 @@ impl LspClient {
     pub fn take_messages(&self) -> Vec<(u8, String)> {
         std::mem::take(&mut *self.shared.messages.lock().unwrap())
     }
+
+    /// Work the server is doing now (`$/progress`), oldest first.
+    pub fn progress(&self) -> Vec<Progress> {
+        self.shared.progress.lock().unwrap().clone()
+    }
+
+    /// Takes the titles of work that began since the last call.
+    pub fn take_started(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.started.lock().unwrap())
+    }
+
+    /// Takes the work that ended since the last call, `(title, message)`.
+    pub fn take_finished(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.shared.finished.lock().unwrap())
+    }
+
+    /// Takes the `workspace/*/refresh` requests (method names).
+    pub fn take_refreshes(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.refreshes.lock().unwrap())
+    }
+
+    /// `workspace/didChangeConfiguration`.
+    pub fn did_change_configuration(&self, settings: Value) {
+        self.notify(
+            "workspace/didChangeConfiguration",
+            json!({ "settings": settings }),
+        );
+    }
+
+    /// `workspace/didChangeWorkspaceFolders`.
+    pub fn did_change_workspace_folders(&self, added: &[PathBuf], removed: &[PathBuf]) {
+        let folders =
+            |list: &[PathBuf]| -> Vec<Value> { list.iter().map(|p| workspace_folder(p)).collect() };
+        self.notify(
+            "workspace/didChangeWorkspaceFolders",
+            json!({ "event": { "added": folders(added), "removed": folders(removed) } }),
+        );
+    }
+
+    /// `textDocument/declaration` (Go to Super Method).
+    pub fn declaration(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.request("textDocument/declaration", text_position(path, line0, col0))
+    }
+
+    /// `textDocument/prepareTypeHierarchy`.
+    pub fn prepare_type_hierarchy(
+        &self,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+    ) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/prepareTypeHierarchy",
+            text_position(path, line0, col0),
+        )
+    }
+
+    /// `typeHierarchy/supertypes` or `typeHierarchy/subtypes` of an item.
+    pub fn type_hierarchy(&self, item: &Value, supertypes: bool) -> mpsc::Receiver<Value> {
+        let method = if supertypes {
+            "typeHierarchy/supertypes"
+        } else {
+            "typeHierarchy/subtypes"
+        };
+        self.request(method, json!({ "item": item }))
+    }
+
+    /// `textDocument/prepareCallHierarchy`.
+    pub fn prepare_call_hierarchy(
+        &self,
+        path: &Path,
+        line0: usize,
+        col0: usize,
+    ) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/prepareCallHierarchy",
+            text_position(path, line0, col0),
+        )
+    }
+
+    /// `callHierarchy/incomingCalls` (callers) or `outgoingCalls` (callees).
+    pub fn call_hierarchy(&self, item: &Value, incoming: bool) -> mpsc::Receiver<Value> {
+        let method = if incoming {
+            "callHierarchy/incomingCalls"
+        } else {
+            "callHierarchy/outgoingCalls"
+        };
+        self.request(method, json!({ "item": item }))
+    }
+
+    /// `textDocument/codeLens`.
+    pub fn code_lens(&self, path: &Path) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/codeLens",
+            json!({ "textDocument": { "uri": path_to_uri(path) } }),
+        )
+    }
+
+    /// `codeLens/resolve`.
+    pub fn code_lens_resolve(&self, lens: &Value) -> mpsc::Receiver<Value> {
+        self.request("codeLens/resolve", lens.clone())
+    }
+
+    /// `textDocument/selectionRange` for one position.
+    pub fn selection_range(&self, path: &Path, line0: usize, col0: usize) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/selectionRange",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "positions": [{ "line": line0, "character": col0 }]
+            }),
+        )
+    }
+
+    /// `textDocument/documentLink`.
+    pub fn document_link(&self, path: &Path) -> mpsc::Receiver<Value> {
+        self.request(
+            "textDocument/documentLink",
+            json!({ "textDocument": { "uri": path_to_uri(path) } }),
+        )
+    }
 }
 
 /// Roteamento de mensagens do servidor (roda na thread leitora).
@@ -846,6 +1104,15 @@ fn route_message(
                 json!({ "applied": true })
             }
             "workspace/workspaceFolders" => Value::Null,
+            // A token for `$/progress`: nothing to set up.
+            "window/workDoneProgress/create" => Value::Null,
+            refresh if refresh.starts_with("workspace/") && refresh.ends_with("/refresh") => {
+                let mut list = shared.refreshes.lock().unwrap();
+                if !list.iter().any(|m| m == refresh) {
+                    list.push(refresh.to_string());
+                }
+                Value::Null
+            }
             _ => Value::Null,
         };
         let resp = json!({ "jsonrpc": "2.0", "id": id, "result": result });
@@ -904,6 +1171,52 @@ fn route_message(
             let line = format!("[log] {}", msg["params"]["message"].as_str().unwrap_or(""));
             shared.push_log(line);
         }
+        Some("$/progress") => progress_notification(shared, &msg["params"]),
+        _ => {}
+    }
+}
+
+/// `$/progress` with a work done payload: begin, report or end.
+fn progress_notification(shared: &Shared, params: &Value) {
+    let token = match &params["token"] {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let value = &params["value"];
+    let text = |key: &str| value[key].as_str().map(String::from);
+    let percentage = value["percentage"].as_u64().map(|p| p.min(100) as u32);
+    let mut list = shared.progress.lock().unwrap();
+    match value["kind"].as_str() {
+        Some("begin") => {
+            list.retain(|p| p.token != token);
+            let title = text("title").unwrap_or_default();
+            shared.push_log(format!("[progress] {title}"));
+            shared.started.lock().unwrap().push(title.clone());
+            list.push(Progress {
+                token,
+                title,
+                message: text("message").unwrap_or_default(),
+                percentage,
+            });
+        }
+        Some("report") => {
+            if let Some(p) = list.iter_mut().find(|p| p.token == token) {
+                if let Some(message) = text("message") {
+                    p.message = message;
+                }
+                if percentage.is_some() {
+                    p.percentage = percentage;
+                }
+            }
+        }
+        Some("end") => {
+            if let Some(at) = list.iter().position(|p| p.token == token) {
+                let done = list.remove(at);
+                let message = text("message").unwrap_or_default();
+                shared.push_log(format!("[progress] {} done {message}", done.title));
+                shared.finished.lock().unwrap().push((done.title, message));
+            }
+        }
         _ => {}
     }
 }
@@ -912,41 +1225,11 @@ fn route_message(
 // Descoberta do servidor
 // ---------------------------------------------------------------------------
 
-/// Comando do servidor PHP, nesta ordem:
-/// 1. variável de ambiente `PHPIDE_LSP` (ex.: "phpactor language-server")
-/// 2. `third_party/node_modules/.bin/intelephense` (instalado localmente, `npm run lsp:install`)
-/// 3. `intelephense` no PATH
-/// 4. `phpactor` no PATH
+/// The PHP server command for a project at `root`, by the automatic
+/// discovery of [`engine`] (bundled PHPantom first; `PHPIDE_LSP` wins).
 pub fn detect_server(root: &Path) -> Option<(String, Vec<String>)> {
-    if let Ok(cmd) = std::env::var("PHPIDE_LSP") {
-        let mut parts = cmd.split_whitespace();
-        let bin = parts.next()?.to_string();
-        return Some((bin, parts.map(String::from).collect()));
-    }
-    let local = root
-        .join("third_party/node_modules/.bin/intelephense")
-        .canonicalize()
-        .ok();
-    if let Some(bin) = local {
-        return Some((bin.display().to_string(), vec!["--stdio".to_string()]));
-    }
-    for name in ["intelephense", "phpactor"] {
-        if Command::new("which")
-            .arg(name)
-            .stdout(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            let args = if name == "intelephense" {
-                vec!["--stdio".to_string()]
-            } else {
-                vec!["language-server".to_string()]
-            };
-            return Some((name.to_string(), args));
-        }
-    }
-    None
+    let found = engine::resolve(&engine::EngineChoice::Automatic, root).ok()?;
+    Some((found.program.display().to_string(), found.args))
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +1265,59 @@ mod tests {
         );
         assert!(parse_locations(&Value::Null).is_empty());
         assert!(parse_locations(&json!([])).is_empty());
+    }
+
+    #[test]
+    fn progress_begins_reports_and_ends() {
+        let shared = Shared::default();
+        let note = |value: Value| json!({ "token": "index/1", "value": value });
+        progress_notification(
+            &shared,
+            &note(json!({ "kind": "begin", "title": "Indexing", "percentage": 0 })),
+        );
+        progress_notification(
+            &shared,
+            &note(json!({ "kind": "report", "message": "vendor", "percentage": 42 })),
+        );
+        let now = shared.progress.lock().unwrap().clone();
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].text(), "Indexing… 42%");
+        assert_eq!(now[0].message, "vendor");
+        progress_notification(
+            &shared,
+            &note(json!({ "kind": "end", "message": "1200 files" })),
+        );
+        assert!(shared.progress.lock().unwrap().is_empty());
+        assert_eq!(
+            *shared.finished.lock().unwrap(),
+            [("Indexing".to_string(), "1200 files".to_string())]
+        );
+        // A report for a token that never began is ignored.
+        progress_notification(&shared, &note(json!({ "kind": "report", "percentage": 5 })));
+        assert!(shared.progress.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn initialize_sends_folders_and_options() {
+        let options = InitOptions {
+            extra_folders: vec![PathBuf::from("/work/lib")],
+            initialization_options: json!({ "indexing": { "exclude": ["build"] } }),
+        };
+        let params = initialize_params(Path::new("/work/app"), &options);
+        let names: Vec<&str> = params["workspaceFolders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["name"].as_str())
+            .collect();
+        assert_eq!(names, ["app", "lib"]);
+        assert_eq!(
+            params["initializationOptions"]["indexing"]["exclude"][0],
+            "build"
+        );
+        assert_eq!(params["capabilities"]["window"]["workDoneProgress"], true);
+        let plain = initialize_params(Path::new("/work/app"), &InitOptions::default());
+        assert!(plain.get("initializationOptions").is_none());
     }
 
     #[test]
@@ -1044,6 +1380,31 @@ mod tests {
         let empty = ServerCapabilities::from_initialize(&json!({}));
         assert!(!empty.definition_provider);
         assert!(!empty.semantic_tokens_provider);
+        assert!(!empty.workspace_folders_changes);
+
+        let phpantom = ServerCapabilities::from_initialize(&json!({
+            "capabilities": {
+                "declarationProvider": true,
+                "typeHierarchyProvider": true,
+                "callHierarchyProvider": true,
+                "codeLensProvider": { "resolveProvider": false },
+                "selectionRangeProvider": true,
+                "documentLinkProvider": {},
+                "workspace": { "workspaceFolders": { "supported": true, "changeNotifications": true } }
+            },
+            "serverInfo": { "name": "PHPantom", "version": "1.1.0" }
+        }));
+        assert!(phpantom.declaration_provider && phpantom.type_hierarchy_provider);
+        assert!(phpantom.call_hierarchy_provider && phpantom.code_lens_provider);
+        assert!(phpantom.selection_range_provider && phpantom.document_link_provider);
+        assert!(phpantom.workspace_folders_changes);
+        assert_eq!(
+            (
+                phpantom.server_name.as_str(),
+                phpantom.server_version.as_str()
+            ),
+            ("PHPantom", "1.1.0")
+        );
     }
 
     #[test]

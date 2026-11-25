@@ -233,7 +233,7 @@ fn phase10_menus() {
             let ctx = h.ctx.clone();
             install(&ctx, Theme::new(theme, Density::Comfortable));
             h.state_mut().editors.clear_layouts();
-            let image = snapshot::render(&ctx, egui::vec2(1280.0, 800.0), 3, |ui| {
+            let image = snapshot::render(&ctx, egui::vec2(1280.0, 800.0), 12, |ui| {
                 h.state_mut().frame_ui(ui)
             });
             image.write_png(&out.join(format!("phase10-{name}-{label}.png")));

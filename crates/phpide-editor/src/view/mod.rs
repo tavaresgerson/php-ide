@@ -116,6 +116,8 @@ pub struct EditorView {
     pub(crate) page_rows: usize,
     /// Hit areas painted last frame: fold placeholders and sticky lines.
     pub(crate) fold_chips: Vec<(egui::Rect, usize)>,
+    /// Code lenses painted last frame: rect and index.
+    pub(crate) lens_chips: Vec<(egui::Rect, usize)>,
     pub(crate) sticky_rows: Vec<(egui::Rect, usize)>,
     pub(crate) last_press: Option<(Instant, egui::Pos2, u8)>,
 }
@@ -150,6 +152,7 @@ impl EditorView {
             preedit: None,
             page_rows: 30,
             fold_chips: Vec::new(),
+            lens_chips: Vec::new(),
             sticky_rows: Vec::new(),
             last_press: None,
         }

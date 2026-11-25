@@ -215,7 +215,7 @@ pub fn poll_init(srv: &mut FeServer) {
     let Some(rx) = &srv.init_rx else { return };
     if let Ok(init) = rx.try_recv() {
         srv.client.register_capabilities(&init);
-        srv.client.notify("initialized", Value::Null);
+        srv.client.initialized();
         *srv.client.shared.status.lock().unwrap() = LspStatus::Running(srv.name.to_string());
         srv.initialized = true;
     }

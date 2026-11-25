@@ -4,3 +4,4 @@ third_party/node_modules/
 .serena/
 .phpunit.result.cache
 Claude outputs/
+third_party/phpantom/

@@ -7,7 +7,7 @@
 | `phpide-core` | `Document` (rope, change sets, change log), `Buffer` (tab + grouped undo history), `Workspace`, file tree, diagnostics, byte/char/UTF-16 offsets, revisions, `JobSystem`, versioned settings, `IdeError`, logger with secret redaction, atomic save |
 | `phpide-php` | PHP metadata, Composer discovery (language level, PSR-4/PSR-0 roots), file types (`filetype`: name patterns, first-line detection, built-in line languages), syntect highlighting by semantic role (`SyntaxRole`), per line for non-PHP files (`LineHighlighter`) |
 | `phpide-syntax` | tree-sitter-php: structural blocks, folding ranges, offline syntax errors |
-| `phpide-lsp` | LSP client: JSON-RPC over stdio or any stream pair on threads (no async runtime), capabilities, ranged document sync (`sync`), completion model and ranking, snippets (`snippet`), workspace edits; `fixture` is a small PHP language server used by the tests |
+| `phpide-lsp` | LSP client: JSON-RPC over stdio or any stream pair on threads (no async runtime), capabilities, ranged document sync (`sync`), completion model and ranking, snippets (`snippet`), workspace edits, server discovery (`engine`: bundled PHPantom, Settings choice, `PHPIDE_LSP`, PATH); `fixture` is a small PHP language server used by the tests |
 | `phpide-dbgp` | DBGp (Xdebug): listener, breakpoints, stepping, stack, variables (children fetched on demand), path mappings |
 | `phpide-term` | Terminal: PTY on Unix (`openpty`, fork, own session and controlling terminal, resize, foreground working directory) and an xterm-compatible emulator (`Terminal`: screen grid, scrollback, SGR colors, alternate screen, modes, replies); key and paste encoding; `path:line` link detection |
 | `phpide-exec` | External processes: executable discovery, spawn, timeout, Stop with process-group kill, streamed stdout/stderr |
@@ -61,6 +61,10 @@ Still synchronous on the UI thread: opening and saving a file, reading
 | `commands.rs` | Command registry: menu, Find Action and shortcuts |
 | `app_project.rs` | Open/switch project, settings, theme, watcher, services polling |
 | `app_lsp.rs` | Language server lifecycle, document sync, diagnostics, navigation requests, symbols |
+| `lsp_engine.rs` | Engine choice (global and per project), PHPantom's file filters, restart after crashes |
+| `lsp_features.rs` | Go to Super Method, code lenses, Extend/Shrink Selection, document links |
+| `hierarchy.rs` | Type and call hierarchies (Hierarchy tool window) |
+| `settings_lsp.rs` | Settings › PHP › Language Server |
 | `app_completion.rs`, `completion.rs` | Completion popup (filtering in the editor, documentation, snippet tab stops) |
 | `app_intel.rs`, `markdown.rs` | Quick Documentation, Parameter Info, Rename, context actions, Reformat Code, File Structure, server log; Markdown for documentation popups |
 | `app_actions.rs` | Command dispatcher, shortcuts, close/save, run/debug actions |

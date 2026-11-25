@@ -42,7 +42,14 @@ impl ProjectMarks {
     /// Marks of `root`: the user's, or composer.json's.
     pub fn load(root: &Path, composer: Option<&phpide_php::composer::ComposerInfo>) -> Self {
         if let Ok(text) = std::fs::read_to_string(Self::file(root)) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+            // A file holding only other settings has no marks of the user's.
+            let has_marks = parsed.as_ref().is_some_and(|v| {
+                ["sources", "tests", "excluded"]
+                    .iter()
+                    .any(|key| v.get(*key).is_some())
+            });
+            if let Some(v) = parsed.filter(|_| has_marks) {
                 let list = |key: &str| -> Vec<PathBuf> {
                     v[key]
                         .as_array()
@@ -95,13 +102,17 @@ impl ProjectMarks {
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect()
         };
-        let text = serde_json::to_string_pretty(&json!({
-            "sources": rel(&self.sources),
-            "tests": rel(&self.tests),
-            "excluded": rel(&self.excluded),
-        }))
-        .unwrap_or_default();
         let file = Self::file(root);
+        // Other settings share the file (the project's language server).
+        let mut value = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        value["sources"] = json!(rel(&self.sources));
+        value["tests"] = json!(rel(&self.tests));
+        value["excluded"] = json!(rel(&self.excluded));
+        let text = serde_json::to_string_pretty(&value).unwrap_or_default();
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
         }

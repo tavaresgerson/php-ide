@@ -21,7 +21,7 @@ Later, Optional.
 | RF-PRJ-05 | Remove a project from the recent list (files stay) | MVP | ✅ Hover ✕ and context menu |
 | RF-PRJ-06 | Project groups | Later | ✅ Groups on Home: move to group, new, rename, remove, fold |
 | RF-PRJ-07 | Custom project icon | Later | ✅ `.phpide/icon.png` (or `.idea/icon.png`); else initials |
-| RF-PRJ-08 | Second project: new window, this window or attach; default New/Current/Ask | MVP | ✅ New window, this window, **attach** (extra root in the Project view and Go to File; Detach in its context menu) and Ask with "remember". Attached roots get no language server of their own yet |
+| RF-PRJ-08 | Second project: new window, this window or attach; default New/Current/Ask | MVP | ✅ New window, this window, **attach** (extra root in the Project view and Go to File; Detach in its context menu) and Ask with "remember". Attached roots are workspace folders of the PHP language server (Phase 11) |
 | RF-PRJ-09 | Attached projects resolved after the main one | Later | ⬜ After v1.0 |
 | RF-PRJ-10 | Switch between open projects (Ctrl+Alt+] / [, Window menu) | MVP | ✅ Window › project list, Next/Previous Project Window (Ctrl+Alt+] / [); a window registry under `$XDG_RUNTIME_DIR` lists and focuses the other processes |
 | RF-PRJ-11 | Reopen the projects open at exit (can be turned off) | MVP | ✅ Every window open at exit is reopened (one process each); Settings › Appearance & Behavior › System turns it off |

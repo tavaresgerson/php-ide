@@ -1,0 +1,13 @@
+# PHPantom pinned for PHP IDE: the release the IDE bundles and the CI tests.
+#
+# Read by scripts/fetch-phpantom.sh, which downloads the archive for the
+# machine's architecture and refuses it unless its SHA-256 matches.
+#
+# To move to another release, run:
+#   scripts/fetch-phpantom.sh --update VERSION
+# It downloads both archives, records their hashes here and in the Flatpak
+# manifest. Review the release notes before committing the change.
+repo=PHPantom-dev/phpantom_lsp
+version=1.1.0
+sha256_x86_64=f374e72ebd51d5e991bb0e7e395ec3a49b3dc75f101e69e4743f908515e9d7e7
+sha256_aarch64=888633fd40b9af4709338af7cc76a34e9096f4259812cd24911109af1d068c5f

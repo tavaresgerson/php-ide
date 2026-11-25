@@ -380,7 +380,8 @@ fn real_servers_on_laravel_fixture() {
             .completion
             .visible()
             .iter()
-            .any(|i| i.label == "fullName")
+            // PHPantom labels methods with their parameters: "fullName()".
+            .any(|i| i.label == "fullName" || i.label.starts_with("fullName("))
     });
     h.key_press(egui::Key::Escape);
     h.run_steps(2);

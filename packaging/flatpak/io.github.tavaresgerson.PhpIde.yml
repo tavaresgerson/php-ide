@@ -37,7 +37,25 @@ modules:
     buildsystem: simple
     build-commands:
       - cargo build --release --locked -p phpide-ui
-      - BIN=target/release/phpide-ui bash scripts/install-files.sh / /app
+      - >-
+        BIN=target/release/phpide-ui
+        PHPANTOM_BIN=third_party/phpantom/phpantom_lsp
+        bash scripts/install-files.sh / /app
     sources:
       - type: dir
         path: ../..
+      # PHPantom, the bundled PHP language server: the release pinned in
+      # third_party/phpantom.lock (scripts/fetch-phpantom.sh --update
+      # rewrites the url and sha256 lines marked "# phpantom <arch>").
+      - type: archive
+        only-arches: [x86_64]
+        url: https://github.com/PHPantom-dev/phpantom_lsp/releases/download/1.1.0/phpantom_lsp-x86_64-unknown-linux-gnu.tar.gz # phpantom x86_64
+        sha256: f374e72ebd51d5e991bb0e7e395ec3a49b3dc75f101e69e4743f908515e9d7e7 # phpantom x86_64
+        strip-components: 0
+        dest: third_party/phpantom
+      - type: archive
+        only-arches: [aarch64]
+        url: https://github.com/PHPantom-dev/phpantom_lsp/releases/download/1.1.0/phpantom_lsp-aarch64-unknown-linux-gnu.tar.gz # phpantom aarch64
+        sha256: 888633fd40b9af4709338af7cc76a34e9096f4259812cd24911109af1d068c5f # phpantom aarch64
+        strip-components: 0
+        dest: third_party/phpantom

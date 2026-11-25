@@ -93,6 +93,7 @@ icons! {
     Terminal => "terminal", "terminal-2", "Terminal";
     Problems => "problems", "alert-circle", "Problems";
     Structure => "structure", "list-tree", "Structure";
+    Hierarchy => "hierarchy", "hierarchy", "Hierarchy";
     Commit => "commit", "git-commit", "Commit";
     VersionControl => "version-control", "git-pull-request", "Version control";
     Diff => "diff", "git-compare", "Show diff";

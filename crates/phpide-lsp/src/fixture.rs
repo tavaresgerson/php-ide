@@ -21,17 +21,27 @@ use crate::{encode_frame, path_to_uri, read_frame, uri_to_path, LspClient};
 
 /// Starts the fixture server for `root` on a thread and connects a client.
 pub fn start(root: &Path) -> std::io::Result<(LspClient, mpsc::Receiver<Value>)> {
+    start_with(root, &crate::InitOptions::default())
+}
+
+/// [`start`] with workspace folders and initialization options; the server
+/// echoes them in `fixture/state`.
+pub fn start_with(
+    root: &Path,
+    options: &crate::InitOptions,
+) -> std::io::Result<(LspClient, mpsc::Receiver<Value>)> {
     let (server_in, client_out) = std::io::pipe()?;
     let (client_in, server_out) = std::io::pipe()?;
     std::thread::Builder::new()
         .name("fixture-lsp".into())
         .spawn(move || run(server_in, server_out))?;
-    Ok(LspClient::connect(
+    Ok(LspClient::connect_with(
         Box::new(client_out),
         Box::new(client_in),
         None,
         None,
         root,
+        options,
     ))
 }
 
@@ -201,6 +211,12 @@ struct Server {
     disk: HashMap<String, String>,
     full_changes: usize,
     ranged_changes: usize,
+    /// Workspace folders (URIs), as sent at startup and changed since.
+    folders: Vec<String>,
+    /// `initializationOptions`, then each `didChangeConfiguration`.
+    settings: Vec<Value>,
+    /// The client asked for `$/progress` (`window.workDoneProgress`).
+    progress: bool,
 }
 
 impl Server {
@@ -212,7 +228,66 @@ impl Server {
                     self.root = root;
                     self.scan();
                 }
+                self.folders = params["workspaceFolders"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|f| f["uri"].as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(options) = params.get("initializationOptions") {
+                    self.settings.push(options.clone());
+                }
+                self.progress = params["capabilities"]["window"]["workDoneProgress"] == true;
                 capabilities()
+            }
+            // Indexing, reported the way PHPantom does: create a token, then
+            // begin, report and end.
+            "initialized" => {
+                if self.progress {
+                    let token = "fixture/index";
+                    let progress = |value: Value| {
+                        json!({
+                            "jsonrpc": "2.0", "method": "$/progress",
+                            "params": { "token": token, "value": value }
+                        })
+                    };
+                    out.push(json!({
+                        "jsonrpc": "2.0", "id": "fixture-progress-1",
+                        "method": "window/workDoneProgress/create",
+                        "params": { "token": token }
+                    }));
+                    out.push(progress(
+                        json!({ "kind": "begin", "title": "Indexing", "percentage": 0 }),
+                    ));
+                    out.push(progress(json!({ "kind": "report", "percentage": 50 })));
+                    out.push(progress(json!({
+                        "kind": "end",
+                        "message": format!("{} files", self.disk.len())
+                    })));
+                }
+                return out;
+            }
+            "workspace/didChangeConfiguration" => {
+                self.settings.push(params["settings"].clone());
+                return out;
+            }
+            "workspace/didChangeWorkspaceFolders" => {
+                let uris = |key: &str| -> Vec<String> {
+                    params["event"][key]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|f| f["uri"].as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let removed = uris("removed");
+                self.folders.retain(|f| !removed.contains(f));
+                self.folders.extend(uris("added"));
+                return out;
             }
             "shutdown" => Value::Null,
             "textDocument/didOpen" => {
@@ -271,6 +346,8 @@ impl Server {
                     "text": self.text(uri),
                     "fullChanges": self.full_changes,
                     "rangedChanges": self.ranged_changes,
+                    "folders": self.folders,
+                    "settings": self.settings,
                 })
             }
             "textDocument/completion" => self.completion(params),
@@ -757,7 +834,8 @@ fn capabilities() -> Value {
             "workspaceSymbolProvider": true,
             "codeActionProvider": { "codeActionKinds": ["quickfix", "source"] },
             "documentFormattingProvider": true,
-            "executeCommandProvider": { "commands": ["fixture.addHeader"] }
+            "executeCommandProvider": { "commands": ["fixture.addHeader"] },
+            "workspace": { "workspaceFolders": { "supported": true, "changeNotifications": true } }
         },
         "serverInfo": { "name": "fixture-php", "version": "1" }
     })

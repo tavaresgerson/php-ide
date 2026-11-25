@@ -27,6 +27,8 @@ pub enum RequestOperation {
     Definition,
     Implementation,
     TypeDefinition,
+    /// Go to Super Method.
+    Declaration,
     Hints,
     Usages,
 }

@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use phpide_lsp::{detect_server, LspClient, LspStatus};
-use serde_json::Value;
 
 /// A required tool is missing. With `PHPIDE_REQUIRE_INTEGRATIONS=1` (CI)
 /// that is a failure; otherwise the skip is printed with a marker that
@@ -97,13 +96,13 @@ fn composer_project_full_flow_with_real_lsp() {
     let init = wait_for(Duration::from_secs(30), || init_rx.try_recv().ok())
         .expect("initialize do servidor");
     lsp.register_capabilities(&init);
-    lsp.notify("initialized", Value::Null);
+    lsp.initialized();
     // Transição de estado que a UI faz no poll (T-PHP-001-02): Starting →
     // Running quando o initialize traz capabilities.
     *lsp.shared.status.lock().unwrap() = LspStatus::Running(cmd.clone());
     let caps = lsp.capabilities();
-    assert!(caps.definition_provider, "intelephense declara definition");
-    assert!(caps.completion_provider, "intelephense declara completion");
+    assert!(caps.definition_provider, "the server declares definition");
+    assert!(caps.completion_provider, "the server declares completion");
 
     // 3. Abrir arquivos (didOpen) com versões.
     let main = root.join("src/main.php");
@@ -122,7 +121,7 @@ fn composer_project_full_flow_with_real_lsp() {
             Some(list.clone())
         }
     })
-    .expect("diagnósticos do arquivo quebrado");
+    .unwrap_or_else(|| panic!("diagnósticos do arquivo quebrado: {:#?}", lsp.log()));
     assert!(!diags.is_empty());
 
     // 5. Editar com versão (didChange) e salvar (didSave) sem erro de ordem.
@@ -145,7 +144,11 @@ fn composer_project_full_flow_with_real_lsp() {
         if let Some(result) = wait_for(Duration::from_secs(10), || rx.try_recv().ok()) {
             let items = phpide_lsp::parse_completions(&result);
             seen = items.iter().map(|i| i.label.clone()).take(5).collect();
-            if items.iter().any(|i| i.label == "greet") {
+            // PHPantom labels methods with their parameters: "greet($name)".
+            if items
+                .iter()
+                .any(|i| i.label == "greet" || i.label.starts_with("greet("))
+            {
                 break;
             }
         }

@@ -417,13 +417,15 @@ fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
 fn language_server_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     use phpide_lsp::LspStatus;
     let status = app.lsp.as_ref().map(|l| l.status());
+    let progress = app.lsp.as_ref().and_then(|l| l.progress().last().cloned());
     let (text, icon, tone, tip) = match &status {
         None => (
             "No PHP server".to_string(),
             IconId::Info,
             Tone::Neutral,
-            "No language server found: install intelephense or phpactor (vendor/bin or PATH)"
-                .to_string(),
+            app.lsp_start_error
+                .clone()
+                .unwrap_or_else(|| "No language server is running".to_string()),
         ),
         Some(LspStatus::Starting) => (
             app.lsp_name.clone(),
@@ -431,17 +433,42 @@ fn language_server_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             Tone::Neutral,
             format!("{} is starting", app.lsp_name),
         ),
-        Some(LspStatus::Running(_)) => (
-            app.lsp_name.clone(),
-            IconId::Success,
-            Tone::Success,
-            format!("{} is running", app.lsp_name),
+        Some(LspStatus::Running(_)) => match &progress {
+            Some(work) => (
+                work.text(),
+                IconId::Loader,
+                Tone::Neutral,
+                if work.message.is_empty() {
+                    format!("{}: {}", app.lsp_name, work.text())
+                } else {
+                    format!("{}: {} — {}", app.lsp_name, work.text(), work.message)
+                },
+            ),
+            None => (
+                app.lsp_name.clone(),
+                IconId::Success,
+                Tone::Success,
+                format!("{} is running", app.lsp_name),
+            ),
+        },
+        Some(LspStatus::Failed(reason)) if app.lsp_supervisor.waiting() => (
+            format!("{} (restarting)", app.lsp_name),
+            IconId::Loader,
+            Tone::Warning,
+            format!("{} stopped: {reason}; restarting it", app.lsp_name),
         ),
         Some(LspStatus::Failed(reason)) => (
             app.lsp_name.clone(),
             IconId::Error,
             Tone::Error,
-            format!("{} stopped: {reason}", app.lsp_name),
+            if app.lsp_supervisor.gave_up() {
+                format!(
+                    "{} stopped: {reason}; it crashed too often to restart by itself",
+                    app.lsp_name
+                )
+            } else {
+                format!("{} stopped: {reason}", app.lsp_name)
+            },
         ),
     };
     let response = StatusItem::new(text)
@@ -467,6 +494,19 @@ fn language_server_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         }
         if menu_item(ui, Some(IconId::FileText), "Language Server Log", "", true).clicked() {
             app.intel.log_open = true;
+            ui.close();
+        }
+        if menu_item(
+            ui,
+            Some(IconId::Settings),
+            "Language Server Settings…",
+            "",
+            true,
+        )
+        .clicked()
+        {
+            app.settings_dialog
+                .open(crate::settings_dialog::SettingsPage::PhpLanguageServer);
             ui.close();
         }
     });

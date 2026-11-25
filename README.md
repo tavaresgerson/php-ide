@@ -6,8 +6,9 @@ source under MIT OR Apache-2.0, with no proprietary components.
 > **Status: release candidate for 1.0.** The code editor (multi-cursor,
 > incremental highlighting, folding, split, find/replace; smooth on
 > 50k-line files), PhpStorm's navigation and shortcuts, PHP intelligence on
-> intelephense or phpactor (completion, documentation, parameter info,
-> rename, quick fixes, formatting), run configurations, the Xdebug
+> the bundled PHPantom language server (completion, documentation,
+> parameter info, rename, quick fixes, formatting, hierarchies, code
+> lenses; intelephense and phpactor also work), run configurations, the Xdebug
 > debugger, PHPUnit with coverage, a real terminal and Git (commit with
 > hunk staging, side-by-side diff, branches, push/pull, log) are in. Unsaved
 > work survives a crash, every control is named for screen readers, and
@@ -57,12 +58,32 @@ cargo run -p phpide-ui -- --gallery
 
 ## PHP language server
 
-PHP IDE talks to an external language server. It looks for one in this order:
+PHP IDE ships [PHPantom](https://github.com/PHPantom-dev/phpantom_lsp)
+(MIT), a PHP language server in Rust, and runs it as a separate process:
+the packages install it as `<prefix>/lib/phpide/phpantom_lsp`. In a source
+checkout, `bash scripts/fetch-phpantom.sh` downloads the release pinned in
+`third_party/phpantom.lock` (its SHA-256 is checked) into
+`third_party/phpantom/`.
 
-1. `PHPIDE_LSP` environment variable, e.g. `PHPIDE_LSP="phpactor language-server"`
-2. `third_party/node_modules/.bin/intelephense` (install with `npm ci --prefix third_party`)
-3. `intelephense` on `PATH`
+Settings › PHP › Language Server chooses the engine — Automatic, PHPantom,
+intelephense, phpactor or a command of your own — for every project or for
+one project (stored in `.phpide/project.json`). It shows the server in use,
+restarts it, opens its log and opens the project's `.phpantom.toml`
+(created by `phpantom_lsp init --yes` only when you ask). Automatic looks,
+in this order, for:
+
+1. the `PHPIDE_LSP` environment variable (a whole command line; it wins
+   over the setting), e.g. `PHPIDE_LSP="phpactor language-server"`
+2. PHPantom installed with the IDE, then `third_party/phpantom/`, then
+   `phpantom_lsp` on `PATH`
+3. `third_party/node_modules/.bin/intelephense` (`npm ci --prefix third_party`),
+   then `intelephense` on `PATH`
 4. `phpactor` on `PATH`
+
+PHPantom gets the folders marked Excluded and the extensions File Types
+maps to PHP, and attached projects as workspace folders. If the server
+crashes it is started again, waiting longer each time (three times in five
+minutes at most).
 
 Without a server, syntax errors, folding and structure still work offline
 through tree-sitter.
@@ -85,7 +106,10 @@ through tree-sitter.
 | Ctrl+Q / Ctrl+P | Quick Documentation / Parameter Info |
 | Alt+Enter / Shift+F6 / Ctrl+Alt+L | Context actions / Rename symbol / Reformat code |
 | Ctrl+F12 | File Structure |
-| Ctrl+B | Go to definition |
+| Ctrl+B / Ctrl+Alt+B / Ctrl+U | Go to definition / implementation / super method |
+| Ctrl+H / Ctrl+Alt+H | Type Hierarchy / Call Hierarchy |
+| Ctrl+W / Ctrl+Shift+W | Extend / Shrink Selection |
+| Ctrl+click | Go to definition, or follow a link (`require` paths) |
 | Ctrl+F / Ctrl+R / F3 | Find / Replace / Find next in the editor |
 | Ctrl+Shift+F / Ctrl+Shift+R | Find in files / Replace in files (folder scope, file mask) |
 | Ctrl+Shift+E (twice: changed only) | Recent Locations |
@@ -121,5 +145,7 @@ through tree-sitter.
 MIT OR Apache-2.0 for the project's own code. Dependencies keep their own
 licenses (see `cargo tree`). Bundled assets: Tabler Icons (MIT), Inter and
 JetBrains Mono (SIL OFL 1.1) — see `crates/phpide-icons/assets/manifest.json`
-and `crates/phpide-ui/assets/fonts/README.md`. Intelephense is freeware and is installed
+and `crates/phpide-ui/assets/fonts/README.md`. The packages include PHPantom
+(MIT), which embeds phpstorm-stubs (Apache-2.0): see
+`packaging/third-party/`. Intelephense is freeware and is installed
 locally through npm, never redistributed.

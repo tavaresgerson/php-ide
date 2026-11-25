@@ -185,6 +185,13 @@ pub struct Settings {
     pub project_groups: Vec<(String, Vec<String>)>,
     /// User shortcuts per command id (RF-UI-06); a command listed here uses only these.
     pub shortcuts: Vec<(String, Vec<String>)>,
+    /// PHP language server: "auto", "phpantom", "intelephense", "phpactor"
+    /// or "custom" (projects may choose their own in `.phpide/project.json`).
+    pub lsp_engine: String,
+    /// Command line of the "custom" language server.
+    pub lsp_command: String,
+    /// Code lenses of the language server (usages, implementations).
+    pub code_lens: bool,
 }
 
 fn pairs(value: &Value) -> Option<Vec<(String, String)>> {
@@ -266,6 +273,9 @@ impl Default for Settings {
             reopen_last_project: true,
             last_project: String::new(),
             attached_projects: Vec::new(),
+            lsp_engine: "auto".to_string(),
+            lsp_command: String::new(),
+            code_lens: true,
             editor_font_family: String::new(),
             editor_line_height: 1.2,
             color_scheme: Value::Null,
@@ -505,6 +515,17 @@ impl Settings {
                 })
                 .collect();
         }
+        if let Some(value) = v["lsp_engine"].as_str() {
+            s.lsp_engine = phpide_lsp::engine::EngineChoice::from_id(value, "")
+                .id()
+                .to_string();
+        }
+        if let Some(value) = v["lsp_command"].as_str() {
+            s.lsp_command = value.to_string();
+        }
+        if let Some(value) = v["code_lens"].as_bool() {
+            s.code_lens = value;
+        }
         if let Some(arr) = v["attached_projects"].as_array() {
             s.attached_projects = arr
                 .iter()
@@ -603,8 +624,24 @@ impl Settings {
             .iter()
             .map(|(a, b)| json!([a, b]))
             .collect::<Vec<_>>());
+        v["lsp_engine"] = json!(self.lsp_engine);
+        v["lsp_command"] = json!(self.lsp_command);
+        v["code_lens"] = json!(self.code_lens);
         if let Err(e) = store::save(&dir.join("settings.json"), &v) {
             eprintln!("{}", e.log_line());
+        }
+    }
+
+    /// The PHP language server chosen for every project.
+    pub fn lsp_choice(&self) -> phpide_lsp::engine::EngineChoice {
+        phpide_lsp::engine::EngineChoice::from_id(&self.lsp_engine, &self.lsp_command)
+    }
+
+    /// Stores `choice` as the global language server.
+    pub fn set_lsp_choice(&mut self, choice: &phpide_lsp::engine::EngineChoice) {
+        self.lsp_engine = choice.id().to_string();
+        if let phpide_lsp::engine::EngineChoice::Custom(command) = choice {
+            self.lsp_command = command.clone();
         }
     }
 

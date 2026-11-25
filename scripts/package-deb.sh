@@ -17,6 +17,7 @@ LINKED="libc6, libgcc-s1, zlib1g"
 if command -v dpkg-shlibdeps >/dev/null; then
   mkdir -p "$STAGE/debian"
   printf 'Source: phpide\n\nPackage: phpide\nArchitecture: any\n' > "$STAGE/debian/control"
+  # PHPantom is a static binary: it adds no dependency.
   if found="$(cd "$STAGE" && dpkg-shlibdeps -O -e usr/bin/phpide 2>/dev/null)"; then
     LINKED="${found#shlibs:Depends=}"
   fi
@@ -40,8 +41,9 @@ Priority: optional
 Homepage: https://github.com/tavaresgerson/php-ide
 Description: PHP development environment
  Free and open source IDE for PHP written in Rust: code editor, completion
- through intelephense or phpactor, run configurations, Xdebug debugger,
- PHPUnit with coverage, Git and an integrated terminal.
+ and navigation through the bundled PHPantom language server (intelephense
+ and phpactor also work), run configurations, Xdebug debugger, PHPUnit with
+ coverage, Git and an integrated terminal.
 CONTROL
 
 # Debian wants a copyright file next to the docs.
@@ -52,6 +54,13 @@ Source: https://github.com/tavaresgerson/php-ide
 
 Files: *
 License: MIT or Apache-2.0
+
+Files: usr/lib/phpide/phpantom_lsp
+Copyright: PHPantom Contributors
+License: MIT
+Comment: PHPantom language server; it embeds phpstorm-stubs (Copyright
+ JetBrains s.r.o. and contributors, Apache-2.0). The license texts are in
+ /usr/share/doc/phpide/third-party/.
 COPYRIGHT
 
 mkdir -p "$OUT"

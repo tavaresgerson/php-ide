@@ -40,10 +40,24 @@ jobs:
           sudo apt-get install -y --no-install-recommends php-cli php-xdebug php-xml php-mbstring composer git
           php --version
       - run: npm ci --prefix third_party
+      - name: PHPantom (the release pinned in third_party/phpantom.lock)
+        run: bash scripts/fetch-phpantom.sh
       - name: Unit, integration and UI interaction tests
+        env:
+          PHPIDE_REQUIRE_PHPANTOM: "1"
         run: cargo test --workspace --locked
       - name: Frozen features (experimental build)
+        env:
+          PHPIDE_REQUIRE_PHPANTOM: "1"
         run: cargo test -p phpide-ui --locked --features experimental
+      - name: PHPantom measurements (Laravel with vendor/)
+        continue-on-error: true
+        run: |
+          composer create-project laravel/laravel /tmp/laravel --prefer-dist --no-interaction --no-scripts --quiet
+          PHPIDE_MEASURE_ROOT=/tmp/laravel \
+          PHPIDE_MEASURE_FILE=vendor/laravel/framework/src/Illuminate/Foundation/Application.php \
+            cargo test -p phpide-lsp --release --locked --test measure_phpantom -- --ignored --nocapture 2>&1 \
+            | grep -E '^(project|indexing|MEASURE)' | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Screenshots for review (three themes)
         if: always()
         run: |
@@ -81,6 +95,8 @@ jobs:
           sudo apt-get install -y ./target/package/phpide_*.deb
           phpide --version
           dpkg -L phpide | grep -q io.github.tavaresgerson.PhpIde.desktop
+          /usr/lib/phpide/phpantom_lsp --version
+          test -f /usr/share/doc/phpide/third-party/phpstorm-stubs/LICENSE
       - name: AppImage
         run: |
           curl -fsSL -o appimagetool \

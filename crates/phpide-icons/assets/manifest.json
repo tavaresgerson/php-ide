@@ -545,6 +545,11 @@
       "name": "find-usages",
       "tabler": "list-search",
       "file": "assets/find-usages.svg"
+    },
+    {
+      "name": "hierarchy",
+      "tabler": "hierarchy",
+      "file": "assets/hierarchy.svg"
     }
   ]
 }

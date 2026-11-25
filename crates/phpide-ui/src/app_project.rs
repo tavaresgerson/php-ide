@@ -18,11 +18,6 @@ impl PhpIdeApp {
         let (settings, settings_err) = settings::Settings::load_or_default();
         crate::commands::set_overrides(&settings.shortcuts);
         let theme = ThemeId::from_name(&settings.theme);
-        let (lsp, lsp_init, lsp_name) = if has_project {
-            start_lsp(&root)
-        } else {
-            (None, None, String::new())
-        };
         let plugins = plugins::discover_plugins(&root, &settings::config_dir());
         let logger = app_recovery::make_logger();
         let session = std::process::id() as u64;
@@ -65,9 +60,14 @@ impl PhpIdeApp {
             logger,
             session,
             pending_close: None,
-            lsp,
-            lsp_init,
-            lsp_name,
+            lsp: None,
+            lsp_init: None,
+            lsp_name: String::new(),
+            lsp_server: None,
+            lsp_start_error: None,
+            lsp_supervisor: Default::default(),
+            lsp_settings_sent: Value::Null,
+            lsp_folders: Vec::new(),
             lsp_crash_notified: false,
             lsp_opened: HashMap::new(),
             lsp_mirrors: HashMap::new(),
@@ -126,6 +126,10 @@ impl PhpIdeApp {
             hints: hints::HintStore::default(),
             hints_path: None,
             code_vision: hints::CodeVision::default(),
+            code_lens: Default::default(),
+            selection_ranges: Default::default(),
+            document_links: Default::default(),
+            hierarchy: Default::default(),
             blame: blame_gutter::BlameCache::default(),
             blame_revision: None,
             git_markers: None,
@@ -170,6 +174,9 @@ impl PhpIdeApp {
         // Descoberta do projeto Composer (T-PHP-030-01/02): informativa —
         // nunca sobrescreve configuração manual explícita.
         app.refresh_composer(false);
+        if has_project {
+            app.spawn_lsp();
+        }
         app.reload_run_configs();
         // Arquivos passados na CLI: abertos em abas (o último fica ativo).
         for f in &files {
@@ -273,10 +280,7 @@ impl PhpIdeApp {
             old.stop();
         }
         self.watcher = start_watcher(&root);
-        let (lsp, lsp_init, lsp_name) = start_lsp(&root);
-        self.lsp = lsp;
-        self.lsp_init = lsp_init;
-        self.lsp_name = lsp_name;
+        self.lsp_init = None;
         self.lsp_opened.clear();
         self.lsp_mirrors.clear();
         self.lsp_raw_diagnostics.clear();
@@ -297,6 +301,8 @@ impl PhpIdeApp {
         self.reset_vcs(&root);
         self.ws.tab_limit = self.settings.tab_limit.max(1) as usize;
         self.refresh_composer(false);
+        self.lsp_supervisor.reset();
+        self.spawn_lsp();
         self.tree = Default::default();
         self.project_open = true;
         self.windows.set_project(Some(&root));
@@ -773,36 +779,91 @@ impl PhpIdeApp {
     }
 }
 
-pub(crate) fn start_lsp(root: &Path) -> (Option<LspClient>, Option<mpsc::Receiver<Value>>, String) {
+/// A language server being started.
+pub(crate) struct LspStart {
+    pub client: Option<LspClient>,
+    pub init: Option<mpsc::Receiver<Value>>,
+    /// Shown in the status bar ("PHPantom", "intelephense").
+    pub name: String,
+    /// The command that was run.
+    pub server: Option<phpide_lsp::engine::ServerCommand>,
+    /// Why no server runs.
+    pub error: Option<String>,
+}
+
+/// Starts the PHP language server `choice` names for the project at
+/// `root`. `folders` are more workspace folders (attached projects);
+/// `phpantom_settings` become PHPantom's initialization options.
+pub(crate) fn start_lsp(
+    root: &Path,
+    choice: &phpide_lsp::engine::EngineChoice,
+    folders: Vec<PathBuf>,
+    phpantom_settings: Value,
+) -> LspStart {
+    use phpide_lsp::engine::EngineKind;
+    let options = |kind: EngineKind| phpide_lsp::InitOptions {
+        extra_folders: folders.clone(),
+        initialization_options: if kind == EngineKind::Phpantom {
+            phpantom_settings.clone()
+        } else {
+            Value::Null
+        },
+    };
     // The built-in fixture server, for tests, screenshots and demos.
     if std::env::var_os("PHPIDE_FIXTURE_LSP").is_some() {
-        return match phpide_lsp::fixture::start(root) {
-            Ok((client, rx)) => (Some(client), Some(rx), "fixture-php".to_string()),
-            Err(_) => (None, None, String::new()),
+        return match phpide_lsp::fixture::start_with(root, &options(EngineKind::Phpantom)) {
+            Ok((client, rx)) => LspStart {
+                client: Some(client),
+                init: Some(rx),
+                name: "fixture-php".to_string(),
+                server: None,
+                error: None,
+            },
+            Err(e) => LspStart {
+                client: None,
+                init: None,
+                name: String::new(),
+                server: None,
+                error: Some(e.to_string()),
+            },
         };
     }
-    match detect_server(root) {
-        Some((cmd, args)) => {
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            match LspClient::spawn(&cmd, &refs, root) {
-                Ok((client, rx)) => {
-                    eprintln!("[lsp] server: {cmd} {}", args.join(" "));
-                    let name = Path::new(&cmd)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or(cmd);
-                    (Some(client), Some(rx), name)
-                }
-                Err(e) => {
-                    eprintln!("[lsp] could not start: {e}");
-                    (None, None, String::new())
-                }
+    let failed = |error: String, server| {
+        eprintln!("[lsp] {error}");
+        LspStart {
+            client: None,
+            init: None,
+            name: String::new(),
+            server,
+            error: Some(error),
+        }
+    };
+    let server = match phpide_lsp::engine::resolve(choice, root) {
+        Ok(server) => server,
+        Err(e) => return failed(e, None),
+    };
+    let refs: Vec<&str> = server.args.iter().map(String::as_str).collect();
+    let program = server.program.display().to_string();
+    match LspClient::spawn_with(&program, &refs, root, &options(server.kind)) {
+        Ok((client, rx)) => {
+            eprintln!("[lsp] server: {}", server.display());
+            let name = match server.kind {
+                EngineKind::Other => server
+                    .program
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(program),
+                kind => kind.label().to_string(),
+            };
+            LspStart {
+                client: Some(client),
+                init: Some(rx),
+                name,
+                server: Some(server),
+                error: None,
             }
         }
-        None => {
-            eprintln!("[lsp] no server found (intelephense/phpactor)");
-            (None, None, String::new())
-        }
+        Err(e) => failed(e, Some(server)),
     }
 }
 

@@ -4,6 +4,39 @@ All notable changes to PHP IDE. Dates are UTC.
 
 ## [Unreleased] — 1.1
 
+Phase 11, PHPantom as the PHP engine (2026-11-25).
+
+### Added
+
+- PHPantom 1.1.0 ships with the IDE as `<prefix>/lib/phpide/phpantom_lsp`
+  (separate process; .deb, AppImage and Flatpak), with its license and the
+  phpstorm-stubs one. `scripts/fetch-phpantom.sh` downloads the release
+  pinned in `third_party/phpantom.lock` and checks its SHA-256; `--update
+  VERSION` pins another one.
+- Settings › PHP › Language Server: Automatic, PHPantom, intelephense,
+  phpactor or a custom command, for every project or for this project only
+  (`.phpide/project.json`); the server in use with its version and path;
+  Restart, Show Log and Open `.phpantom.toml`.
+- Indexing progress in the status bar ("PHPantom: Full index… 42%") and in
+  the Event Log.
+- Go to Super Method (Ctrl+U), Type Hierarchy (Ctrl+H) and Call Hierarchy
+  (Ctrl+Alt+H) in a new Hierarchy tool window, Extend/Shrink Selection
+  (Ctrl+W / Ctrl+Shift+W), code lenses after declarations ("2 references",
+  "2 implementations"; a click lists them) and document links (Ctrl+click
+  on a `require` path opens the file).
+- Go to Implementation lists every implementation when there are several.
+- The excluded folders and the PHP file types reach PHPantom at startup
+  and whenever they change; attached projects are workspace folders.
+- A crashed server is started again after 1, 2 and 4 seconds; after three
+  restarts in five minutes the IDE stops and says so.
+
+### Fixed
+
+- `initialized` was sent with `null` parameters: PHPantom ignored it and
+  never indexed the project.
+- Semantic tokens past the first line were placed one line-offset too far
+  (and could panic on short files).
+
 Phase 10, icons and menus (2026-11-25).
 
 ### Added
@@ -36,6 +69,12 @@ Phase 10, icons and menus (2026-11-25).
   (600 px) instead of as wide as their items.
 - A right click on the editor while its menu was open only closed the menu;
   it now opens again where the click landed.
+- Frontend language servers (TypeScript, HTML, CSS) got edits only once
+  per frame, after the requests made in it: completion while typing could
+  answer for the text before the last keystroke. Every request now sends
+  the pending edits first, as for PHP, and only changed buffers are copied.
+- The TypeScript gate asked for completion before tsserver had loaded the
+  project and failed on the answer it gets then (CI, `experimental`).
 
 ## [1.0.0] — release candidate, awaiting the tag
 

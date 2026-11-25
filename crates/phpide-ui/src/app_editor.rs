@@ -155,6 +155,8 @@ impl PhpIdeApp {
         if !is_active {
             return deco;
         }
+        deco.code_lenses = self.lens_decorations(&path);
+        deco.links = self.link_decorations(&path, doc.revision());
         // End-of-line hints and Code Vision, for the active file.
         let mut line_hints: Vec<(usize, String)> = Vec::new();
         if self.settings.inlay_hints {
@@ -362,7 +364,12 @@ impl PhpIdeApp {
         }
         if let Some(pos) = output.ctrl_click {
             self.cursor_char = pos;
-            self.dispatch_command(Command::GotoDefinition, ui.ctx());
+            if !self.follow_link_at(pos, ui.ctx()) {
+                self.dispatch_command(Command::GotoDefinition, ui.ctx());
+            }
+        }
+        if let Some(index) = output.lens_click {
+            self.click_lens(index);
         }
         self.editor_context_menu(ui, &output, pane, path.clone(), has_selection, readonly);
         if focused_pane && !output.typed.is_empty() {

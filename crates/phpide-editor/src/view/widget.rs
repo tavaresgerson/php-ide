@@ -97,6 +97,8 @@ pub struct EditorOutput {
     pub gutter_click: Option<GutterClick>,
     /// Ctrl+click on a char (go to declaration).
     pub ctrl_click: Option<usize>,
+    /// Click on a code lens: its index in the decorations.
+    pub lens_click: Option<usize>,
     /// Right click this frame: the host opens its context menu.
     pub context: Option<ContextTarget>,
     /// Char under the pointer in the text area.
@@ -676,6 +678,13 @@ impl<'a> Editor<'a> {
             || (Instant::now().duration_since(self.view.blink).as_millis() / BLINK.as_millis())
                 .is_multiple_of(2);
         let mut fold_chips = Vec::new();
+        let mut lens_chips = Vec::new();
+        // Ctrl held over a document link underlines it.
+        let mods_command = ui.input(|i| i.modifiers.command);
+        let hover_char = response
+            .hover_pos()
+            .filter(|p| g.text.contains(*p))
+            .map(|p| self.pos_at(&ctx, &g, &map, style_key, p));
         for (row, line, layout) in &visible {
             let y = row_y(*row);
             let line_start = rope.line_to_char(*line);
@@ -758,6 +767,8 @@ impl<'a> Editor<'a> {
             }
             let galley_y = y + (g.row_height - layout.galley.size().y) * 0.5;
             text_painter.galley(pos2(x0, galley_y), layout.galley.clone(), c.text);
+            // Text written after the line: fold chip, lenses, diagnostic.
+            let mut tail_x = x0 + layout.width() + g.char_width * 2.0;
             if map.folds_after(*line) {
                 let x = x0 + layout.width() + g.char_width;
                 let chip = Rect::from_min_size(
@@ -773,6 +784,58 @@ impl<'a> Editor<'a> {
                     c.fold_placeholder_text,
                 );
                 fold_chips.push((chip, *line));
+                tail_x = chip.right() + g.char_width;
+            }
+            for (index, lens) in self
+                .decorations
+                .code_lenses
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.line == *line && !l.label.is_empty())
+            {
+                let font = egui::FontId::new(
+                    self.style.font().size * 0.86,
+                    egui::FontFamily::Proportional,
+                );
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap(lens.label.clone(), font, c.inlay_text);
+                let at = pos2(tail_x, y + (g.row_height - galley.size().y) * 0.5);
+                let chip = Rect::from_min_size(at, galley.size()).expand2(vec2(3.0, 1.0));
+                let hovered = response
+                    .hover_pos()
+                    .is_some_and(|p| chip.contains(p) && g.text.contains(p));
+                if hovered {
+                    text_painter.rect_filled(chip, CornerRadius::same(3), c.inlay_background);
+                }
+                text_painter.galley(at, galley.clone(), c.inlay_text);
+                if hovered {
+                    text_painter.hline(
+                        at.x..=at.x + galley.size().x,
+                        at.y + galley.size().y,
+                        Stroke::new(1.0, c.inlay_text),
+                    );
+                }
+                lens_chips.push((chip, index));
+                tail_x = chip.right() + g.char_width;
+            }
+            if mods_command && !self.decorations.links.is_empty() {
+                if let Some(hover) = hover_char {
+                    for &(s, e) in self
+                        .decorations
+                        .links
+                        .iter()
+                        .filter(|(s, e)| *s <= hover && hover < *e)
+                    {
+                        if let Some((a, b)) = columns_on_line(s, e, line_start, line_stop) {
+                            text_painter.hline(
+                                x_of(a)..=x_of(b),
+                                y + g.row_height - 2.0,
+                                Stroke::new(1.0, c.info),
+                            );
+                        }
+                    }
+                }
             }
             for diagnostic in &self.decorations.diagnostics {
                 if let Some((a, b)) = columns_on_line(
@@ -812,7 +875,7 @@ impl<'a> Editor<'a> {
                         _ => c.warning,
                     };
                     let message = d.message.lines().next().unwrap_or("").to_string();
-                    let x = x0 + layout.width() + g.char_width * 3.0;
+                    let x = tail_x + g.char_width;
                     let font = egui::FontId::new(
                         self.style.font().size * 0.92,
                         egui::FontFamily::Proportional,
@@ -853,6 +916,7 @@ impl<'a> Editor<'a> {
             }
         }
         self.view.fold_chips = fold_chips;
+        self.view.lens_chips = lens_chips;
 
         self.paint_gutter(ui, &g, &map, &visible, &caret_lines, &response);
         self.paint_sticky(ui, &g, &map, &rope, style_key, first_row);
@@ -862,8 +926,25 @@ impl<'a> Editor<'a> {
         }
 
         if let Some(pointer) = response.hover_pos() {
-            if g.text.contains(pointer) {
+            let over_link = mods_command
+                && hover_char.is_some_and(|h| {
+                    self.decorations
+                        .links
+                        .iter()
+                        .any(|(s, e)| *s <= h && h < *e)
+                });
+            if self
+                .view
+                .lens_chips
+                .iter()
+                .any(|(r, _)| r.contains(pointer))
+                || over_link
+            {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            } else if g.text.contains(pointer) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+            }
+            if g.text.contains(pointer) {
                 let pos = self.pos_at(&ctx, &g, &map, style_key, pointer);
                 output.hover = Some(pos);
                 if let Some(d) = self
@@ -988,7 +1069,20 @@ impl<'a> Editor<'a> {
                 }
                 return;
             }
-            // Fold placeholder and sticky lines (rects from the last frame).
+            // Code lenses, fold placeholder and sticky lines (rects from
+            // the last frame).
+            if primary_pressed {
+                if let Some((_, index)) = self
+                    .view
+                    .lens_chips
+                    .iter()
+                    .find(|(r, _)| r.contains(pointer))
+                    .copied()
+                {
+                    output.lens_click = Some(index);
+                    return;
+                }
+            }
             if let Some((_, header)) = self
                 .view
                 .fold_chips

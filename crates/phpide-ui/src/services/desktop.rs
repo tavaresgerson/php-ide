@@ -29,6 +29,16 @@ pub fn open_folder(dir: &Path) -> Result<(), String> {
     Err("No file manager found (xdg-open is missing)".into())
 }
 
+/// Opens `url` in the default web browser.
+pub fn open_url(url: &str) -> Result<(), String> {
+    let url = std::ffi::OsStr::new(url);
+    if spawn("xdg-open", &[url]) || spawn("gio", &["open".as_ref(), url]) {
+        Ok(())
+    } else {
+        Err("No web browser found (xdg-open is missing)".into())
+    }
+}
+
 /// Opens a terminal emulator in `dir`: `$TERMINAL` first, then the usual
 /// desktop terminals. Returns the program used.
 pub fn open_terminal(dir: &Path) -> Result<String, String> {

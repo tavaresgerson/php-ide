@@ -223,8 +223,8 @@ Done (2026-11-24):
       toasts for errors and warnings, Settings rebuilt with the components
       and searchable pages.
 
-Left for later phases: attached projects get no language server of their
-own; font ligatures (the text engine does not shape them).
+Left for later phases: attached projects got no language server of their
+own (done in Phase 11); font ligatures (the text engine does not shape them).
 
 **Done when:** every MVP item of REQUIREMENTS.md is ✅; "after" screenshots
 approved in all three themes; open project → edit → save → close works with
@@ -480,10 +480,10 @@ CI run.
     context that already ran (it continues its clock and seeds the font
     atlas). Lists that are form controls (combo boxes in Settings) keep
     their native look.
-- [ ] **Phase 11 — PHPantom as the PHP engine (L).** PHPantom
-      (<https://github.com/PHPantom-dev/phpantom_lsp>, MIT) as a separate
-      process: a crash restarts the server, not the IDE, and its global
-      allocator and async runtime stay out of the IDE.
+- [x] **Phase 11 — PHPantom as the PHP engine (L) — done (2026-11-25).**
+      PHPantom (<https://github.com/PHPantom-dev/phpantom_lsp>, MIT) as a
+      separate process: a crash restarts the server, not the IDE, and its
+      global allocator and async runtime stay out of the IDE.
   - `scripts/fetch-phpantom.sh` + `third_party/phpantom.lock` (version,
     URL, sha256 of each release archive); packages install it under
     `<prefix>/lib/phpide/` with its license and the phpstorm-stubs one.
@@ -504,6 +504,33 @@ CI run.
     pass in CI on every run with no other server installed, and time to
     ready and completion/diagnostic latency (p50/p95) on a large Laravel
     project are recorded here.
+  - Result: `phpide_lsp::engine` resolves the server (choice, origin, kind);
+    `lsp_engine.rs` holds the project override, PHPantom's file filters
+    and the restart supervisor; `lsp_features.rs` and `hierarchy.rs` the
+    new features; the editor paints code lenses after the line (IntelliJ's
+    "right" placement: no virtual rows) and underlines links under
+    Ctrl. Checking the Phase 5 features against PHPantom found two bugs
+    that intelephense hid: `initialized` went out with `null` params
+    (PHPantom ignored it and never indexed) and semantic tokens were
+    offset by their line start. Completion labels carry the parameters
+    (`fullName()`), which the gates now accept. Gate `gate_phpantom.rs`
+    (six tests: indexing and navigation, hierarchies, lenses with
+    selection and links, restart after a crash, filters and workspace
+    folders through the fixture server, the settings page); screenshots
+    with `cargo test -p phpide-ui -- --ignored phase11`.
+  - Measurements (`cargo test -p phpide-lsp --release --test
+    measure_phpantom -- --ignored --nocapture`; server side, PHPantom
+    1.1.0, rustc 1.97 release, Linux, 2026-11-25). Diagnostics wait for
+    PHPantom's own debounce (~0.7–1 s); the editor's tree-sitter errors are
+    instant while it waits. The CI step "PHPantom measurements" adds a
+    fresh Laravel with `vendor/` to its run summary on every push.
+
+    | Project | PHP files | Ready | Completion p50 / p95 | Diagnostics p50 / p95 |
+    |---|---:|---:|---:|---:|
+    | Composer 2 sources with its `vendor/` | 631 | 327 ms | 3.9 / 9.7 ms | 683 / 791 ms |
+    | Synthetic, 2,000 classes | 2,001 | 193 ms | 0.1 / 0.5 ms | 1,004 / 1,006 ms |
+    | Laravel with `vendor/` (CI) | — | — | — | — |
+
 - [ ] **Phase 12 — Minimap (M).** `phpide-editor/src/view/minimap.rs`:
       blocks of 256 lines rendered to textures in the background from the
       cached highlight spans, only the edited blocks redone; characters or
@@ -588,8 +615,7 @@ Portuguese plan in the claude.ai project keeps the same list.
 
 On top of the 1.x/2.x list above:
 
-- Editor and intelligence: a language server for attached projects (comes
-  with PHPantom in 1.x); code font ligatures (the text engine does not
+- Editor and intelligence: code font ligatures (the text engine does not
   shape them; off by decision today).
 - Terminal: Windows (ConPTY); mouse reporting to programs; its own window
   (1.x).

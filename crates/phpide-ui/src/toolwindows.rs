@@ -15,6 +15,7 @@ pub enum ToolWindow {
     Debug,
     Problems,
     Structure,
+    Hierarchy,
     Services,
     VersionControl,
     Commit,
@@ -105,7 +106,7 @@ pub fn dock(
 }
 
 impl ToolWindow {
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 15;
     pub const ALL: [ToolWindow; Self::COUNT] = [
         ToolWindow::Project,
         ToolWindow::Bookmarks,
@@ -114,6 +115,7 @@ impl ToolWindow {
         ToolWindow::Debug,
         ToolWindow::Problems,
         ToolWindow::Structure,
+        ToolWindow::Hierarchy,
         ToolWindow::Services,
         ToolWindow::VersionControl,
         ToolWindow::Commit,
@@ -132,6 +134,7 @@ impl ToolWindow {
             ToolWindow::Debug => "Debug",
             ToolWindow::Problems => "Problems",
             ToolWindow::Structure => "Structure",
+            ToolWindow::Hierarchy => "Hierarchy",
             ToolWindow::Services => "Services",
             ToolWindow::VersionControl => "Version Control",
             ToolWindow::Commit => "Commit",
@@ -151,6 +154,7 @@ impl ToolWindow {
             ToolWindow::Debug => IconId::Debug,
             ToolWindow::Problems => IconId::Problems,
             ToolWindow::Structure => IconId::Structure,
+            ToolWindow::Hierarchy => IconId::Hierarchy,
             ToolWindow::Services => IconId::Services,
             ToolWindow::VersionControl => IconId::VersionControl,
             ToolWindow::Commit => IconId::Commit,
@@ -172,7 +176,7 @@ impl ToolWindow {
             | ToolWindow::Bookmarks
             | ToolWindow::Services
             | ToolWindow::Commit => Anchor::Left,
-            ToolWindow::Structure | ToolWindow::RemoteHost => Anchor::Right,
+            ToolWindow::Structure | ToolWindow::Hierarchy | ToolWindow::RemoteHost => Anchor::Right,
             _ => Anchor::Bottom,
         }
     }

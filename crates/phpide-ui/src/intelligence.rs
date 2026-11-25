@@ -69,7 +69,8 @@ pub fn parse_workspace_symbols(value: &Value) -> Vec<(String, Location)> {
         .unwrap_or_default()
 }
 
-/// Token semântico decodificado: (line0, start_char, len_chars, tipo).
+/// A decoded semantic token: line, absolute start char, length in chars,
+/// type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticToken {
     pub line0: usize,
@@ -105,14 +106,13 @@ pub fn decode_semantic_tokens(
             continue;
         };
         let line = line0 as usize;
-        let line_start = doc.line_start(line.min(doc.line_count().saturating_sub(1)));
-        let start_char = line_start
-            + doc.lsp_position_to_char(
-                line.min(doc.line_count().saturating_sub(1)),
-                start_utf16 as usize,
-                PositionEncoding::Utf16,
-            )
-            - line_start;
+        if line >= doc.line_count() {
+            break;
+        }
+        let line_start = doc.line_start(line);
+        // Absolute char of the token's start.
+        let start_char =
+            doc.lsp_position_to_char(line, start_utf16 as usize, PositionEncoding::Utf16);
         // len em unidades UTF-16: converte contando chars da faixa.
         let start_in_line = doc.lsp_position_to_char(
             line.min(doc.line_count().saturating_sub(1)),
@@ -318,6 +318,9 @@ mod tests {
         // 😀 ocupa chars 3..4 (absoluto): linha 1 começa em char 3.
         assert_eq!((tokens[1].start_char, tokens[1].len_chars), (3, 1));
         assert_eq!((tokens[2].start_char, tokens[2].len_chars), (4, 1));
+        // Tokens past the end of the document are dropped.
+        let past = decode_semantic_tokens(&doc, &types, &[9, 0, 1, 0, 0]);
+        assert!(past.is_empty());
     }
 
     #[test]

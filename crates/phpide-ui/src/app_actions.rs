@@ -251,6 +251,11 @@ impl PhpIdeApp {
             Command::GotoDefinition => self.request_definition(),
             Command::GotoImplementation => self.request_implementation(),
             Command::GotoTypeDeclaration => self.request_type_definition(),
+            Command::GotoSuperMethod => self.request_super_method(),
+            Command::TypeHierarchy => self.request_hierarchy(hierarchy::HierarchyKind::Type),
+            Command::CallHierarchy => self.request_hierarchy(hierarchy::HierarchyKind::Call),
+            Command::ExtendSelection => self.select_range(true),
+            Command::ShrinkSelection => self.select_range(false),
             Command::GotoSymbol => {
                 self.symbol_results.clear();
                 self.last_symbol_query = String::new();

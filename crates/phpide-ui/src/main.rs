@@ -29,10 +29,13 @@ mod editor_menu;
 mod exec;
 mod fe_servers;
 mod header;
+mod hierarchy;
 mod hints;
 mod intelligence;
 mod keymap_page;
 mod lens;
+mod lsp_engine;
+mod lsp_features;
 mod markdown;
 mod notifications;
 mod palette;
@@ -52,6 +55,7 @@ mod services;
 mod settings;
 mod settings_dialog;
 mod settings_editor;
+mod settings_lsp;
 mod statusbar;
 mod switcher;
 mod tabs;
@@ -87,7 +91,7 @@ use phpide_core::{
     Component, Revisioned, Workspace,
 };
 use phpide_dbgp::session::ContinueCommand;
-use phpide_lsp::{detect_server, LspClient, LspDiagnostic, LspStatus};
+use phpide_lsp::{LspClient, LspDiagnostic, LspStatus};
 use search::SearchState;
 use serde_json::Value;
 use toolwindows::ToolWindow;
@@ -286,6 +290,17 @@ struct PhpIdeApp {
     lsp: Option<LspClient>,
     lsp_init: Option<mpsc::Receiver<Value>>,
     lsp_name: String,
+    /// The command of the running server (Settings › PHP › Language Server).
+    lsp_server: Option<phpide_lsp::engine::ServerCommand>,
+    /// Why no PHP server runs (not found, could not start).
+    lsp_start_error: Option<String>,
+    /// Restarts after crashes, with backoff.
+    lsp_supervisor: lsp_engine::Supervisor,
+    /// PHPantom's file filters as last sent (initialize or
+    /// didChangeConfiguration); `Null` for other servers.
+    lsp_settings_sent: Value,
+    /// Attached projects sent as workspace folders.
+    lsp_folders: Vec<PathBuf>,
     /// Crash já sinalizado à UI (evita mensagem repetida a cada frame).
     lsp_crash_notified: bool,
     /// Caminho -> revisão já enviada ao servidor.
@@ -396,6 +411,14 @@ struct PhpIdeApp {
     hints_path: Option<PathBuf>,
     /// Code Vision (lenses) por arquivo/revisão.
     code_vision: hints::CodeVision,
+    /// Code lenses of the active file (server).
+    code_lens: lsp_features::CodeLensState,
+    /// Extend/Shrink Selection.
+    selection_ranges: lsp_features::SelectionRanges,
+    /// Document links of the active file.
+    document_links: lsp_features::LinkState,
+    /// Type and call hierarchies (Hierarchy tool window).
+    hierarchy: hierarchy::HierarchyState,
     /// Gutter de blame (UI-ED-007) com cache por revisão salva.
     blame: blame_gutter::BlameCache,
     blame_revision: Option<(PathBuf, u64)>,
@@ -513,6 +536,11 @@ impl PhpIdeApp {
         }
         self.poll_search();
         self.poll_lsp();
+        self.handle_lsp_refreshes();
+        self.poll_code_lenses();
+        self.poll_document_links();
+        self.poll_selection_ranges();
+        self.poll_hierarchy();
         self.poll_fe();
         self.poll_syntax();
         self.poll_routed_requests();
@@ -668,6 +696,9 @@ impl PhpIdeApp {
         if self.tw.is_visible(ToolWindow::Structure) {
             self.outline_panel(ui);
         }
+        if self.tw.is_visible(ToolWindow::Hierarchy) {
+            self.hierarchy_panel(ui);
+        }
         if self.tw.is_visible(ToolWindow::RemoteHost) {
             tool_panels::show(self, ui, ToolWindow::RemoteHost);
         }
@@ -716,6 +747,8 @@ mod gate_lsp;
 mod gate_menus;
 #[cfg(test)]
 mod gate_parity;
+#[cfg(test)]
+mod gate_phpantom;
 #[cfg(test)]
 mod gate_project_view;
 #[cfg(test)]
