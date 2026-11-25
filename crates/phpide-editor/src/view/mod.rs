@@ -20,7 +20,7 @@ use find::FindState;
 use folds::{DisplayMap, Folds};
 use layout::LayoutCache;
 
-pub use widget::{Editor, EditorOptions, EditorOutput, GutterClick};
+pub use widget::{ContextTarget, Editor, EditorOptions, EditorOutput, GutterClick};
 
 /// Commands the application routes to the focused view (menus, shortcuts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

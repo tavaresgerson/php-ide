@@ -3,7 +3,9 @@
 
 use eframe::egui;
 
-use crate::design::components::{StatusItem, Tone};
+use crate::design::components::{
+    menu_item, menu_radio_item, menu_separator, menu_submenu, StatusItem, Tone,
+};
 use crate::settings_dialog::SettingsPage;
 use crate::toolwindows::ToolWindow;
 use crate::PhpIdeApp;
@@ -155,17 +157,17 @@ fn file_type_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(180.0);
         ui.label(egui::RichText::new("File type of this file").weak().small());
-        if ui.selectable_label(!overridden, "Auto-detect").clicked() {
+        if menu_radio_item(ui, "Auto-detect", !overridden, true).clicked() {
             app.set_file_type_override(&path, None);
             ui.close();
         }
-        ui.separator();
+        menu_separator(ui);
         egui::ScrollArea::vertical()
             .max_height(320.0)
             .show(ui, |ui| {
                 for file_type in phpide_php::filetype::FILE_TYPES {
                     let selected = overridden && current == file_type.name;
-                    if ui.selectable_label(selected, file_type.name).clicked() {
+                    if menu_radio_item(ui, file_type.name, selected, true).clicked() {
                         app.set_file_type_override(&path, Some(file_type.id));
                         ui.close();
                     }
@@ -173,11 +175,9 @@ fn file_type_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             });
         if let Some(pattern) = crate::app_editor::extension_pattern(&path) {
             if let phpide_php::filetype::Detected::Known(file_type) = &detected {
-                ui.separator();
-                if ui
-                    .button(format!("Use {} for all {pattern} files", file_type.name))
-                    .clicked()
-                {
+                menu_separator(ui);
+                let label = format!("Use {} for all {pattern} files", file_type.name);
+                if menu_item(ui, Some(IconId::FileConfig), &label, "", true).clicked() {
                     app.associate_file_type(&pattern, file_type.id);
                     app.set_file_type_override(&path, None);
                     ui.close();
@@ -217,7 +217,8 @@ fn folder_menu(
                     (icon, crate::design::current(&ctx).palette.file_color(kind))
                 };
                 if entry.is_dir {
-                    ui.menu_button(format!("{}/", entry.name), |ui| {
+                    let label = format!("{}/", entry.name);
+                    menu_submenu(ui, Some(IconId::Folder), &label, true, |ui| {
                         folder_menu(app, ui, &entry.path, current);
                     });
                 } else {
@@ -243,16 +244,13 @@ fn php_level_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(120.0);
         for level in PHP_LEVELS {
-            if ui
-                .selectable_label(level == current, format!("PHP {level}"))
-                .clicked()
-            {
+            if menu_radio_item(ui, &format!("PHP {level}"), level == current, true).clicked() {
                 app.settings.php_level = level.to_string();
                 app.persist_settings();
                 ui.close();
             }
         }
-        ui.separator();
+        menu_separator(ui);
         ui.label(
             egui::RichText::new("Detected from composer.json when available")
                 .weak()
@@ -295,7 +293,7 @@ fn line_ending_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
             (LineEnding::Lf, "LF - Unix and macOS (\\n)"),
             (LineEnding::CrLf, "CRLF - Windows (\\r\\n)"),
         ] {
-            if ui.selectable_label(current == ending, label).clicked() {
+            if menu_radio_item(ui, label, current == ending, true).clicked() {
                 if let Some(buffer) = app.ws.active_buffer_mut() {
                     if buffer.readonly {
                         app.ws.message =
@@ -326,8 +324,9 @@ fn indent_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .tooltip("Indent style")
         .show(ui);
     egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(160.0);
         for option in INDENTS {
-            if ui.selectable_label(option == current, option).clicked() {
+            if menu_radio_item(ui, option, option == current, true).clicked() {
                 app.settings.indent = option.to_string();
                 app.persist_settings();
                 ui.close();
@@ -402,12 +401,12 @@ fn deployment_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .tooltip("Default deployment server")
         .show(ui);
     egui::Popup::menu(&response).show(|ui| {
-        if ui.selectable_label(server == "None", "None").clicked() {
+        if menu_radio_item(ui, "None", server == "None", true).clicked() {
             app.settings.deployment_server = "None".to_string();
             app.persist_settings();
             ui.close();
         }
-        if ui.button("Deployment...").clicked() {
+        if menu_item(ui, Some(IconId::Settings), "Deployment…", "", true).clicked() {
             app.settings_dialog.open(SettingsPage::Named("Deployment"));
             ui.close();
         }
@@ -453,12 +452,20 @@ fn language_server_widget(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(240.0);
         ui.label(egui::RichText::new(tip).weak().small());
-        ui.separator();
-        if ui.button("Restart Language Server").clicked() {
+        menu_separator(ui);
+        if menu_item(
+            ui,
+            Some(IconId::Refresh),
+            "Restart Language Server",
+            "",
+            true,
+        )
+        .clicked()
+        {
             app.restart_lsp();
             ui.close();
         }
-        if ui.button("Language Server Log").clicked() {
+        if menu_item(ui, Some(IconId::FileText), "Language Server Log", "", true).clicked() {
             app.intel.log_open = true;
             ui.close();
         }

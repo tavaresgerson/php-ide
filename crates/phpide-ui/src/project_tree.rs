@@ -16,8 +16,8 @@ use eframe::egui;
 use phpide_icons::{file_icon, IconId};
 
 use crate::design::components::{
-    menu_item, menu_separator, menu_submenu, Button, Dialog, IconButton, PanelHeader, TextInput,
-    ToolbarWidget, TreeRow as RowWidget,
+    menu_check_item, menu_item, menu_radio_item, menu_separator, menu_submenu, Button, Dialog,
+    IconButton, PanelHeader, TextInput, ToolbarWidget, TreeRow as RowWidget,
 };
 use crate::services::file_ops;
 use crate::services::files::{TreeOptions, TreeRow};
@@ -431,9 +431,7 @@ fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             egui::Popup::menu(&scope).show(|ui| {
                 ui.set_min_width(180.0);
                 for option in Scope::ALL {
-                    if ui
-                        .selectable_label(app.tree.scope == option, option.label())
-                        .clicked()
+                    if menu_radio_item(ui, option.label(), app.tree.scope == option, true).clicked()
                     {
                         app.tree.scope = option;
                         ui.close();
@@ -445,61 +443,60 @@ fn header(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
 }
 
 fn options_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
-    ui.set_min_width(240.0);
+    ui.set_min_width(260.0);
     let mut changed = false;
-    changed |= ui
-        .checkbox(
-            &mut app.settings.tree_autoscroll_from_source,
-            "Always Select Opened File",
-        )
-        .changed();
-    changed |= ui
-        .checkbox(
-            &mut app.settings.tree_single_click_open,
-            "Open Files with Single Click",
-        )
-        .changed();
-    ui.separator();
+    // A click flips the setting; the popup stays open (it closes on a
+    // click outside), so several can be changed in a row.
+    let mut toggle = |ui: &mut egui::Ui, value: &mut bool, label: &str| -> egui::Response {
+        let response = menu_check_item(ui, None, label, "", *value);
+        if response.clicked() {
+            *value = !*value;
+            changed = true;
+        }
+        response
+    };
+    let s = &mut app.settings;
+    toggle(
+        ui,
+        &mut s.tree_autoscroll_from_source,
+        "Always Select Opened File",
+    );
+    toggle(
+        ui,
+        &mut s.tree_single_click_open,
+        "Open Files with Single Click",
+    );
+    menu_separator(ui);
     ui.label(egui::RichText::new("Sort").weak().small());
+    let mut sort = None;
     for (value, label) in [
         ("name", "By Name"),
         ("type", "By Type"),
         ("modified", "By Modification Time"),
     ] {
-        if ui.radio(app.settings.tree_sort == value, label).clicked() {
-            app.settings.tree_sort = value.to_string();
-            changed = true;
+        if menu_radio_item(ui, label, s.tree_sort == value, true).clicked() {
+            sort = Some(value);
         }
     }
-    changed |= ui
-        .checkbox(
-            &mut app.settings.tree_folders_first,
-            "Folders Always on Top",
-        )
-        .changed();
-    ui.separator();
-    changed |= ui
-        .checkbox(&mut app.settings.tree_show_excluded, "Show Excluded Files")
-        .changed();
-    changed |= ui
-        .checkbox(&mut app.settings.file_nesting, "File Nesting")
-        .on_hover_text("Related files nest under their parent (composer.lock under composer.json…)")
-        .changed();
-    if ui.button("File Nesting Rules…").clicked() {
+    toggle(ui, &mut s.tree_folders_first, "Folders Always on Top");
+    menu_separator(ui);
+    toggle(ui, &mut s.tree_show_excluded, "Show Excluded Files");
+    toggle(ui, &mut s.file_nesting, "File Nesting").on_hover_text(
+        "Related files nest under their parent (composer.lock under composer.json…)",
+    );
+    let edit_rules = menu_item(ui, Some(IconId::Edit), "File Nesting Rules…", "", true).clicked();
+    menu_separator(ui);
+    toggle(ui, &mut s.tree_file_details, "Show File Size and Date");
+    toggle(ui, &mut s.tree_indent_guides, "Show Indent Guides");
+    if let Some(value) = sort {
+        app.settings.tree_sort = value.to_string();
+        changed = true;
+    }
+    if edit_rules {
         app.tree.nesting_editor = Some(app.settings.nesting_rules.join("\n"));
         ui.close();
     }
-    ui.separator();
-    changed |= ui
-        .checkbox(
-            &mut app.settings.tree_file_details,
-            "Show File Size and Date",
-        )
-        .changed();
-    changed |= ui
-        .checkbox(&mut app.settings.tree_indent_guides, "Show Indent Guides")
-        .changed();
-    ui.separator();
+    menu_separator(ui);
     crate::app_panels::move_to_menu(app, ui, ToolWindow::Project);
     if menu_item(ui, None, "Hide All Tool Windows", "Ctrl+Shift+F12", true).clicked() {
         app.tw.toggle_hide_all();
@@ -909,7 +906,13 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
                 ui.set_min_width(200.0);
                 use crate::project_marks::Mark;
                 for mark in [Mark::Sources, Mark::Tests, Mark::Excluded] {
-                    if menu_item(ui, None, mark.label(), "", current != Some(mark)).clicked() {
+                    let icon = match mark {
+                        Mark::Sources => IconId::Folder,
+                        Mark::Tests => IconId::Test,
+                        Mark::Excluded => IconId::Close,
+                    };
+                    if menu_item(ui, Some(icon), mark.label(), "", current != Some(mark)).clicked()
+                    {
                         actions.push(Action::Mark(dir.clone(), Some(mark)));
                         ui.close();
                     }
@@ -942,17 +945,14 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
                 |ui| {
                     ui.set_min_width(200.0);
                     let current = app.file_type_override(&path).map(str::to_string);
-                    if ui
-                        .selectable_label(current.is_none(), "Auto-detect")
-                        .clicked()
-                    {
+                    if menu_radio_item(ui, "Auto-detect", current.is_none(), true).clicked() {
                         app.set_file_type_override(&path, None);
                         ui.close();
                     }
-                    ui.separator();
+                    menu_separator(ui);
                     for file_type in phpide_php::filetype::FILE_TYPES {
                         let selected = current.as_deref() == Some(file_type.id);
-                        if ui.selectable_label(selected, file_type.name).clicked() {
+                        if menu_radio_item(ui, file_type.name, selected, true).clicked() {
                             app.set_file_type_override(&path, Some(file_type.id));
                             ui.close();
                         }

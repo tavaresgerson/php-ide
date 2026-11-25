@@ -76,6 +76,16 @@ pub enum GutterClick {
     LineNumber(usize),
 }
 
+/// Where a right click landed, for the host's context menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextTarget {
+    /// In the text, at this char (the caret is already there, unless the
+    /// click fell inside the selection, which is kept).
+    Text(usize),
+    /// On the gutter, at this line.
+    Gutter(usize),
+}
+
 #[derive(Default)]
 pub struct EditorOutput {
     pub response: Option<Response>,
@@ -87,6 +97,8 @@ pub struct EditorOutput {
     pub gutter_click: Option<GutterClick>,
     /// Ctrl+click on a char (go to declaration).
     pub ctrl_click: Option<usize>,
+    /// Right click this frame: the host opens its context menu.
+    pub context: Option<ContextTarget>,
     /// Char under the pointer in the text area.
     pub hover: Option<usize>,
     /// Screen rect of the primary caret (completion popup anchor).
@@ -922,11 +934,43 @@ impl<'a> Editor<'a> {
                 i.pointer.any_released(),
             )
         });
+        let secondary_pressed = ui.input(|i| i.pointer.secondary_pressed());
         let Some(pointer) = pointer else {
             return;
         };
         let rope = self.buffer.document.rope().clone();
         let tab = self.view.config.tab_size;
+        // By position and top layer rather than `contains_pointer`: egui
+        // does not hover widgets under an open popup, and a right click here
+        // while a menu is open must still say where it landed.
+        // (Panels are not areas: over the editor, no area means its layer.)
+        let over_editor = response.rect.contains(pointer)
+            && ctx
+                .layer_id_at(pointer)
+                .is_none_or(|layer| layer == response.layer_id);
+        if secondary_pressed && over_editor && !g.vbar.contains(pointer) {
+            if g.gutter.contains(pointer) {
+                let (line, _) = self.line_cell_at(g, map, pointer);
+                output.context = Some(ContextTarget::Gutter(line));
+            } else if g.text.contains(pointer) {
+                let pos = self.pos_at(&ctx, g, map, style_key, pointer);
+                // As in IntelliJ: a right click outside the selection moves
+                // the caret there first, so the menu acts on that place.
+                let inside = self
+                    .view
+                    .selection
+                    .ranges()
+                    .iter()
+                    .any(|r| !r.is_empty() && r.start() <= pos && pos <= r.end());
+                if !inside {
+                    self.view.reveal = None;
+                    self.view.set_selection(self.buffer, Selection::point(pos));
+                    output.selection_changed = true;
+                }
+                output.context = Some(ContextTarget::Text(pos));
+            }
+            return;
+        }
         let pressed_here = response.contains_pointer() && (primary_pressed || middle_pressed);
         if pressed_here {
             // Scrollbar.

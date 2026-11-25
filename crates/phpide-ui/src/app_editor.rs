@@ -326,6 +326,8 @@ impl PhpIdeApp {
             .show(ui);
         let caret = view.primary_caret();
         let path = buffer.path.clone();
+        let has_selection = view.selection.ranges().iter().any(|r| !r.is_empty());
+        let readonly = buffer.readonly;
         if output.focused {
             self.editors.focus = pane;
             self.editors.editor_focused = true;
@@ -362,6 +364,7 @@ impl PhpIdeApp {
             self.cursor_char = pos;
             self.dispatch_command(Command::GotoDefinition, ui.ctx());
         }
+        self.editor_context_menu(ui, &output, pane, path.clone(), has_selection, readonly);
         if focused_pane && !output.typed.is_empty() {
             self.on_typed(&output.typed);
         }
@@ -375,6 +378,74 @@ impl PhpIdeApp {
                 .input(|input| input.pointer.hover_pos())
                 .unwrap_or_default();
             self.lens_hover = Some((line0, pointer, std::time::Instant::now()));
+        }
+    }
+
+    /// Right click in this pane: the editor context menu, kept open by egui
+    /// until an item is chosen or the user clicks elsewhere.
+    fn editor_context_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        output: &phpide_editor::EditorOutput,
+        pane: Pane,
+        path: Option<std::path::PathBuf>,
+        selection: bool,
+        readonly: bool,
+    ) {
+        let Some(response) = output.response.clone() else {
+            return;
+        };
+        let key = response.id.with("context-target");
+        if let Some(target) = output.context {
+            ui.data_mut(|d| d.insert_temp(key, target));
+            self.editors.focus = pane;
+        }
+        let Some(target) = ui.data(|d| d.get_temp::<phpide_editor::ContextTarget>(key)) else {
+            return;
+        };
+        let php = path.as_deref().is_some_and(phpide_php::Php::is_php_file);
+        let context = crate::editor_menu::Context {
+            target,
+            path: path.clone(),
+            php,
+            selection,
+            readonly,
+        };
+        let mut chosen = None;
+        // A right click while the menu is open would only close it in egui
+        // (a click outside); like any desktop menu it opens again where the
+        // new click landed, on the next frame.
+        let reopen_key = key.with("reopen");
+        // Only once the click is over: egui would take its release for a
+        // click outside the menu it just opened and close it again.
+        let clicking = ui.input(|i| i.pointer.any_down() || i.pointer.any_released());
+        let reopen = !clicking
+            && ui
+                .data_mut(|d| d.remove_temp::<bool>(reopen_key))
+                .unwrap_or(false);
+        if clicking && ui.data(|d| d.get_temp::<bool>(reopen_key)).is_some() {
+            ui.ctx().request_repaint();
+        }
+        let mut popup = egui::Popup::context_menu(&response);
+        if reopen {
+            popup = popup.open_memory(egui::SetOpenCommand::Bool(true));
+        }
+        popup.show(|ui| {
+            if let Some(act) = crate::editor_menu::show(self, ui, &context) {
+                chosen = Some(act);
+                ui.close();
+            }
+        });
+        if output.context.is_some() {
+            // Every right click (re)opens the menu at the pointer on the
+            // next frame, whether it was closed or open somewhere else.
+            egui::Popup::close_id(ui.ctx(), egui::Popup::default_response_id(&response));
+            ui.data_mut(|d| d.insert_temp(reopen_key, true));
+            ui.ctx().request_repaint();
+        }
+        if let Some(act) = chosen {
+            let ctx = ui.ctx().clone();
+            self.run_editor_act(act, path.as_deref(), &ctx);
         }
     }
 

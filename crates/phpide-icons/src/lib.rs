@@ -115,6 +115,10 @@ icons! {
     Replace => "replace", "replace", "Replace";
     Unlink => "unlink", "unlink", "Detach";
     Clear => "clear", "eraser", "Clear";
+    FileNew => "file-new", "file-plus", "New file";
+    Back => "back", "arrow-left", "Back";
+    Forward => "forward", "arrow-right", "Forward";
+    FindUsages => "find-usages", "list-search", "Find usages";
     ExternalLink => "external-link", "external-link", "Open externally";
     Undo => "undo", "arrow-back-up", "Undo";
     Redo => "redo", "arrow-forward-up", "Redo";

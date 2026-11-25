@@ -460,7 +460,7 @@ fn collect_entries(
                 actions.push((
                     score,
                     Entry {
-                        icon: IconId::Command,
+                        icon: spec.icon().unwrap_or(IconId::Command),
                         kind: None,
                         label,
                         detail: String::new(),
@@ -757,29 +757,30 @@ fn file_filters(ui: &mut egui::Ui, state: &mut PaletteState) {
         .show(|ui| {
             ui.set_min_width(220.0);
             let groups = FILE_TYPES.iter().map(|(g, _)| *g).chain([OTHER_TYPE]);
+            use crate::design::components::{menu_check_item, menu_item, menu_separator};
             for group in groups {
-                let mut shown = !state.hidden_types.contains(&group);
-                if ui.checkbox(&mut shown, group).changed() {
+                let shown = !state.hidden_types.contains(&group);
+                if menu_check_item(ui, None, group, "", shown).clicked() {
                     state.hidden_types.retain(|g| *g != group);
-                    if !shown {
+                    if shown {
                         state.hidden_types.push(group);
                     }
                     state.selected = 0;
                 }
             }
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("All").clicked() {
-                    state.hidden_types.clear();
-                }
-                if ui.button("None").clicked() {
-                    state.hidden_types = FILE_TYPES
-                        .iter()
-                        .map(|(g, _)| *g)
-                        .chain([OTHER_TYPE])
-                        .collect();
-                }
-            });
+            menu_separator(ui);
+            if menu_item(ui, Some(IconId::Check), "Select All", "", true).clicked() {
+                state.hidden_types.clear();
+                state.selected = 0;
+            }
+            if menu_item(ui, None, "Select None", "", true).clicked() {
+                state.hidden_types = FILE_TYPES
+                    .iter()
+                    .map(|(g, _)| *g)
+                    .chain([OTHER_TYPE])
+                    .collect();
+                state.selected = 0;
+            }
         });
     if ui
         .checkbox(&mut state.include_non_project, "Include non-project items")

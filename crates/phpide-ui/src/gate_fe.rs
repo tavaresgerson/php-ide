@@ -282,17 +282,71 @@ fn gate_application_typescript_without_php_completion_navigation_and_hints() {
     );
     assert!(app.lsp.is_none());
 
-    app.cursor_char = 10;
+    // `import { s|oma }`: the exports of './math'. tsserver answers the
+    // first requests before it has loaded the project (only the `type`
+    // keyword then), so the request is repeated until `soma` is offered,
+    // as typing would.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        app.cursor_char = 10;
+        app.trigger_completion();
+        assert_eq!(app.completion.origin, crate::routing::LspOrigin::TypeScript);
+        wait_app(
+            "completion",
+            std::time::Duration::from_secs(15),
+            &mut app,
+            |app| !app.completion.loading(),
+        );
+        if app
+            .completion
+            .visible()
+            .iter()
+            .any(|item| item.label == "soma")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "completion offers soma: {:?}",
+            app.completion
+                .visible()
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        );
+        app.close_completion();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    app.close_completion();
+
+    // An edit and a request in the same frame, as when typing: the edit
+    // reaches the server first, so it completes in the new text.
+    let end = {
+        let buffer = app.ws.active_buffer_mut().unwrap();
+        let end = buffer.document.len_chars();
+        buffer.insert(end, "soma.");
+        buffer.document.len_chars()
+    };
+    app.cursor_char = end;
     app.trigger_completion();
-    assert_eq!(app.completion.origin, crate::routing::LspOrigin::TypeScript);
     wait_app(
-        "completion",
+        "completion after an edit",
         std::time::Duration::from_secs(15),
         &mut app,
         |app| !app.completion.loading(),
     );
-    app.completion.set_query(String::new());
-    assert!(!app.completion.visible().is_empty());
+    // `soma.` offers a function's members; in the old text, at that place,
+    // there was nothing of the kind.
+    let labels: Vec<String> = app
+        .completion
+        .visible()
+        .iter()
+        .map(|item| item.label.clone())
+        .collect();
+    assert!(
+        labels.iter().any(|label| label == "bind"),
+        "completion in the edited text: {labels:?}"
+    );
     app.close_completion();
 
     app.cursor_char = std::fs::read_to_string(&main)

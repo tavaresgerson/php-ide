@@ -7,6 +7,7 @@
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
 use phpide_editor::ViewCommand;
+use phpide_icons::IconId;
 
 use crate::toolwindows::ToolWindow;
 
@@ -173,7 +174,121 @@ impl CommandSpec {
     pub fn palette_label(&self) -> String {
         format!("{}: {}", self.category.label(), self.label)
     }
+
+    /// Icon shown next to the command in menus, Find Action and Search
+    /// Everywhere.
+    pub fn icon(&self) -> Option<IconId> {
+        icon(self.id)
+    }
 }
+
+/// The icon of a command, the one source for every place that lists it.
+///
+/// IntelliJ rule: an icon where one means something; menus keep the icon
+/// column for the others, so items line up. Commands listed in a menu
+/// without an icon are in [`NO_ICON`], which a test keeps in step.
+pub fn icon(id: Command) -> Option<IconId> {
+    use Command as K;
+    use IconId as I;
+    Some(match id {
+        K::OpenProject => I::FolderOpen,
+        K::NewFile => I::FileNew,
+        K::Save => I::Save,
+        K::CloseTab => I::Close,
+        K::OpenSettings => I::Settings,
+        K::Undo => I::Undo,
+        K::Redo => I::Redo,
+        K::Editor(ViewCommand::Find) => I::Search,
+        K::Editor(ViewCommand::Replace) => I::Replace,
+        K::Editor(ViewCommand::FindNext) => I::ChevronDown,
+        K::Editor(ViewCommand::FindPrevious) => I::ChevronUp,
+        K::ToggleToolWindow(tw) => tw.icon(),
+        K::OpenScheme | K::ToggleTheme => I::Palette,
+        K::SearchEverywhere => I::Search,
+        K::GotoFile => I::File,
+        K::GotoClass => I::FileCode,
+        K::RecentFiles => I::Clock,
+        K::FindAction => I::Command,
+        K::FindUsages => I::FindUsages,
+        K::FindInFiles => I::Search,
+        K::ReplaceInFiles => I::Replace,
+        K::NavigateBack => I::Back,
+        K::NavigateForward => I::Forward,
+        K::SelectIn => I::Locate,
+        K::FileStructure => I::Structure,
+        K::ToggleBookmark => I::Bookmark,
+        K::RunCurrent | K::RunContext => I::Run,
+        K::DebugCurrent | K::DebugContext => I::Debug,
+        K::RunWithCoverage => I::Coverage,
+        K::RerunLast => I::Rerun,
+        K::EvaluateExpression => I::Command,
+        K::ViewBreakpoints | K::ToggleBreakpoint => I::Breakpoint,
+        K::EditConfigurations => I::Edit,
+        K::Stop => I::Stop,
+        K::GitCommit => I::Commit,
+        K::GitPush => I::Push,
+        K::GitUpdate => I::Update,
+        K::GitFetch => I::Download,
+        K::GitBranches => I::GitBranch,
+        K::GitNewBranch => I::Plus,
+        K::GitCompareWithHead => I::Diff,
+        K::GitShowHistory => I::Clock,
+        K::GitRollback => I::Undo,
+        K::ToggleBlame => I::Blame,
+        K::SplitRight => I::SplitRight,
+        K::SplitDown => I::SplitDown,
+        K::ShowLog | K::LanguageServerLog => I::FileText,
+        K::ShowLogFolder => I::FolderOpen,
+        K::About => I::Info,
+        K::RestartLsp => I::Refresh,
+        K::OpenWelcome => I::Home,
+        K::RenameSymbol => I::Edit,
+        K::ShowContextActions => I::Hint,
+        K::RefreshTree => I::Refresh,
+        _ => return None,
+    })
+}
+
+/// Commands shown in a menu without an icon (reviewed: nothing in the
+/// icon set says what they do better than their label).
+#[cfg(test)]
+pub const NO_ICON: &[Command] = &[
+    Command::CloseProject,
+    Command::CloseOthers,
+    Command::CloseAllTabs,
+    Command::ReopenClosedTab,
+    Command::UndoRefactor,
+    Command::Complete,
+    Command::CopyPath,
+    Command::CopyReference,
+    Command::CopyRepositoryUrl,
+    Command::Editor(ViewCommand::SelectAll),
+    Command::Editor(ViewCommand::ToggleLineComment),
+    Command::Editor(ViewCommand::ToggleBlockComment),
+    Command::Editor(ViewCommand::Duplicate),
+    Command::Editor(ViewCommand::DeleteLines),
+    Command::Editor(ViewCommand::MoveLinesUp),
+    Command::Editor(ViewCommand::MoveLinesDown),
+    Command::Editor(ViewCommand::SelectNextOccurrence),
+    Command::Editor(ViewCommand::UnselectOccurrence),
+    Command::Editor(ViewCommand::SelectAllOccurrences),
+    Command::HideAllToolWindows,
+    Command::RecentLocations,
+    Command::GotoSymbol,
+    Command::GotoLine,
+    Command::GotoDefinition,
+    Command::GotoImplementation,
+    Command::GotoTypeDeclaration,
+    Command::LastEditLocation,
+    Command::NextProblem,
+    Command::PrevProblem,
+    Command::ReformatCode,
+    Command::QuickDocumentation,
+    Command::ParameterInfo,
+    Command::NextProjectWindow,
+    Command::PreviousProjectWindow,
+    Command::CloseOtherProjects,
+];
 
 const fn mods(ctrl: bool, shift: bool, alt: bool) -> Modifiers {
     Modifiers {
@@ -1082,6 +1197,27 @@ pub fn shortcuts_by_specificity() -> Vec<(KeyboardShortcut, Command)> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// Every menu command has an icon or is reviewed in `NO_ICON`, and
+    /// `NO_ICON` lists nothing that has one (or that no menu shows).
+    #[test]
+    fn menu_commands_have_icons_or_are_reviewed() {
+        for spec in REGISTRY.iter().filter(|s| s.in_menu) {
+            let reviewed = NO_ICON.contains(&spec.id);
+            assert!(
+                spec.icon().is_some() != reviewed,
+                "{:?} ({}): an icon, or an entry in NO_ICON, not both",
+                spec.id,
+                spec.label
+            );
+        }
+        for id in NO_ICON {
+            assert!(
+                REGISTRY.iter().any(|s| s.id == *id && s.in_menu),
+                "{id:?} in NO_ICON is not in any menu"
+            );
+        }
+    }
 
     #[test]
     fn every_command_is_registered_once() {

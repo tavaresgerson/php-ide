@@ -4,7 +4,7 @@
 use eframe::egui;
 use phpide_icons::IconId;
 
-use crate::design::components::IconButton;
+use crate::design::components::{menu_check_item, IconButton};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolWindow {
@@ -337,14 +337,18 @@ impl ToolWindows {
                 }
                 let more = IconButton::new(IconId::More, "More tool windows").show(ui);
                 egui::Popup::menu(&more).show(|ui| {
+                    ui.set_min_width(240.0);
                     ui.label(egui::RichText::new("More tool windows").weak().small());
                     for tw in ToolWindow::ALL {
                         if !tw.is_available() {
                             continue;
                         }
-                        let mut visible = self.is_visible(tw);
-                        if ui.checkbox(&mut visible, tw.title()).changed() {
-                            self.set_visible(tw, visible);
+                        let visible = self.is_visible(tw);
+                        let shortcut = tw.shortcut_label();
+                        if menu_check_item(ui, Some(tw.icon()), tw.title(), &shortcut, visible)
+                            .clicked()
+                        {
+                            self.set_visible(tw, !visible);
                         }
                     }
                 });
@@ -382,14 +386,17 @@ impl ToolWindows {
                         response.on_hover_text(format!("{} ({})", tw.title(), tw.shortcut_label()));
                     }
                     ui.menu_button("... More tool windows", |ui| {
+                        ui.set_min_width(240.0);
                         for tw in ToolWindow::ALL {
                             if primary.contains(&tw) || !tw.is_available() {
                                 continue;
                             }
-                            let mut visible = self.is_visible(tw);
-                            let label = format!("{}\t{}", tw.title(), tw.shortcut_label());
-                            if ui.checkbox(&mut visible, label).changed() {
-                                self.set_visible(tw, visible);
+                            let visible = self.is_visible(tw);
+                            let shortcut = tw.shortcut_label();
+                            if menu_check_item(ui, Some(tw.icon()), tw.title(), &shortcut, visible)
+                                .clicked()
+                            {
+                                self.set_visible(tw, !visible);
                             }
                         }
                     });

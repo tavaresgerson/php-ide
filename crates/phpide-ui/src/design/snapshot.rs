@@ -120,10 +120,26 @@ pub fn render(
 ) -> Image {
     let mut textures: HashMap<TextureId, Texture> = HashMap::new();
     let mut last = None;
+    // A fresh context starts at 1 s; one that already ran (an app harness
+    // with a menu open) carries on from its own clock, which egui requires
+    // to move forward.
+    let start = (ctx.input(|i| i.time) + 1.0 / 60.0).max(1.0);
+    if ctx.input(|i| i.time) > 0.0 {
+        // The font atlas went out in an earlier frame; this context only
+        // sends patches now. (Shapes are drawn from the atlas too.)
+        let atlas = ctx.fonts(|f| f.image());
+        textures.insert(
+            TextureId::default(),
+            Texture {
+                size: atlas.size,
+                pixels: atlas.pixels,
+            },
+        );
+    }
     for frame in 0..frames {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
-            time: Some(1.0 + frame as f64 / 60.0),
+            time: Some(start + frame as f64 / 60.0),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, &mut ui_fn);

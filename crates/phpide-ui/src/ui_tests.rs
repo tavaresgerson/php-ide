@@ -102,8 +102,7 @@ fn closing_a_modified_tab_from_the_menu_asks_first() {
 
     harness.get_by_label("Main menu").click();
     harness.run_steps(2);
-    // Submenus carry an arrow in their accessible label.
-    harness.get_by_label("File ⏵").click();
+    harness.get_by_label("File").click();
     harness.run_steps(2);
     harness.get_by_label_contains("Close Tab").click();
     harness.run_steps(2);

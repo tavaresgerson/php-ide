@@ -656,6 +656,7 @@ impl PhpIdeApp {
 /// Header padrão das tool windows: título + Options (...) com Hide.
 pub(crate) fn tool_window_header(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
     use crate::design::components::{menu_item, menu_separator, IconButton, PanelHeader};
+    use phpide_icons::IconId;
     PanelHeader::new(tw.title()).show(ui, |ui| {
         if IconButton::new(phpide_icons::IconId::Minus, "Hide")
             .shortcut("Shift+Esc")
@@ -667,7 +668,7 @@ pub(crate) fn tool_window_header(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: Too
         let more = IconButton::new(phpide_icons::IconId::More, "Options").show(ui);
         egui::Popup::menu(&more).show(|ui| {
             ui.set_min_width(220.0);
-            if menu_item(ui, None, "Hide", "Shift+Esc", true).clicked() {
+            if menu_item(ui, Some(IconId::Minus), "Hide", "Shift+Esc", true).clicked() {
                 app.tw.set_visible(tw, false);
                 ui.close();
             }
@@ -683,13 +684,12 @@ pub(crate) fn tool_window_header(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: Too
 
 /// "Move To" submenu of a tool window header (RF-UI-02).
 pub(crate) fn move_to_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, tw: ToolWindow) {
-    ui.menu_button("Move To", |ui| {
+    use crate::design::components::{menu_radio_item, menu_submenu};
+    menu_submenu(ui, None, "Move To", true, |ui| {
+        ui.set_min_width(180.0);
         let current = app.tw.placement(tw);
         for placement in crate::toolwindows::Placement::ALL {
-            if ui
-                .selectable_label(current == placement, placement.label())
-                .clicked()
-            {
+            if menu_radio_item(ui, placement.label(), current == placement, true).clicked() {
                 app.tw.set_placement(tw, placement);
                 app.settings.tool_window_placements = app.tw.placements();
                 app.persist_settings();

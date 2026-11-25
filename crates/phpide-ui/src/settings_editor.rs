@@ -132,27 +132,23 @@ fn scheme_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                 state.scheme_input = input;
                 state.scheme_error.clear();
             };
-            if ui.button("Duplicate…").clicked() {
+            use crate::design::components::{menu_item, menu_separator};
+            use phpide_icons::IconId;
+            if menu_item(ui, Some(IconId::Copy), "Duplicate…", "", true).clicked() {
                 start(SchemeOp::Duplicate, format!("{shown} copy"));
                 ui.close();
             }
-            if ui
-                .add_enabled(custom, egui::Button::new("Rename…"))
-                .clicked()
-            {
+            if menu_item(ui, Some(IconId::Edit), "Rename…", "", custom).clicked() {
                 start(SchemeOp::Rename, active.clone());
                 ui.close();
             }
-            if ui
-                .add_enabled(custom, egui::Button::new("Delete"))
-                .clicked()
-            {
+            if menu_item(ui, Some(IconId::Trash), "Delete", "", custom).clicked() {
                 delete = true;
                 ui.close();
             }
-            ui.separator();
+            menu_separator(ui);
             let home = std::env::var("HOME").unwrap_or_default();
-            if ui.button("Export…").clicked() {
+            if menu_item(ui, Some(IconId::Save), "Export…", "", true).clicked() {
                 let file = format!(
                     "{home}/{}.phpide-scheme.json",
                     shown.replace(['/', ' '], "-")
@@ -160,7 +156,7 @@ fn scheme_bar(app: &mut PhpIdeApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                 start(SchemeOp::Export, file);
                 ui.close();
             }
-            if ui.button("Import…").clicked() {
+            if menu_item(ui, Some(IconId::Download), "Import…", "", true).clicked() {
                 start(SchemeOp::Import, format!("{home}/"));
                 ui.close();
             }

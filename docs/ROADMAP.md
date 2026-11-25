@@ -451,7 +451,7 @@ CI run.
       tree), refresh the gallery snapshots, tag `v1.0.0`.
   - **Done when:** CI passes on `master` with the `.deb` and AppImage as
     artifacts and the `v1.0.0` release is published.
-- [ ] **Phase 10 — Icons and menus (M).**
+- [x] **Phase 10 — Icons and menus (M) — done (2026-11-25).**
   - `CommandSpec` gains `icon`, shared by the main menu, Find Action,
     Search Everywhere and buttons; a test requires an icon on every menu
     command outside a reviewed `NO_ICON` list.
@@ -466,6 +466,20 @@ CI run.
   - **Done when:** no menu uses native `egui` buttons, the registry icon
     test passes, `gate_menus.rs` passes and the screenshots of every menu
     in the three themes are approved.
+  - Result: `commands::icon` is the one source of command icons (four new
+    Tabler 3.2.0 icons: file-plus, arrow-left, arrow-right, list-search);
+    `menu_item`, `menu_check_item`, `menu_radio_item` and `menu_submenu`
+    share one row painter and ask only for their own width in egui's
+    sizing pass. The editor widget reports right clicks
+    (`EditorOutput::context`, by position and top layer, since egui does not
+    hover widgets under an open popup) and the app draws the menus from
+    `editor_menu.rs`; a right click while the menu is open reopens it where
+    it landed. Gate `gate_menus.rs` (six tests); screenshots with
+    `cargo test -p phpide-ui phase10_menus -- --ignored`
+    (`target/snapshots/phase10-*.png`). `snapshot::render` can now render a
+    context that already ran (it continues its clock and seeds the font
+    atlas). Lists that are form controls (combo boxes in Settings) keep
+    their native look.
 - [ ] **Phase 11 — PHPantom as the PHP engine (L).** PHPantom
       (<https://github.com/PHPantom-dev/phpantom_lsp>, MIT) as a separate
       process: a crash restarts the server, not the IDE, and its global

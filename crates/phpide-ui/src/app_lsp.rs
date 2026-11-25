@@ -100,23 +100,7 @@ impl PhpIdeApp {
         for srv in self.fe.iter_mut() {
             fe_servers::poll_init(srv);
         }
-        let snapshots: Vec<(PathBuf, String, u64)> = self
-            .ws
-            .buffers
-            .iter()
-            .filter_map(|b| {
-                let p = b.path.clone()?;
-                Some((p, b.document.text(), b.document.revision()))
-            })
-            .collect();
-        for srv in self.fe.iter_mut() {
-            srv.sync_buffers(
-                snapshots
-                    .iter()
-                    .filter(|(p, _, _)| srv_accepts_ext(srv.name, p))
-                    .map(|(p, t, r)| (p, t.as_str(), *r)),
-            );
-        }
+        self.sync_fe_documents();
         let published = self.fe.drain_diagnostics();
         for (path, items) in published {
             let revision = self
@@ -242,7 +226,33 @@ impl PhpIdeApp {
 
     /// Sends the open PHP documents' changes to the server. Every request
     /// calls this first, so the server answers about the text on screen.
+    /// Frontend servers get the open buffers of their file types: didOpen,
+    /// then didChange with the whole text when the revision moved. Only the
+    /// buffers that changed are copied.
+    pub(crate) fn sync_fe_documents(&mut self) {
+        if self.fe.is_empty() {
+            return;
+        }
+        let buffers = &self.ws.buffers;
+        for srv in self.fe.iter_mut() {
+            let stale: Vec<(PathBuf, String, u64)> = buffers
+                .iter()
+                .filter_map(|b| {
+                    let path = b.path.as_ref()?;
+                    let revision = b.document.revision();
+                    (srv_accepts_ext(srv.name, path) && srv.opened.get(path) != Some(&revision))
+                        .then(|| (path.clone(), b.document.text(), revision))
+                })
+                .collect();
+            srv.sync_buffers(stale.iter().map(|(p, t, r)| (p, t.as_str(), *r)));
+        }
+    }
+
     pub(crate) fn sync_documents(&mut self) {
+        // Every request is preceded by the document sync, for the frontend
+        // servers too: an edit made this frame reaches them before the
+        // request that follows it (completion while typing).
+        self.sync_fe_documents();
         let Some(lsp) = &self.lsp else { return };
         if !matches!(lsp.status(), LspStatus::Running(_)) || self.lsp_init.is_some() {
             return;

@@ -572,7 +572,35 @@ pub fn menu_item(
     shortcut: &str,
     enabled: bool,
 ) -> Response {
-    menu_row(ui, icon, label, shortcut, false, enabled, false)
+    MenuRow::new(icon, label)
+        .shortcut(shortcut)
+        .enabled(enabled)
+        .show(ui)
+}
+
+/// Menu row that turns something on or off (a tool window, a view option).
+/// Checked, its icon sits in a highlighted box; without an icon, a check
+/// mark takes the icon column. Read as a checkbox by screen readers.
+pub fn menu_check_item(
+    ui: &mut egui::Ui,
+    icon: Option<IconId>,
+    label: &str,
+    shortcut: &str,
+    checked: bool,
+) -> Response {
+    MenuRow::new(icon, label)
+        .shortcut(shortcut)
+        .checked(Some(checked), egui::WidgetType::Checkbox)
+        .show(ui)
+}
+
+/// One choice of a list (encoding, line separator, scope): a check mark in
+/// the icon column on the chosen one. Read as a radio button.
+pub fn menu_radio_item(ui: &mut egui::Ui, label: &str, selected: bool, enabled: bool) -> Response {
+    MenuRow::new(None, label)
+        .enabled(enabled)
+        .checked(Some(selected), egui::WidgetType::RadioButton)
+        .show(ui)
 }
 
 /// Menu row that opens a submenu on hover or click, with the same icon
@@ -591,7 +619,10 @@ pub fn menu_submenu<R>(
     let open = MenuState::from_ui(ui, |state, _| {
         state.open_item == Some(SubMenu::id_from_widget_id(id))
     });
-    let response = menu_row(ui, icon, label, "", true, enabled, open);
+    let mut row = MenuRow::new(icon, label).enabled(enabled);
+    row.submenu = true;
+    row.open = open;
+    let response = row.show(ui);
     if !enabled {
         return None;
     }
@@ -600,92 +631,158 @@ pub fn menu_submenu<R>(
         .map(|inner| inner.inner)
 }
 
-fn menu_row(
-    ui: &mut egui::Ui,
+struct MenuRow<'a> {
     icon: Option<IconId>,
-    label: &str,
-    shortcut: &str,
-    submenu: bool,
+    label: &'a str,
+    shortcut: &'a str,
     enabled: bool,
+    submenu: bool,
     open: bool,
-) -> Response {
-    let theme = theme(ui);
-    let p = theme.palette;
-    let m = theme.metrics;
-    let fg = if enabled {
-        p.text_primary
-    } else {
-        p.text_disabled
-    };
-    let text = galley(ui, label, body_font(), fg);
-    let keys = (!shortcut.is_empty()).then(|| galley(ui, shortcut, small_font(), p.text_muted));
-    let chevron = m.icon * 0.75;
-    let icon_column = m.icon + space::S3;
-    let trailing = if submenu {
-        chevron + space::S7
-    } else {
-        keys.as_ref().map_or(0.0, |k| k.size().x + space::S7)
-    };
-    let min_width = space::S4 + icon_column + text.size().x + trailing + space::S4;
-    let width = ui.available_width().max(min_width);
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, m.row - 2.0), sense);
-    let label_owned = label.to_owned();
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label_owned));
-    if ui.is_rect_visible(rect) {
-        if enabled && (open || response.hovered() || response.has_focus()) {
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(radius::CONTROL),
-                p.bg_selected_focused,
-            );
+    checked: Option<bool>,
+    widget_type: egui::WidgetType,
+}
+
+impl<'a> MenuRow<'a> {
+    fn new(icon: Option<IconId>, label: &'a str) -> Self {
+        MenuRow {
+            icon,
+            label,
+            shortcut: "",
+            enabled: true,
+            submenu: false,
+            open: false,
+            checked: None,
+            widget_type: egui::WidgetType::Button,
         }
-        let secondary = if enabled {
-            p.text_secondary
+    }
+
+    fn shortcut(mut self, shortcut: &'a str) -> Self {
+        self.shortcut = shortcut;
+        self
+    }
+
+    fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    fn checked(mut self, checked: Option<bool>, widget_type: egui::WidgetType) -> Self {
+        self.checked = checked;
+        self.widget_type = widget_type;
+        self
+    }
+
+    fn show(self, ui: &mut egui::Ui) -> Response {
+        let theme = theme(ui);
+        let p = theme.palette;
+        let m = theme.metrics;
+        let enabled = self.enabled;
+        let fg = if enabled {
+            p.text_primary
         } else {
             p.text_disabled
         };
-        let x = rect.left() + space::S4;
-        if let Some(icon) = icon {
+        let text = galley(ui, self.label, body_font(), fg);
+        let keys = (!self.shortcut.is_empty())
+            .then(|| galley(ui, self.shortcut, small_font(), p.text_muted));
+        let chevron = m.icon * 0.75;
+        let icon_column = m.icon + space::S3;
+        let trailing = if self.submenu {
+            chevron + space::S7
+        } else {
+            keys.as_ref().map_or(0.0, |k| k.size().x + space::S7)
+        };
+        let min_width = space::S4 + icon_column + text.size().x + trailing + space::S4;
+        // In a menu's sizing pass the row asks only for what it needs; it
+        // fills the menu's width afterwards. (Taking the available width
+        // then would size every menu at egui's default area width.)
+        let width = if ui.is_sizing_pass() {
+            min_width
+        } else {
+            ui.available_width().max(min_width)
+        };
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, m.row - 2.0), sense);
+        let label = self.label.to_owned();
+        let (widget_type, checked) = (self.widget_type, self.checked);
+        response.widget_info(|| match checked {
+            Some(checked) => egui::WidgetInfo::selected(widget_type, enabled, checked, &label),
+            None => egui::WidgetInfo::labeled(widget_type, enabled, &label),
+        });
+        if ui.is_rect_visible(rect) {
+            if enabled && (self.open || response.hovered() || response.has_focus()) {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(radius::CONTROL),
+                    p.bg_selected_focused,
+                );
+            }
+            let secondary = if enabled {
+                p.text_secondary
+            } else {
+                p.text_disabled
+            };
+            let x = rect.left() + space::S4;
             let icon_rect = egui::Rect::from_center_size(
                 egui::pos2(x + m.icon / 2.0, rect.center().y),
                 egui::vec2(m.icon, m.icon),
             );
-            paint_icon(ui.painter(), icon_rect, icon, secondary);
-        }
-        ui.painter().galley(
-            egui::pos2(x + icon_column, rect.center().y - text.size().y / 2.0),
-            text,
-            fg,
-        );
-        if submenu {
-            let chevron_rect = egui::Rect::from_center_size(
-                egui::pos2(rect.right() - space::S4 - chevron / 2.0, rect.center().y),
-                egui::vec2(chevron, chevron),
-            );
-            paint_icon(ui.painter(), chevron_rect, IconId::ChevronRight, secondary);
-        } else if let Some(keys) = keys {
+            let checked = self.checked == Some(true);
+            match self.icon {
+                Some(icon) => {
+                    if checked {
+                        ui.painter().rect(
+                            icon_rect.expand(3.0),
+                            CornerRadius::same(radius::CONTROL),
+                            p.bg_selected,
+                            Stroke::new(1.0, p.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    paint_icon(ui.painter(), icon_rect, icon, secondary);
+                }
+                None if checked => {
+                    paint_icon(ui.painter(), icon_rect, IconId::Check, p.accent);
+                }
+                None => {}
+            }
             ui.painter().galley(
-                egui::pos2(
-                    rect.right() - space::S4 - keys.size().x,
-                    rect.center().y - keys.size().y / 2.0,
-                ),
-                keys,
-                p.text_muted,
+                egui::pos2(x + icon_column, rect.center().y - text.size().y / 2.0),
+                text,
+                fg,
             );
+            if self.submenu {
+                let chevron_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - space::S4 - chevron / 2.0, rect.center().y),
+                    egui::vec2(chevron, chevron),
+                );
+                paint_icon(ui.painter(), chevron_rect, IconId::ChevronRight, secondary);
+            } else if let Some(keys) = keys {
+                ui.painter().galley(
+                    egui::pos2(
+                        rect.right() - space::S4 - keys.size().x,
+                        rect.center().y - keys.size().y / 2.0,
+                    ),
+                    keys,
+                    p.text_muted,
+                );
+            }
         }
+        response
     }
-    response
 }
 
 pub fn menu_separator(ui: &mut egui::Ui) {
     let p = theme(ui).palette;
-    let width = ui.available_width();
+    let width = if ui.is_sizing_pass() {
+        0.0
+    } else {
+        ui.available_width()
+    };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, space::S3 + 1.0), Sense::hover());
     ui.painter().hline(
         rect.x_range().shrink(space::S2),

@@ -2,7 +2,42 @@
 
 All notable changes to PHP IDE. Dates are UTC.
 
-## [Unreleased] — 1.0 release candidate
+## [Unreleased] — 1.1
+
+Phase 10, icons and menus (2026-11-25).
+
+### Added
+
+- Editor context menu: a right click in the text offers context actions,
+  Cut/Copy/Paste, Copy Path/Reference, Go To (Definition, Implementation,
+  Type Declaration, Usages), Refactor › Rename, Reformat Code, Run and Debug
+  of the file, breakpoint and bookmark, Git (Annotate with Git Blame, Show
+  History, Compare with HEAD, Rollback) and Open In. Items that need a
+  language server appear only when the server offers them. A right click
+  on the gutter toggles a breakpoint or a bookmark on that line.
+- Icons in the main menu, Find Action and Search Everywhere, from one list
+  per command; menus keep the icon column, so items line up.
+- Check marks and boxed icons for on/off items (tool windows, Project view
+  options) and for the chosen entry of a list (scope, sort order, file
+  type, line separator, indentation, PHP level, themes, run configurations).
+
+### Changed
+
+- Every menu uses the same rows: the main menu, the tool window Options
+  and Move To menus, the Project view Options and scope menus, the status
+  bar popups, the color scheme actions, the branch popup, the run
+  configuration selector and Quick Switch Scheme.
+- Project view Options stays open while settings are switched, so several
+  can be changed in a row.
+
+### Fixed
+
+- Menus built from the new rows opened as wide as egui's default area
+  (600 px) instead of as wide as their items.
+- A right click on the editor while its menu was open only closed the menu;
+  it now opens again where the click landed.
+
+## [1.0.0] — release candidate, awaiting the tag
 
 Phase 8, hardening (2026-11-24).
 

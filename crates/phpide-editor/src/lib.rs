@@ -20,4 +20,6 @@ pub use movement::{LineVisibility, Motion};
 pub use selection::{Range, Selection};
 pub use style::{EditorColors, EditorStyle};
 pub use syntax::Syntax;
-pub use view::{Editor, EditorOptions, EditorOutput, EditorView, GutterClick, ViewCommand};
+pub use view::{
+    ContextTarget, Editor, EditorOptions, EditorOutput, EditorView, GutterClick, ViewCommand,
+};

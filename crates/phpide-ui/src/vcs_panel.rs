@@ -1007,7 +1007,15 @@ pub(crate) fn branches_popup(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     }
     if let Some(op) = snapshot.as_ref().and_then(|s| s.operation) {
         menu_separator(ui);
-        if menu_item(ui, None, &format!("Abort {}", op.subcommand()), "", true).clicked() {
+        if menu_item(
+            ui,
+            Some(IconId::Stop),
+            &format!("Abort {}", op.subcommand()),
+            "",
+            true,
+        )
+        .clicked()
+        {
             app.git_operation(true);
             ui.close();
         }

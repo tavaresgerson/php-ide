@@ -525,6 +525,26 @@
       "name": "clear",
       "tabler": "eraser",
       "file": "assets/clear.svg"
+    },
+    {
+      "name": "file-new",
+      "tabler": "file-plus",
+      "file": "assets/file-new.svg"
+    },
+    {
+      "name": "back",
+      "tabler": "arrow-left",
+      "file": "assets/back.svg"
+    },
+    {
+      "name": "forward",
+      "tabler": "arrow-right",
+      "file": "assets/forward.svg"
+    },
+    {
+      "name": "find-usages",
+      "tabler": "list-search",
+      "file": "assets/find-usages.svg"
     }
   ]
 }

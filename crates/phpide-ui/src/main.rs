@@ -25,6 +25,7 @@ mod database;
 mod design;
 mod diff_view;
 mod editor_area;
+mod editor_menu;
 mod exec;
 mod fe_servers;
 mod header;
@@ -711,6 +712,8 @@ mod gate_git;
 mod gate_hardening;
 #[cfg(test)]
 mod gate_lsp;
+#[cfg(test)]
+mod gate_menus;
 #[cfg(test)]
 mod gate_parity;
 #[cfg(test)]
