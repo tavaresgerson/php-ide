@@ -124,6 +124,13 @@ fn main_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                             &shortcut,
                             app.tw.is_visible(tw),
                         ),
+                        Command::ToggleMinimap => menu_check_item(
+                            ui,
+                            spec.icon(),
+                            spec.label,
+                            &shortcut,
+                            app.settings.minimap,
+                        ),
                         _ => menu_item(ui, spec.icon(), spec.label, &shortcut, true),
                     };
                     if response.clicked() {

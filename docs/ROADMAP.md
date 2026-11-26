@@ -316,7 +316,7 @@ configuration (Current File by default, so the old behaviour stays);
 Search Everywhere's double Shift now counts only lone Shift taps.
 
 Left for later: the terminal on Windows (ConPTY) and mouse reporting to
-programs; terminal in its own window (1.x item below).
+programs; terminal in its own window (dropped; Phase 13 fixed the tab instead).
 
 ### Phase 7 — Git (M) — done (2026-11-24)
 
@@ -436,7 +436,7 @@ interaction tests and screenshots in the three themes.
 
 #### 1.x — Phases 9 to 13 (plan of 2026-11-25)
 
-Release cuts: **1.1** = Phases 9–11, **1.2** = Phase 12, **1.3** = Phase 13.
+Release cuts: **1.1** = Phases 9–11, **1.2** = Phases 12–13 (Phase 13 was rescoped to a fix of the Terminal tab).
 Decisions taken with the maintainer: PHPantom ships as a bundled binary
 run as a separate process; menu icons follow the IntelliJ rule (an icon
 where one means something, the icon column always reserved); the editor
@@ -531,7 +531,8 @@ CI run.
     | Synthetic, 2,000 classes | 2,001 | 193 ms | 0.1 / 0.5 ms | 1,004 / 1,006 ms |
     | Laravel with `vendor/` (CI) | — | — | — | — |
 
-- [ ] **Phase 12 — Minimap (M).** `phpide-editor/src/view/minimap.rs`:
+- [x] **Phase 12 — Minimap (M) — done (2026-11-25).**
+      `phpide-editor/src/view/minimap.rs`:
       blocks of 256 lines rendered to textures in the background from the
       cached highlight spans, only the edited blocks redone; characters or
       blocks; visible-area slider, click and drag; marks for diagnostics,
@@ -542,18 +543,66 @@ CI run.
     stays within the Phase 3 numbers (open 9.4 ms; scroll worst 1.13 ms;
     keystroke worst 7.16 ms), and snapshots and an interaction test cover
     it.
-- [ ] **Phase 13 — Terminal in its own window (L).** An immediate `egui`
-      viewport in the project's process (sessions already live outside
-      the UI, so moving them restarts nothing): Open in Window / Move to
-      Tool Window; tabs and splits; profiles (Settings › Tools ›
-      Terminal); shell integration through OSC 7 and OSC 133 (command
-      marks with exit status, jump between commands, Copy Output, relative
-      `file:line` links); search in the scrollback; editable ANSI colors in
-      Color Scheme › Console Colors; mouse reporting to programs (SGR).
-  - **Done when:** `gate_terminal_window.rs` passes (the window is embedded
-    in test mode) and a manual check on X11 and Wayland keeps `php artisan
-    serve` running in the detached window while the project is used, with
-    output links opening files.
+  - Result: one worker thread per view (lower priority on Linux) draws
+    the blocks on screen into `ColorImage`s from a `HighlightSource`
+    snapshot (the tree-sitter tree, or a simple language's rules; syntect
+    languages are drawn without colors); textures keep their id and only
+    their pixels change. An edit marks the blocks it touched from the
+    change log (and every block after it when lines were added or
+    removed); typing redraws at most every 150 ms and the old image stays
+    meanwhile. The minimap scrolls in proportion to the editor; a click
+    outside the slider centers that line, dragging moves the editor by the
+    slider's travel. It gives way when the pane is too narrow. On by
+    default; View › Minimap toggles it; width (60/100/140 points),
+    characters or blocks and the slider (always or on hover) are in
+    Settings › Editor › General | Appearance. Tests: four unit tests in
+    `minimap.rs`, `phpide-editor/tests/minimap.rs` (marks on their lines,
+    click and drag) and `gate_minimap.rs` through the app; screenshots with
+    `cargo test -p phpide-ui -- --ignored phase12`.
+  - Measurements: `editor_pipeline` now runs the 54k-line file twice,
+    without and with the minimap. On the agent's machine (2 vCPU Xeon
+    2.1 GHz, slower than the Phase 3 one), three runs each:
+
+    | 54k lines | Without minimap | With minimap |
+    |---|---:|---:|
+    | Open + first frame | 10.0–14.8 ms | 8.7–9.4 ms |
+    | Scroll frame, median / worst | 1.25–1.94 / 2.1–3.4 ms | 1.17–1.38 / 2.2–3.9 ms |
+    | Idle frame | 0.31–0.36 ms | 0.32–0.51 ms |
+    | Keystroke frame, median / worst | 4.4–5.4 / 8.2–9.5 ms | 4.4–6.6 / 9.2–11.4 ms |
+
+    With the minimap the frames are within the run-to-run noise of the
+    same machine without it; the worst keystroke frames there come from
+    the background parse and the minimap worker sharing two cores. The
+    Phase 3 numbers themselves were measured on the maintainer's machine:
+    the comparison against them is the bench run there.
+- [x] **Phase 13 — Terminal tab lifecycle (S) — done (2026-11-25).**
+      Rescoped by the maintainer: no separate window, only the bug in
+      the Terminal tool window. Closing the last tab started a new shell
+      at once, and a shell that exited left its tab behind with "[Process
+      completed]". Now, as in IntelliJ, a tab closes when its shell exits;
+      when the last tab is closed or exits, the tool window hides, the
+      keyboard goes back to the editor, and the tool window is back where
+      it started: opening it again (Alt+F12, the stripe button, F12)
+      starts a new shell named "Local".
+  - **Done when:** `terminal_goes_back_to_the_start_when_every_shell_ends`
+    passes (exit in one of two tabs, closing the last tab, reopening,
+    exit in the last one).
+
+- [x] **Before Phase 14 — maintainer requests (2026-11-26).**
+  - New file from templates in the Project view (Alt+Insert), as in the
+    IntelliJ New menu: typed templates (PHP, PHPUnit, HTML, JavaScript,
+    TypeScript, CSS, JSON, XML, YAML, Markdown, SQL) and fixed-name ones
+    (`composer.json`, `package.json`, `tsconfig.json`, `phpunit.xml`,
+    `Dockerfile`, `compose.yaml`, `.editorconfig`, `.gitignore`, `.env`).
+  - Markdown editor: toolbar, Editor / Editor and Preview / Preview
+    layouts, a preview that follows the editor (code highlighting, tables,
+    tasks, images, links and anchors), list continuation on Enter,
+    Ctrl+B / Ctrl+I, headings in the structure.
+  - Breadcrumbs removed (they changed the editor's height); the trail
+    moved to the navigation bar.
+  - **Done when:** `project_tree_creates_files_from_templates`,
+    `markdown_files_have_a_toolbar_and_a_preview`, the `gate_markdown`
+    tests and `the_editor_keeps_its_size_as_the_caret_moves` pass.
 
 #### 2.x
 
@@ -617,7 +666,7 @@ On top of the 1.x/2.x list above:
 
 - Editor and intelligence: code font ligatures (the text engine does not
   shape them; off by decision today).
-- Terminal: Windows (ConPTY); mouse reporting to programs; its own window
+- Terminal: Windows (ConPTY); mouse reporting to programs; its own window (dropped from 1.x by the maintainer)
   (1.x).
 - Packaging: run PHP, Composer and Git of the host from the Flatpak
   (`flatpak-spawn --host`); Flathub submission (offline cargo sources).

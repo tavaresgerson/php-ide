@@ -109,7 +109,7 @@ pub const PAGES: &[PageSpec] = &[
         page: SettingsPage::EditorAppearance,
         section: "Editor",
         label: "Appearance",
-        keywords: "sticky lines inlay hints code lens vision column selection zoom wheel",
+        keywords: "sticky lines inlay hints code lens vision column selection zoom wheel minimap overview",
     },
     PageSpec {
         page: SettingsPage::EditorTabs,
@@ -620,7 +620,38 @@ fn editor_appearance_page(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .weak(),
     );
     ui.add_space(8.0);
-    ui.label("Breadcrumbs and occurrence highlighting follow these editor settings.");
+    ui.label(egui::RichText::new("Minimap").strong());
+    changed |= ui
+        .checkbox(&mut app.settings.minimap, "Show minimap")
+        .changed();
+    ui.add_enabled_ui(app.settings.minimap, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Width:");
+            for (id, label, _) in crate::settings::MINIMAP_WIDTHS {
+                changed |= ui
+                    .selectable_value(&mut app.settings.minimap_width, id.to_string(), label)
+                    .changed();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Draw:");
+            for (id, label) in [("characters", "Characters"), ("blocks", "Blocks")] {
+                changed |= ui
+                    .selectable_value(&mut app.settings.minimap_render, id.to_string(), label)
+                    .changed();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Slider:");
+            for (id, label) in [("always", "Always"), ("hover", "On hover")] {
+                changed |= ui
+                    .selectable_value(&mut app.settings.minimap_slider, id.to_string(), label)
+                    .changed();
+            }
+        });
+    });
+    ui.add_space(8.0);
+    ui.label("The navigation bar and occurrence highlighting follow these editor settings.");
     if changed {
         app.persist_settings();
     }

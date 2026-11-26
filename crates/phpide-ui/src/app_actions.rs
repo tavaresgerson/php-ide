@@ -279,6 +279,10 @@ impl PhpIdeApp {
                     }
                 }
             }
+            Command::ToggleMinimap => {
+                self.settings.minimap = !self.settings.minimap;
+                self.persist_settings();
+            }
             Command::ToggleBlame => {
                 self.settings.blame_gutter = !self.settings.blame_gutter;
                 self.ws.message = format!(
@@ -615,6 +619,31 @@ impl PhpIdeApp {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
             self.editors.request_focus();
+        }
+        // In a Markdown editor Ctrl+B and Ctrl+I make bold and italic text
+        // (Go to Declaration keeps Ctrl+click there, as in PhpStorm).
+        if !popup && self.editors.editor_focused && !self.terminal.focused {
+            let markdown = self
+                .editors
+                .pane_buffer(self.editors.focus, &self.ws)
+                .is_some_and(|i| {
+                    crate::markdown_view::is_markdown(&self.editors.detect(&self.ws.buffers[i]))
+                });
+            if markdown {
+                let action = ctx.input_mut(|i| {
+                    if i.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
+                        Some(phpide_editor::MarkdownEdit::Bold)
+                    } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::I) {
+                        Some(phpide_editor::MarkdownEdit::Italic)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(action) = action {
+                    self.editors
+                        .run(phpide_editor::ViewCommand::Markdown(action), &mut self.ws);
+                }
+            }
         }
         // The terminal keeps every key but the tool window shortcuts.
         let terminal_focused = self.terminal.focused;

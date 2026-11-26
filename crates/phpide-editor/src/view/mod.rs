@@ -5,6 +5,7 @@
 pub mod find;
 pub mod folds;
 pub mod layout;
+pub mod minimap;
 mod widget;
 
 use std::time::Instant;
@@ -20,6 +21,7 @@ use find::FindState;
 use folds::{DisplayMap, Folds};
 use layout::LayoutCache;
 
+pub use minimap::{MinimapOptions, MinimapRender, MinimapSlider};
 pub use widget::{ContextTarget, Editor, EditorOptions, EditorOutput, GutterClick};
 
 /// Commands the application routes to the focused view (menus, shortcuts).
@@ -49,6 +51,8 @@ pub enum ViewCommand {
     Replace,
     FindNext,
     FindPrevious,
+    /// Markdown formatting (toolbar and shortcuts of Markdown files).
+    Markdown(crate::markdown::MarkdownEdit),
 }
 
 impl ViewCommand {
@@ -66,6 +70,7 @@ impl ViewCommand {
                 | ViewCommand::MoveLinesDown
                 | ViewCommand::Indent
                 | ViewCommand::Outdent
+                | ViewCommand::Markdown(_)
         )
     }
 }
@@ -92,6 +97,11 @@ pub(crate) enum DragKind {
     },
     Scrollbar {
         grab: f32,
+    },
+    /// Dragging the minimap: editor scroll and pointer at the start.
+    Minimap {
+        scroll: f32,
+        pointer_y: f32,
     },
 }
 
@@ -120,6 +130,7 @@ pub struct EditorView {
     pub(crate) lens_chips: Vec<(egui::Rect, usize)>,
     pub(crate) sticky_rows: Vec<(egui::Rect, usize)>,
     pub(crate) last_press: Option<(Instant, egui::Pos2, u8)>,
+    pub(crate) minimap: minimap::MinimapState,
 }
 
 impl Default for EditorView {
@@ -133,6 +144,12 @@ impl EditorView {
     /// render in another egui context).
     pub fn clear_layouts(&mut self) {
         self.layouts.clear();
+        self.minimap.reload_textures();
+    }
+
+    /// The minimap images on screen are drawn for the current text (tests).
+    pub fn minimap_idle(&self) -> bool {
+        self.minimap.idle()
     }
 
     pub fn new() -> Self {
@@ -155,6 +172,7 @@ impl EditorView {
             lens_chips: Vec::new(),
             sticky_rows: Vec::new(),
             last_press: None,
+            minimap: Default::default(),
         }
     }
 
@@ -309,6 +327,10 @@ impl EditorView {
             ViewCommand::Indent => {
                 let e = edit::indent_lines(&rope, &self.selection, &config);
                 edit(self, buffer, Some(e))
+            }
+            ViewCommand::Markdown(action) => {
+                let e = crate::markdown::run(&rope, &self.selection, action);
+                edit(self, buffer, e)
             }
             ViewCommand::Outdent => {
                 let e = edit::outdent_lines(&rope, &self.selection, &config);

@@ -1,17 +1,24 @@
-//! The editor surface: breadcrumbs, the text area and its decorations.
+//! The editor surface: the text area and its decorations. (The structure
+//! under the caret is in the navigation bar; the breadcrumb strip above the
+//! editor was removed: it appeared and vanished with the caret and resized
+//! the editor under it.)
 
 use super::*;
 use crate::editor_area::{Pane, SplitAxis};
 
 impl PhpIdeApp {
-    /// Breadcrumbs (REQUISITOS 1.4): trilha estrutural sob o cursor, clicável.
-    pub(crate) fn breadcrumbs(&mut self, ui: &mut egui::Ui) {
+    /// The declarations around the caret in a PHP file (namespace, class,
+    /// method…), with the line each starts on: the end of the navigation
+    /// bar.
+    pub(crate) fn structure_trail(&self) -> Vec<(String, usize)> {
         let Some(buf) = self.ws.active_buffer() else {
-            return;
+            return Vec::new();
         };
-        let Some(path) = buf.path.clone() else { return };
-        if !phpide_php::Php::is_php_file(&path) {
-            return;
+        let Some(path) = buf.path.as_ref() else {
+            return Vec::new();
+        };
+        if !phpide_php::Php::is_php_file(path) {
+            return Vec::new();
         }
         let line0 = buf
             .document
@@ -19,15 +26,15 @@ impl PhpIdeApp {
             .0
             .saturating_sub(1);
         let Some((sp, cache)) = &self.syntax else {
-            return;
+            return Vec::new();
         };
-        if sp != &path {
-            return;
+        if sp != path {
+            return Vec::new();
         }
         // Blocks of the last analyzed revision (they lag a few lines
-        // behind while typing in large files, which is fine for breadcrumbs).
-        let blocks = cache.raw().clone();
-        let trail: Vec<(String, usize)> = blocks
+        // behind while typing in large files, which is fine here).
+        cache
+            .raw()
             .iter()
             .filter(|b| {
                 let end = if b.kind == "namespace_definition" {
@@ -45,23 +52,7 @@ impl PhpIdeApp {
                 };
                 (label, b.start_line0)
             })
-            .collect();
-        if trail.is_empty() {
-            return;
-        }
-        ui.horizontal_wrapped(|ui| {
-            for (i, (label, line)) in trail.iter().enumerate() {
-                if i > 0 {
-                    ui.label(egui::RichText::new("/").weak());
-                }
-                if ui.link(label).clicked() {
-                    if let Some(buf) = self.ws.active_buffer_mut() {
-                        buf.request_cursor(*line, 0);
-                    }
-                }
-            }
-        });
-        ui.separator();
+            .collect()
     }
 
     /// Gutter, inline and scrollbar marks of buffer `index` for the editor.
@@ -261,6 +252,7 @@ impl PhpIdeApp {
             inline_diagnostics: self.settings.inline_diagnostics,
             // The documentation popup shows the diagnostics under the pointer.
             diagnostic_tooltips: false,
+            minimap: self.settings.minimap_options(),
         }
     }
 
@@ -270,8 +262,25 @@ impl PhpIdeApp {
             return;
         };
         self.file_type_notice(ui, index);
+        if crate::markdown_view::is_markdown(&self.editors.detect(&self.ws.buffers[index])) {
+            self.markdown_pane(ui, pane, index, style);
+        } else {
+            self.editor_pane_inner(ui, pane, index, style);
+        }
+    }
+
+    /// The text editor of buffer `index` in a pane.
+    pub(crate) fn editor_pane_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane: Pane,
+        index: usize,
+        style: &phpide_editor::EditorStyle,
+    ) {
         // The user's color scheme may change a language's colors.
-        let language = language_id(&self.editors.detect(&self.ws.buffers[index]));
+        let detected = self.editors.detect(&self.ws.buffers[index]);
+        let is_markdown = crate::markdown_view::is_markdown(&detected);
+        let language = language_id(&detected);
         let mut language_style = style.clone();
         language_style.syntax = crate::design::current(ui.ctx()).syntax_style_for(Some(&language));
         let style = &language_style;
@@ -322,6 +331,7 @@ impl PhpIdeApp {
         }
         let buffer = &mut self.ws.buffers[index];
         let (view, syntax) = self.editors.pane_parts(pane, buffer);
+        view.config.markdown = is_markdown;
         let salt = (buffer_id, pane == Pane::Secondary);
         let output = phpide_editor::Editor::new(salt, buffer, view, syntax, style, &deco)
             .options(options)
@@ -333,6 +343,11 @@ impl PhpIdeApp {
         if output.focused {
             self.editors.focus = pane;
             self.editors.editor_focused = true;
+        }
+        if is_markdown {
+            self.markdown
+                .editor_line
+                .insert(buffer_id, output.first_visible_line);
         }
         let focused_pane = self.editors.split.is_none() || self.editors.focus == pane;
         if focused_pane {
@@ -486,10 +501,6 @@ impl PhpIdeApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(editor_bg))
             .show(ui, |ui| {
-                ui.scope_builder(
-                    egui::UiBuilder::new().max_rect(ui.max_rect().shrink2(egui::vec2(8.0, 0.0))),
-                    |ui| self.breadcrumbs(ui),
-                );
                 if self.ws.active_buffer().is_none() {
                     let p = theme.palette;
                     ui.centered_and_justified(|ui| {

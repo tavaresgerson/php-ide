@@ -28,6 +28,7 @@ mod editor_area;
 mod editor_menu;
 mod exec;
 mod fe_servers;
+mod file_templates;
 mod header;
 mod hierarchy;
 mod hints;
@@ -37,6 +38,8 @@ mod lens;
 mod lsp_engine;
 mod lsp_features;
 mod markdown;
+mod markdown_doc;
+mod markdown_view;
 mod notifications;
 mod palette;
 mod plugins;
@@ -421,6 +424,8 @@ struct PhpIdeApp {
     hierarchy: hierarchy::HierarchyState,
     /// Gutter de blame (UI-ED-007) com cache por revisão salva.
     blame: blame_gutter::BlameCache,
+    /// Markdown previews: parsed documents, images, scroll sync.
+    markdown: markdown_view::MarkdownState,
     blame_revision: Option<(PathBuf, u64)>,
     /// Cache de markers Git para a scrollbar (UI-ED-006-01).
     git_markers: Option<GitMarkerCache>,
@@ -547,6 +552,9 @@ impl PhpIdeApp {
         self.poll_hints();
         self.poll_completion();
         self.terminal.poll();
+        if self.terminal.take_emptied() {
+            self.terminal_closed();
+        }
         // Set again by the terminal view if it still has the keyboard.
         self.terminal.focused = false;
         self.poll_intel();
@@ -744,7 +752,11 @@ mod gate_hardening;
 #[cfg(test)]
 mod gate_lsp;
 #[cfg(test)]
+mod gate_markdown;
+#[cfg(test)]
 mod gate_menus;
+#[cfg(test)]
+mod gate_minimap;
 #[cfg(test)]
 mod gate_parity;
 #[cfg(test)]

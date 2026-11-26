@@ -1016,8 +1016,8 @@ impl PhpIdeApp {
     }
 
     /// Análise estrutural do buffer ativo (tree-sitter). Diagnósticos locais só
-    /// entram quando o LSP está fora; os blocos alimentam Ctrl+[ / Ctrl+] e os
-    /// breadcrumbs sempre.
+    /// entram quando o LSP está fora; os blocos alimentam Ctrl+[ / Ctrl+] e a
+    /// navigation bar sempre.
     pub(crate) fn poll_syntax(&mut self) {
         let lsp_running = self
             .lsp
@@ -1030,6 +1030,9 @@ impl PhpIdeApp {
             .and_then(|b| b.path.clone())
             .filter(|path| phpide_php::Php::is_php_file(path));
         let Some(path) = active_php else {
+            if self.markdown_outline() {
+                return;
+            }
             // The structure always describes the active PHP file.
             if self.outline_path.take().is_some() {
                 self.ws.outline.clear();
@@ -1203,7 +1206,7 @@ pub(crate) fn parse_inlay_hints(result: &Value) -> Vec<hints::InlayHint> {
         .unwrap_or_default()
 }
 
-/// Rótulo curto de kind para breadcrumbs.
+/// Short kind label for the navigation bar.
 pub(crate) fn short_kind(kind: &str) -> &'static str {
     match kind {
         "namespace_definition" => "ns",

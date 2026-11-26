@@ -131,6 +131,7 @@ impl PhpIdeApp {
             document_links: Default::default(),
             hierarchy: Default::default(),
             blame: blame_gutter::BlameCache::default(),
+            markdown: markdown_view::MarkdownState::default(),
             blame_revision: None,
             git_markers: None,
             inspections: lens::InspectionsSummary::default(),

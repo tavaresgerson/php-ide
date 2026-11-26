@@ -1258,6 +1258,7 @@ pub(crate) fn symbol_icon(kind: &str) -> phpide_icons::IconId {
         "class" | "interface" | "enum" | "struct" | "trait" => IconId::FileCode,
         "method" | "function" | "constructor" => IconId::Command,
         "property" | "field" | "constant" | "variable" => IconId::Structure,
+        "heading" => IconId::Heading,
         _ => IconId::Structure,
     }
 }

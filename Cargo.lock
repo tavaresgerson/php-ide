@@ -3035,6 +3035,7 @@ name = "phpide-editor"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "libc",
  "phpide-core",
  "phpide-php",
  "phpide-syntax",

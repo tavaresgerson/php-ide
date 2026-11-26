@@ -35,19 +35,53 @@ pub enum CreateKind {
     Directory,
     /// `class`, `interface`, `trait` or `enum`.
     Php(&'static str),
+    /// A file template (`crate::file_templates`), by id.
+    Template(&'static str),
 }
 
 impl CreateKind {
-    fn title(self) -> &'static str {
+    fn title(self) -> String {
         match self {
-            CreateKind::File => "New File",
-            CreateKind::Directory => "New Directory",
-            CreateKind::Php("interface") => "New PHP Interface",
-            CreateKind::Php("trait") => "New PHP Trait",
-            CreateKind::Php("enum") => "New PHP Enum",
-            CreateKind::Php(_) => "New PHP Class",
+            CreateKind::File => "New File".into(),
+            CreateKind::Directory => "New Directory".into(),
+            CreateKind::Php("interface") => "New PHP Interface".into(),
+            CreateKind::Php("trait") => "New PHP Trait".into(),
+            CreateKind::Php("enum") => "New PHP Enum".into(),
+            CreateKind::Php(_) => "New PHP Class".into(),
+            CreateKind::Template(id) => format!(
+                "New {}",
+                crate::file_templates::by_id(id).map_or("File", |t| t.label)
+            ),
         }
     }
+}
+
+/// Everything Project › New offers, in menu order; `None` is a separator.
+fn new_entries() -> Vec<Option<(CreateKind, IconId, &'static str)>> {
+    use crate::file_templates::{FIXED, TYPED};
+    let template = |t: &'static crate::file_templates::FileTemplate| {
+        Some((CreateKind::Template(t.id), t.icon, t.label))
+    };
+    let mut entries = vec![
+        Some((CreateKind::File, IconId::File, "File")),
+        Some((CreateKind::Directory, IconId::Folder, "Directory")),
+        None,
+        template(&TYPED[0]),
+        Some((CreateKind::Php("class"), IconId::FilePhp, "PHP Class")),
+        Some((
+            CreateKind::Php("interface"),
+            IconId::FilePhp,
+            "PHP Interface",
+        )),
+        Some((CreateKind::Php("trait"), IconId::FilePhp, "PHP Trait")),
+        Some((CreateKind::Php("enum"), IconId::FilePhp, "PHP Enum")),
+        template(&TYPED[1]),
+        None,
+    ];
+    entries.extend(TYPED[2..].iter().map(template));
+    entries.push(None);
+    entries.extend(FIXED.iter().map(template));
+    entries
 }
 
 pub enum TreeDialog {
@@ -770,22 +804,16 @@ fn click_select(tree: &mut TreeState, rows: &[TreeRow], path: &Path, modifiers: 
 
 fn new_submenu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     menu_submenu(ui, Some(IconId::Plus), "New", true, |ui| {
-        ui.set_min_width(200.0);
-        for (kind, icon, label) in [
-            (CreateKind::File, IconId::File, "File"),
-            (CreateKind::Directory, IconId::Folder, "Directory"),
-            (CreateKind::Php("class"), IconId::FilePhp, "PHP Class"),
-            (
-                CreateKind::Php("interface"),
-                IconId::FilePhp,
-                "PHP Interface",
-            ),
-            (CreateKind::Php("trait"), IconId::FilePhp, "PHP Trait"),
-            (CreateKind::Php("enum"), IconId::FilePhp, "PHP Enum"),
-        ] {
-            if menu_item(ui, Some(icon), label, "", true).clicked() {
-                actions.push(Action::Create(kind));
-                ui.close();
+        ui.set_min_width(220.0);
+        for entry in new_entries() {
+            match entry {
+                Some((kind, icon, label)) => {
+                    if menu_item(ui, Some(icon), label, "", true).clicked() {
+                        actions.push(Action::Create(kind));
+                        ui.close();
+                    }
+                }
+                None => menu_separator(ui),
             }
         }
     });
@@ -1008,26 +1036,14 @@ fn context_menu(app: &mut PhpIdeApp, ui: &mut egui::Ui, is_dir: bool, actions: &
     }
 }
 
-const NEW_KINDS: [(CreateKind, IconId, &str); 6] = [
-    (CreateKind::File, IconId::File, "File"),
-    (CreateKind::Directory, IconId::Folder, "Directory"),
-    (CreateKind::Php("class"), IconId::FilePhp, "PHP Class"),
-    (
-        CreateKind::Php("interface"),
-        IconId::FilePhp,
-        "PHP Interface",
-    ),
-    (CreateKind::Php("trait"), IconId::FilePhp, "PHP Trait"),
-    (CreateKind::Php("enum"), IconId::FilePhp, "PHP Enum"),
-];
-
 /// The New popup (Alt+Insert, +): typing filters it (RF-NAV-15).
 fn new_popup(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     use crate::design::components::ListRow;
     let mut open = true;
     let query = app.tree.new_filter.to_lowercase();
-    let shown: Vec<(CreateKind, IconId, &str)> = NEW_KINDS
+    let shown: Vec<(CreateKind, IconId, &str)> = new_entries()
         .into_iter()
+        .flatten()
         .filter(|(_, _, label)| {
             query.is_empty() || crate::palette::fuzzy_score(&query, label).is_some()
         })
@@ -1061,16 +1077,24 @@ fn new_popup(app: &mut PhpIdeApp, ui: &mut egui::Ui, actions: &mut Vec<Action>) 
                     )
                 });
                 ui.add_space(4.0);
-                for (n, (kind, icon, label)) in shown.iter().enumerate() {
-                    let row = ListRow::new(*label)
-                        .icon(*icon, p.text_secondary)
-                        .selected(n == app.tree.new_selected)
-                        .show(ui);
-                    if row.clicked() {
-                        actions.push(Action::Create(*kind));
-                        open = false;
-                    }
-                }
+                egui::ScrollArea::vertical()
+                    .max_height(440.0)
+                    .id_salt("tree-new-list")
+                    .show(ui, |ui| {
+                        for (n, (kind, icon, label)) in shown.iter().enumerate() {
+                            let row = ListRow::new(*label)
+                                .icon(*icon, p.text_secondary)
+                                .selected(n == app.tree.new_selected)
+                                .show(ui);
+                            if n == app.tree.new_selected {
+                                row.scroll_to_me(None);
+                            }
+                            if row.clicked() {
+                                actions.push(Action::Create(*kind));
+                                open = false;
+                            }
+                        }
+                    });
             });
         });
     ui.input(|i| {
@@ -1308,6 +1332,24 @@ fn run(app: &mut PhpIdeApp, ctx: &egui::Context, action: Action) {
         }
         Action::Create(kind) => {
             app.tree.new_popup = false;
+            // A well-known file (composer.json, Dockerfile) needs no name.
+            let fixed = match kind {
+                CreateKind::Template(id) => {
+                    crate::file_templates::by_id(id).and_then(|t| t.fixed_name)
+                }
+                _ => None,
+            };
+            if let Some(name) = fixed {
+                let dir = app.tree.target_dir(&root);
+                if let Err(e) = create(app, ctx, &dir, kind, name) {
+                    let existing = dir.join(name);
+                    if existing.is_file() {
+                        app.open_file_from_tree(&existing, false);
+                    }
+                    app.ws.message = e;
+                }
+                return;
+            }
             app.tree.dialog = Some(TreeDialog::Create {
                 dir: app.tree.target_dir(&root),
                 kind,
@@ -1579,7 +1621,8 @@ fn dialogs(app: &mut PhpIdeApp, ctx: &egui::Context) {
             mut error,
         } => {
             let mut confirm = false;
-            let shown = Dialog::new("tree-create", kind.title()).width(380.0).show(
+            let title = kind.title();
+            let shown = Dialog::new("tree-create", &title).width(380.0).show(
                 ctx,
                 |ui| {
                     let relative = dir
@@ -1595,10 +1638,19 @@ fn dialogs(app: &mut PhpIdeApp, ctx: &egui::Context) {
                         })
                         .weak(),
                     );
+                    let template_hint;
                     let hint = match kind {
                         CreateKind::File => "name.php or folder/name.php",
                         CreateKind::Directory => "name or parent/child",
                         CreateKind::Php(_) => "ClassName",
+                        CreateKind::Template("phpunit") => "ClassNameTest",
+                        CreateKind::Template(id) => {
+                            template_hint = crate::file_templates::by_id(id)
+                                .and_then(|t| t.extension)
+                                .map(|ext| format!("name (becomes name.{ext})"))
+                                .unwrap_or_default();
+                            template_hint.as_str()
+                        }
                     };
                     let response = TextInput::new(&mut name)
                         .hint(hint)
@@ -1775,6 +1827,32 @@ fn create(
     let path = match kind {
         CreateKind::File => file_ops::create_file(dir, name, "")?,
         CreateKind::Directory => file_ops::create_dir(dir, name)?,
+        CreateKind::Template(id) => {
+            let template = crate::file_templates::by_id(id).ok_or("unknown template")?;
+            if name.is_empty() && template.fixed_name.is_none() {
+                return Err("Enter a file name".into());
+            }
+            let file_name = template.file_name(name);
+            let stem = crate::file_templates::FileTemplate::stem(&file_name);
+            if template.id == "phpunit" && !stem.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                return Err("Enter a valid PHP class name".into());
+            }
+            let target = dir.join(&file_name);
+            let target_dir = target.parent().unwrap_or(dir);
+            let namespace = file_ops::psr4_namespace(app.files.root(), target_dir);
+            let project = app
+                .files
+                .root()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let body = (template.body)(&crate::file_templates::TemplateContext {
+                name: stem,
+                namespace: namespace.as_deref(),
+                project: &project,
+            });
+            file_ops::create_file(dir, &file_name, &body)?
+        }
         CreateKind::Php(keyword) => {
             let class = name.trim_end_matches(".php");
             if class.is_empty()

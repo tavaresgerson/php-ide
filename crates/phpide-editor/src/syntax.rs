@@ -452,6 +452,21 @@ impl Syntax {
         self.structure.as_ref().map(|(_, s)| s.clone())
     }
 
+    /// What another thread needs to highlight lines of this revision (the
+    /// minimap): the tree when it is current, the rules of a simple
+    /// language, or nothing (plain text; syntect languages too, whose
+    /// line states live here).
+    pub fn highlight_source(&self, doc: &Document) -> HighlightSource {
+        match &self.engine {
+            Engine::TreeSitter(_) => match self.current_tree(doc) {
+                Some(tree) => HighlightSource::Tree(tree.clone()),
+                None => HighlightSource::Plain,
+            },
+            Engine::Simple(language) => HighlightSource::Simple(language),
+            Engine::Lines(_) | Engine::Plain => HighlightSource::Plain,
+        }
+    }
+
     /// Revision the last [`Syntax::structure`] result describes.
     pub fn structure_revision(&self) -> Option<Revision> {
         self.structure.as_ref().map(|(rev, _)| *rev)
@@ -469,6 +484,43 @@ impl Syntax {
                 return;
             }
             std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+/// A snapshot of a document's highlighting, usable on another thread.
+#[derive(Clone)]
+pub enum HighlightSource {
+    Tree(Tree),
+    Simple(&'static SimpleLanguage),
+    Plain,
+}
+
+impl HighlightSource {
+    /// Whether the spans carry colors (not plain text).
+    pub fn is_colored(&self) -> bool {
+        !matches!(self, HighlightSource::Plain)
+    }
+
+    /// Spans of lines `first..=last` of `rope` (which must be the text the
+    /// source was taken from).
+    pub fn spans(&self, rope: &Rope, first: usize, last: usize) -> Vec<Vec<Span>> {
+        let last = last.min(rope.len_lines().saturating_sub(1));
+        if first > last {
+            return Vec::new();
+        }
+        match self {
+            HighlightSource::Tree(tree) => tree_sitter_spans(tree, rope, first, last),
+            HighlightSource::Simple(language) => (first..=last)
+                .map(|line| {
+                    language
+                        .highlight_line(&rope.line(line).to_string())
+                        .into_iter()
+                        .map(|(start, end, role)| Span { start, end, role })
+                        .collect()
+                })
+                .collect(),
+            HighlightSource::Plain => vec![Vec::new(); last + 1 - first],
         }
     }
 }

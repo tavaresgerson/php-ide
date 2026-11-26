@@ -550,6 +550,66 @@
       "name": "hierarchy",
       "tabler": "hierarchy",
       "file": "assets/hierarchy.svg"
+    },
+    {
+      "name": "bold",
+      "tabler": "bold",
+      "file": "assets/bold.svg"
+    },
+    {
+      "name": "italic",
+      "tabler": "italic",
+      "file": "assets/italic.svg"
+    },
+    {
+      "name": "strikethrough",
+      "tabler": "strikethrough",
+      "file": "assets/strikethrough.svg"
+    },
+    {
+      "name": "code",
+      "tabler": "code",
+      "file": "assets/code.svg"
+    },
+    {
+      "name": "link",
+      "tabler": "link",
+      "file": "assets/link.svg"
+    },
+    {
+      "name": "list-bullet",
+      "tabler": "list",
+      "file": "assets/list-bullet.svg"
+    },
+    {
+      "name": "list-numbers",
+      "tabler": "list-numbers",
+      "file": "assets/list-numbers.svg"
+    },
+    {
+      "name": "list-check",
+      "tabler": "list-check",
+      "file": "assets/list-check.svg"
+    },
+    {
+      "name": "quote",
+      "tabler": "blockquote",
+      "file": "assets/quote.svg"
+    },
+    {
+      "name": "table",
+      "tabler": "table",
+      "file": "assets/table.svg"
+    },
+    {
+      "name": "rule",
+      "tabler": "separator-horizontal",
+      "file": "assets/rule.svg"
+    },
+    {
+      "name": "heading",
+      "tabler": "heading",
+      "file": "assets/heading.svg"
     }
   ]
 }

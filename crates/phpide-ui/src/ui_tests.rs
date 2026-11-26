@@ -341,6 +341,88 @@ fn project_tree_follows_the_active_file_and_navigates_by_keyboard() {
     );
 }
 
+/// Project › New offers file templates: a typed one asks for a name and
+/// adds the extension and the basic structure; a well-known file is
+/// created at once.
+#[test]
+fn project_tree_creates_files_from_templates() {
+    let (_dir, root) = project();
+    let mut harness = harness(&root, Vec::new());
+    step_until(&mut harness, "the tree", |h| !tree_rows(h).is_empty());
+    focus_tree(&mut harness);
+    harness.state_mut().tree.select_only(root.join("src"));
+    harness.run_steps(1);
+    let alt = egui::Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    harness.key_press_modifiers(alt, egui::Key::Insert);
+    harness.run_steps(2);
+    for label in [
+        "HTML File",
+        "JavaScript File",
+        "Stylesheet",
+        "Markdown File",
+        "Docker Compose File",
+        "Dockerfile",
+    ] {
+        assert!(
+            harness.query_by_label(label).is_some(),
+            "{label} is offered"
+        );
+    }
+    // Typing filters; Enter takes the first match.
+    for c in "html".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    for c in "index".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let page = root.join("src/index.html");
+    let text = std::fs::read_to_string(&page).expect("index.html created");
+    for part in [
+        "<!DOCTYPE html>",
+        "<head>",
+        "<title>index</title>",
+        "<body>",
+        "</html>",
+    ] {
+        assert!(text.contains(part), "{part} in {text}");
+    }
+    assert_eq!(
+        harness.state().ws.active_buffer().unwrap().path.as_deref(),
+        Some(page.as_path())
+    );
+
+    // A Dockerfile needs no name.
+    focus_tree(&mut harness);
+    harness.state_mut().tree.select_only(root.join("src"));
+    harness.run_steps(1);
+    harness.key_press_modifiers(alt, egui::Key::Insert);
+    harness.run_steps(2);
+    for c in "dockerfile".chars() {
+        harness.event(egui::Event::Text(c.to_string()));
+    }
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+    let docker = root.join("src/Dockerfile");
+    assert!(std::fs::read_to_string(&docker)
+        .unwrap()
+        .starts_with("FROM php:"));
+    assert!(harness.state().tree.dialog.is_none(), "no name asked");
+    assert_eq!(
+        harness.state().ws.active_buffer().unwrap().path.as_deref(),
+        Some(docker.as_path())
+    );
+}
+
 #[test]
 fn project_tree_creates_renames_and_deletes_files() {
     let (_dir, root) = project();
@@ -824,6 +906,101 @@ fn terminal_runs_the_shell_on_a_pty() {
     assert!(!harness.state().terminal.focused);
 }
 
+/// The editor keeps its size wherever the caret goes: the structure under
+/// the caret is in the navigation bar, not in a strip above the editor
+/// that came and went.
+#[test]
+fn the_editor_keeps_its_size_as_the_caret_moves() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let file = root.join("Cart.php");
+    let text = "<?php\n\nnamespace App;\n\nclass Cart\n{\n    public function total(): int\n    {\n\n        return 0;\n    }\n}\n";
+    std::fs::write(&file, text).unwrap();
+    let mut harness = harness(&root, vec![file]);
+    harness.run_steps(3);
+    let editor = |h: &Harness<'static, PhpIdeApp>| h.get_by_label("Editor").rect();
+    let before = editor(&harness);
+    let caret = |h: &mut Harness<'static, PhpIdeApp>, pos: usize| {
+        let app = h.state_mut();
+        app.editors.set_caret(&mut app.ws, pos);
+        app.cursor_char = pos;
+        h.run_steps(4);
+    };
+    // Inside the method, then column 0 of the empty line in it, then the top.
+    let method = text.find("return").unwrap();
+    caret(&mut harness, method);
+    assert!(
+        harness.query_by_label("method total").is_some(),
+        "the navigation bar shows the method"
+    );
+    assert_eq!(editor(&harness), before);
+    let empty_line = text.find("{\n\n").unwrap() + 2;
+    caret(&mut harness, empty_line);
+    assert_eq!(editor(&harness), before);
+    caret(&mut harness, 0);
+    assert_eq!(editor(&harness), before);
+}
+
+/// When every shell exits or every tab is closed, the Terminal tool window
+/// hides and is back where it started: opening it again starts a new shell.
+#[test]
+fn terminal_goes_back_to_the_start_when_every_shell_ends() {
+    let (_dir, root) = project();
+    let mut harness = harness(&root, Vec::new());
+    harness.run_steps(2);
+    let visible = |h: &Harness<'static, PhpIdeApp>| {
+        h.state()
+            .tw
+            .is_visible(crate::toolwindows::ToolWindow::Terminal)
+    };
+    harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::F12);
+    harness.run_steps(3);
+    assert!(visible(&harness));
+    assert_eq!(harness.state().terminal.sessions.len(), 1);
+    harness.get_by_label("New Session").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().terminal.sessions.len(), 2);
+
+    // `exit` in the second shell closes its tab; the window stays.
+    let second = harness.state().terminal.sessions[1].id;
+    harness.state_mut().terminal.sessions[1].write(b"exit\r");
+    step_until(&mut harness, "the second tab to close", |h| {
+        h.state().terminal.sessions.len() == 1
+    });
+    assert!(visible(&harness));
+    assert_ne!(harness.state().terminal.sessions[0].id, second);
+    assert_eq!(harness.state().terminal.active, 0);
+
+    // Closing the last tab hides the window and gives the keyboard back.
+    let close = format!("Close {}", harness.state().terminal.sessions[0].title());
+    harness
+        .get_all_by_label(&close)
+        .find(|n| n.rect().top() > 400.0)
+        .expect("the tab's close button")
+        .click();
+    harness.run_steps(3);
+    assert!(harness.state().terminal.sessions.is_empty());
+    assert!(!visible(&harness), "the tool window hid");
+    assert!(!harness.state().terminal.focused);
+    harness.run_steps(5);
+    assert!(
+        harness.state().terminal.sessions.is_empty(),
+        "no shell starts while it is closed"
+    );
+
+    // Opening it again starts a fresh shell, named as the first one.
+    harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::F12);
+    harness.run_steps(3);
+    assert!(visible(&harness));
+    assert_eq!(harness.state().terminal.sessions.len(), 1);
+    assert_eq!(harness.state().terminal.sessions[0].name, "Local");
+
+    // The last shell exiting does the same as closing it.
+    harness.state_mut().terminal.sessions[0].write(b"exit\r");
+    step_until(&mut harness, "the window to hide", |h| !visible(h));
+    assert!(harness.state().terminal.sessions.is_empty());
+}
+
 /// The Structure tool window lists the file's declarations from the syntax
 /// tree with no language server, and a click on one jumps to its line.
 #[test]
@@ -890,4 +1067,85 @@ fn breakpoints_dialog_fits_the_window_and_keeps_its_size() {
     assert_eq!(first.size(), later.size(), "the dialog keeps its size");
     let window = harness.ctx.content_rect();
     assert!(window.contains_rect(later), "{later:?} fits in {window:?}");
+}
+
+/// Markdown files open with a formatting toolbar and a live preview: the
+/// toolbar and Ctrl+B format the text, Enter continues lists, task boxes
+/// tick in the source, the headings make the structure and the layout
+/// switches between editor, both and preview.
+#[test]
+fn markdown_files_have_a_toolbar_and_a_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let file = root.join("README.md");
+    std::fs::write(&file, "# Title\n\n## Usage\n\n- [ ] one\n- item\n\nword\n").unwrap();
+    let mut harness = harness(&root, vec![file]);
+    harness.run_steps(4);
+    for label in [
+        "Markdown Preview",
+        "Bold (Ctrl+B)",
+        "Heading",
+        "Table",
+        "Editor",
+    ] {
+        assert!(harness.query_by_label(label).is_some(), "{label} is shown");
+    }
+    let text = |h: &Harness<'static, PhpIdeApp>| h.state().ws.buffers[0].document.text();
+    let names: Vec<String> = harness
+        .state()
+        .ws
+        .outline
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(names, ["Title", "Usage"]);
+
+    // Enter after a list item starts the next one.
+    let source = text(&harness);
+    let end_of_item = source.find("- item").unwrap() + "- item".len();
+    {
+        let app = harness.state_mut();
+        app.editors.set_caret(&mut app.ws, end_of_item);
+        app.editors.request_focus();
+    }
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(1);
+    harness.event(egui::Event::Text("two".into()));
+    harness.run_steps(1);
+    assert!(
+        text(&harness).contains("- item\n- two\n"),
+        "{}",
+        text(&harness)
+    );
+
+    // Ctrl+B on the caret's word; the toolbar button does the same.
+    let word = text(&harness).find("word").unwrap() + 1;
+    {
+        let app = harness.state_mut();
+        app.editors.set_caret(&mut app.ws, word);
+    }
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run_steps(2);
+    assert!(text(&harness).contains("**word**"), "{}", text(&harness));
+    harness.get_by_label("Bold (Ctrl+B)").click();
+    harness.run_steps(2);
+    assert!(text(&harness).contains("\nword\n"), "{}", text(&harness));
+
+    // The task box of the preview ticks the task in the text.
+    harness.get_by_role(egui::accesskit::Role::CheckBox).click();
+    harness.run_steps(2);
+    assert!(text(&harness).contains("- [x] one"), "{}", text(&harness));
+
+    // Preview only: no editor; the choice is kept.
+    harness.get_by_label("Preview Only").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Editor").is_none());
+    assert!(harness.query_by_label("Markdown Preview").is_some());
+    assert_eq!(harness.state().settings.markdown_layout, "preview");
+    harness.get_by_label("Editor Only").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Editor").is_some());
+    assert!(harness.query_by_label("Markdown Preview").is_none());
 }

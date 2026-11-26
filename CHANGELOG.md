@@ -2,6 +2,64 @@
 
 All notable changes to PHP IDE. Dates are UTC.
 
+## [Unreleased] — 1.2
+
+Phase 12, minimap (2026-11-25).
+
+### Added
+
+- Minimap to the right of the text, on by default: the file in small with
+  the theme's syntax colors, drawn in blocks of 256 lines on a worker
+  thread (only the blocks on screen; an edit redraws the blocks it
+  touched). It scrolls with the editor; a click centers that line and
+  dragging scrolls. Problems, Git changes, search results and the
+  selection are marked on it (and leave the scrollbar while it is on).
+- View › Minimap, and Settings › Editor › General | Appearance › Minimap:
+  width (narrow, normal, wide), characters or blocks, slider always or on
+  hover.
+- `editor_pipeline` measures the 54k-line file with the minimap too.
+
+Phase 13, Terminal tab (2026-11-25).
+
+### Fixed
+
+- Closing the last Terminal tab started a new shell at once, and a shell
+  that exited left its tab behind. Now a tab closes when its shell exits,
+  and when the last one goes the Terminal tool window hides and starts
+  over: opening it again starts a new shell.
+
+Maintainer requests before Phase 14 (2026-11-26).
+
+### Added
+
+- New in the Project view (Alt+Insert) creates files from templates, as
+  in PhpStorm: HTML (an HTML5 skeleton with `<head>` and `<body>`), PHP
+  class/interface/trait/enum with the PSR-4 namespace of the folder,
+  PHPUnit test, JavaScript, TypeScript, stylesheet, JSON, XML, YAML,
+  Markdown and SQL files; and, with no name to type, `composer.json`,
+  `package.json`, `tsconfig.json`, `phpunit.xml`, `Dockerfile`,
+  `compose.yaml`, `.editorconfig`, `.gitignore` and `.env`. The list
+  scrolls and typing filters it.
+- Markdown editor: a formatting toolbar (headings, bold, italic,
+  strikethrough, inline code, code block, link, image, bulleted, numbered
+  and task lists, quote, table, horizontal rule) and a live preview beside
+  the text, instead of it or hidden (the choice is kept). The preview
+  follows the editor's scroll, highlights fenced code, shows tables, quotes,
+  nested lists and local PNG images; its task boxes tick the task in the
+  text, a double click puts the caret on the block's line, and links open
+  (web addresses in the browser, other files in the IDE, `#anchors` in the
+  preview). Enter continues lists and quotes (an empty item ends the list),
+  Ctrl+B and Ctrl+I make bold and italic text, and the headings make the
+  structure (Structure tool window, File Structure).
+
+### Changed
+
+- The breadcrumbs above the editor are gone: they changed height as the
+  caret moved (on column 1 of an empty line, for one) and the editor below
+  jumped. The class and method at the caret now follow the file in the
+  navigation bar at the bottom, which keeps its height; a click there
+  puts the caret on that line.
+
 ## [Unreleased] — 1.1
 
 Phase 11, PHPantom as the PHP engine (2026-11-25).

@@ -1456,7 +1456,7 @@ pub struct Diagnostic {
 }
 
 /// Item de outline (estrutura do arquivo). Preenchido via LSP documentSymbol.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutlineEntry {
     pub name: String,
     /// Rótulo do tipo: "classe", "função", ...

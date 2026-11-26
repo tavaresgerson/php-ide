@@ -8,6 +8,7 @@
 
 pub mod decorations;
 pub mod edit;
+pub mod markdown;
 pub mod movement;
 pub mod selection;
 pub mod style;
@@ -16,10 +17,12 @@ pub mod textutil;
 pub mod view;
 
 pub use edit::{Edit, EditConfig};
+pub use markdown::MarkdownEdit;
 pub use movement::{LineVisibility, Motion};
 pub use selection::{Range, Selection};
 pub use style::{EditorColors, EditorStyle};
 pub use syntax::Syntax;
 pub use view::{
-    ContextTarget, Editor, EditorOptions, EditorOutput, EditorView, GutterClick, ViewCommand,
+    ContextTarget, Editor, EditorOptions, EditorOutput, EditorView, GutterClick, MinimapOptions,
+    MinimapRender, MinimapSlider, ViewCommand,
 };

@@ -54,8 +54,7 @@ fn editor_rect(h: &Harness<'static, PhpIdeApp>) -> egui::Rect {
     h.get_by_label("Editor").rect()
 }
 
-/// The first row of the gutter (line 1), measured now: the editor moves
-/// down once the breadcrumbs above it appear.
+/// The first row of the gutter (line 1), measured now.
 fn gutter_line_1(h: &Harness<'static, PhpIdeApp>) -> egui::Pos2 {
     editor_rect(h).left_top() + egui::vec2(10.0, 8.0)
 }

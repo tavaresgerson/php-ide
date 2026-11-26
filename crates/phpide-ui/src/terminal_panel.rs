@@ -1,6 +1,10 @@
 //! Terminal tool window (Alt+F12): the user's shell on a real
 //! pseudo-terminal, in tabs.
 //!
+//! As in IntelliJ, a tab closes when its shell exits (`exit`, Ctrl+D), and
+//! once the last tab is closed or exits the tool window hides and is back
+//! where it started: opening it again starts a new shell.
+//!
 //! While the terminal has the keyboard, every key goes to the shell (Tab,
 //! arrows and Esc included) except the tool window shortcuts; Ctrl+C sends
 //! an interrupt unless text is selected. Ctrl+click opens `file:line`
@@ -94,6 +98,8 @@ pub struct TerminalState {
     focus_request: bool,
     /// The program asked for the bell since it was last shown.
     pub error: Option<String>,
+    /// The last session closed or exited since [`Self::take_emptied`].
+    emptied: bool,
 }
 
 impl TerminalState {
@@ -137,15 +143,29 @@ impl TerminalState {
     pub fn close(&mut self, index: usize) {
         if index < self.sessions.len() {
             self.sessions.remove(index);
+            if index < self.active {
+                self.active -= 1;
+            }
             self.active = self.active.min(self.sessions.len().saturating_sub(1));
+            if self.sessions.is_empty() {
+                self.emptied = true;
+                self.focused = false;
+            }
         }
+    }
+
+    /// Whether the last session went since the last call: the tool window
+    /// then hides.
+    pub fn take_emptied(&mut self) -> bool {
+        std::mem::take(&mut self.emptied)
     }
 
     pub fn request_focus(&mut self) {
         self.focus_request = true;
     }
 
-    /// Reads every session's output (once per frame).
+    /// Reads every session's output (once per frame) and closes the
+    /// sessions whose shell exited.
     pub fn poll(&mut self) {
         for session in &mut self.sessions {
             let Some(pty) = session.pty.as_mut() else {
@@ -164,13 +184,26 @@ impl TerminalState {
                     session.scroll += session.term.total_lines().saturating_sub(before);
                 }
             }
-            if exited && !session.exited {
+            if exited {
                 session.exited = true;
-                session
-                    .term
-                    .feed(b"\r\n\x1b[2m[Process completed]\x1b[0m\r\n");
             }
         }
+        // A shell that ended (or never started) takes its tab with it.
+        while let Some(index) = self.sessions.iter().position(|s| s.exited) {
+            self.close(index);
+        }
+    }
+}
+
+impl PhpIdeApp {
+    /// Every terminal tab is gone: the tool window hides and the keyboard
+    /// goes back to the editor. Opening it again starts a new shell.
+    pub(crate) fn terminal_closed(&mut self) {
+        self.terminal.take_emptied();
+        self.terminal.focused = false;
+        self.tw
+            .set_visible(crate::toolwindows::ToolWindow::Terminal, false);
+        self.editors.request_focus();
     }
 }
 
@@ -208,6 +241,11 @@ pub fn show(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
     });
     if let Some(index) = close {
         app.terminal.close(index);
+    }
+    if app.terminal.sessions.is_empty() {
+        // The last tab went: the tool window closes until opened again.
+        app.terminal_closed();
+        return;
     }
     if new_session {
         let cwd = app

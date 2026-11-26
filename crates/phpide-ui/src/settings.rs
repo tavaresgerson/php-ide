@@ -192,7 +192,24 @@ pub struct Settings {
     pub lsp_command: String,
     /// Code lenses of the language server (usages, implementations).
     pub code_lens: bool,
+    /// Minimap to the right of the text (Settings › Editor › General).
+    pub minimap: bool,
+    /// "narrow", "normal" or "wide".
+    pub minimap_width: String,
+    /// "characters" or "blocks".
+    pub minimap_render: String,
+    /// "always" or "hover".
+    pub minimap_slider: String,
+    /// How Markdown files open: "editor", "split" or "preview".
+    pub markdown_layout: String,
 }
+
+/// Minimap widths, by name.
+pub const MINIMAP_WIDTHS: [(&str, &str, f32); 3] = [
+    ("narrow", "Narrow", 60.0),
+    ("normal", "Normal", 100.0),
+    ("wide", "Wide", 140.0),
+];
 
 fn pairs(value: &Value) -> Option<Vec<(String, String)>> {
     let object = value.as_object()?;
@@ -276,6 +293,11 @@ impl Default for Settings {
             lsp_engine: "auto".to_string(),
             lsp_command: String::new(),
             code_lens: true,
+            minimap: true,
+            minimap_width: "normal".to_string(),
+            minimap_render: "characters".to_string(),
+            minimap_slider: "always".to_string(),
+            markdown_layout: "split".to_string(),
             editor_font_family: String::new(),
             editor_line_height: 1.2,
             color_scheme: Value::Null,
@@ -526,6 +548,29 @@ impl Settings {
         if let Some(value) = v["code_lens"].as_bool() {
             s.code_lens = value;
         }
+        if let Some(value) = v["minimap"].as_bool() {
+            s.minimap = value;
+        }
+        if let Some(value) = v["minimap_width"].as_str() {
+            if MINIMAP_WIDTHS.iter().any(|(id, _, _)| *id == value) {
+                s.minimap_width = value.to_string();
+            }
+        }
+        if let Some(value) = v["markdown_layout"].as_str() {
+            if matches!(value, "editor" | "split" | "preview") {
+                s.markdown_layout = value.to_string();
+            }
+        }
+        if let Some(value) = v["minimap_render"].as_str() {
+            if matches!(value, "characters" | "blocks") {
+                s.minimap_render = value.to_string();
+            }
+        }
+        if let Some(value) = v["minimap_slider"].as_str() {
+            if matches!(value, "always" | "hover") {
+                s.minimap_slider = value.to_string();
+            }
+        }
         if let Some(arr) = v["attached_projects"].as_array() {
             s.attached_projects = arr
                 .iter()
@@ -627,8 +672,34 @@ impl Settings {
         v["lsp_engine"] = json!(self.lsp_engine);
         v["lsp_command"] = json!(self.lsp_command);
         v["code_lens"] = json!(self.code_lens);
+        v["minimap"] = json!(self.minimap);
+        v["minimap_width"] = json!(self.minimap_width);
+        v["minimap_render"] = json!(self.minimap_render);
+        v["minimap_slider"] = json!(self.minimap_slider);
+        v["markdown_layout"] = json!(self.markdown_layout);
         if let Err(e) = store::save(&dir.join("settings.json"), &v) {
             eprintln!("{}", e.log_line());
+        }
+    }
+
+    /// The editor's minimap options.
+    pub fn minimap_options(&self) -> phpide_editor::MinimapOptions {
+        phpide_editor::MinimapOptions {
+            enabled: self.minimap,
+            width: MINIMAP_WIDTHS
+                .iter()
+                .find(|(id, _, _)| *id == self.minimap_width)
+                .map_or(100.0, |(_, _, w)| *w),
+            render: if self.minimap_render == "blocks" {
+                phpide_editor::MinimapRender::Blocks
+            } else {
+                phpide_editor::MinimapRender::Characters
+            },
+            slider: if self.minimap_slider == "hover" {
+                phpide_editor::MinimapSlider::Hover
+            } else {
+                phpide_editor::MinimapSlider::Always
+            },
         }
     }
 

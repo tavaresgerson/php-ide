@@ -12,6 +12,7 @@ use ropey::Rope;
 
 use super::folds::DisplayMap;
 use super::layout::{LineInput, LineLayout};
+use super::minimap::{self, MinimapGeometry, MinimapOptions, MinimapSlider, BLOCK_LINES};
 use super::{DragKind, EditorView, Reveal, ViewCommand};
 use crate::decorations::{BreakpointMark, CoverageMark, Decorations, DiagnosticSeverity, GitMark};
 use crate::edit;
@@ -53,6 +54,7 @@ pub struct EditorOptions {
     /// Tooltip with the diagnostic under the pointer (off when the app
     /// shows its own documentation popup).
     pub diagnostic_tooltips: bool,
+    pub minimap: MinimapOptions,
 }
 
 impl Default for EditorOptions {
@@ -66,6 +68,7 @@ impl Default for EditorOptions {
             blink: true,
             inline_diagnostics: true,
             diagnostic_tooltips: true,
+            minimap: MinimapOptions::default(),
         }
     }
 }
@@ -137,6 +140,8 @@ struct Geometry {
     git_x: f32,
     fold_x: Option<f32>,
     vbar: Rect,
+    /// The minimap column, between the text and the scrollbar.
+    minimap: Option<Rect>,
 }
 
 /// Columns of `[start, end)` that fall on `line`, given its bounds.
@@ -293,10 +298,17 @@ impl<'a> Editor<'a> {
         });
         x += 2.0;
         let vbar = Rect::from_min_max(pos2(rect.right() - SCROLLBAR_WIDTH, rect.top()), rect.max);
-        let text = Rect::from_min_max(
-            pos2(x, rect.top()),
-            pos2(rect.right() - SCROLLBAR_WIDTH, rect.bottom()),
-        );
+        // The minimap gives way when the pane is too narrow for text.
+        let minimap_width = self.options.minimap.width.round().max(8.0);
+        let minimap = (self.options.minimap.enabled && vbar.left() - x > minimap_width + 160.0)
+            .then(|| {
+                Rect::from_min_max(
+                    pos2(vbar.left() - minimap_width, rect.top()),
+                    pos2(vbar.left(), rect.bottom()),
+                )
+            });
+        let text_right = minimap.map_or(vbar.left(), |m| m.left());
+        let text = Rect::from_min_max(pos2(x, rect.top()), pos2(text_right, rect.bottom()));
         Geometry {
             rect,
             gutter: Rect::from_min_max(rect.min, pos2(x, rect.bottom())),
@@ -310,6 +322,158 @@ impl<'a> Editor<'a> {
             git_x,
             fold_x,
             vbar,
+            minimap,
+        }
+    }
+
+    /// The minimap column and what it shows this frame.
+    fn minimap_geometry(&self, g: &Geometry, map: &DisplayMap) -> Option<(Rect, MinimapGeometry)> {
+        let rect = g.minimap?;
+        let rows = map.rows().max(1);
+        let first_row = ((self.view.scroll.y / g.row_height).floor() as usize).min(rows - 1);
+        let visible = (g.text.height() / g.row_height).floor() as usize;
+        let first_line = map.line_of_row(first_row);
+        let last_line = map.line_of_row((first_row + visible).min(rows - 1));
+        let max_y = self.max_scroll_y(g, map);
+        Some((
+            rect,
+            MinimapGeometry::new(
+                rect.height(),
+                self.buffer.document.line_count().max(1),
+                self.view.scroll.y,
+                max_y,
+                first_line,
+                last_line + 1 - first_line,
+            ),
+        ))
+    }
+
+    /// Draws the minimap: the blocks of text, the marks and the slider.
+    fn paint_minimap(&mut self, ui: &egui::Ui, g: &Geometry, map: &DisplayMap) {
+        let Some((rect, mg)) = self.minimap_geometry(g, map) else {
+            return;
+        };
+        let ctx = ui.ctx().clone();
+        let doc = &self.buffer.document;
+        let first_block = mg.line_at(0.0) / BLOCK_LINES;
+        let last_block = mg.line_at(rect.height()) / BLOCK_LINES;
+        let source = self.syntax.highlight_source(doc);
+        self.view.minimap.update(
+            &ctx,
+            doc,
+            first_block..last_block + 1,
+            minimap::BlockInputs {
+                source,
+                cols: rect.width() as usize,
+                tab_size: self.view.config.tab_size,
+                colors: &self.style.syntax.colors,
+                render: self.options.minimap.render,
+            },
+        );
+        let c = &self.style.colors;
+        let painter = ui.painter_at(rect);
+        let rope = doc.rope();
+        let band = |line: usize, color: Color32| {
+            let top = rect.top() + mg.line_top(line);
+            painter.rect_filled(
+                Rect::from_min_size(
+                    pos2(rect.left(), top),
+                    vec2(rect.width(), minimap::LINE_PITCH),
+                ),
+                CornerRadius::ZERO,
+                color,
+            );
+        };
+        let shown = |line: usize| {
+            let top = mg.line_top(line);
+            top + minimap::LINE_PITCH >= 0.0 && top <= rect.height()
+        };
+        // Search results and the selection under the text.
+        if self.view.find.open {
+            for (start, _) in self.view.find.matches.iter().take(5000) {
+                let line = rope.char_to_line((*start).min(rope.len_chars()));
+                if shown(line) {
+                    band(line, c.search_match);
+                }
+            }
+        }
+        for range in self
+            .view
+            .selection
+            .ranges()
+            .iter()
+            .filter(|r| !r.is_empty())
+        {
+            let a = rope.char_to_line(range.start().min(rope.len_chars()));
+            let b = rope.char_to_line(range.end().min(rope.len_chars()));
+            for line in a..=b.min(a + 5000) {
+                if shown(line) {
+                    band(line, c.selection);
+                }
+            }
+        }
+        for index in first_block..=last_block {
+            if let Some(texture) = self.view.minimap.texture(index) {
+                let size = texture.size_vec2();
+                let top = rect.top() + mg.line_top(index * BLOCK_LINES);
+                painter.image(
+                    texture.id(),
+                    Rect::from_min_size(pos2(rect.left(), top), size),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+        // Git changes on the left edge, problems on the right one.
+        for (line, git) in &self.decorations.git {
+            if shown(*line) {
+                let color = match git {
+                    GitMark::Added => c.git_added,
+                    GitMark::Modified => c.git_modified,
+                    GitMark::Deleted => c.git_deleted,
+                };
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        pos2(rect.left(), rect.top() + mg.line_top(*line)),
+                        vec2(2.0, minimap::LINE_PITCH),
+                    ),
+                    CornerRadius::ZERO,
+                    color,
+                );
+            }
+        }
+        for d in &self.decorations.diagnostics {
+            let color = match d.severity {
+                DiagnosticSeverity::Error => c.error,
+                DiagnosticSeverity::Warning => c.warning,
+                _ => continue,
+            };
+            let line = rope.char_to_line(d.start.min(rope.len_chars()));
+            if shown(line) {
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        pos2(rect.right() - 3.0, rect.top() + mg.line_top(line) - 0.5),
+                        vec2(3.0, minimap::LINE_PITCH + 1.0),
+                    ),
+                    CornerRadius::ZERO,
+                    color,
+                );
+            }
+        }
+        let hovered = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| rect.contains(p));
+        let dragging = matches!(self.view.drag, Some(DragKind::Minimap { .. }));
+        if self.options.minimap.slider == MinimapSlider::Always || hovered || dragging {
+            let alpha = if hovered || dragging { 0.75 } else { 0.45 };
+            painter.rect_filled(
+                Rect::from_min_size(
+                    pos2(rect.left(), rect.top() + mg.slider_top),
+                    vec2(rect.width(), mg.slider_height),
+                ),
+                CornerRadius::ZERO,
+                c.scrollbar_thumb.gamma_multiply(alpha),
+            );
         }
     }
 
@@ -920,6 +1084,7 @@ impl<'a> Editor<'a> {
 
         self.paint_gutter(ui, &g, &map, &visible, &caret_lines, &response);
         self.paint_sticky(ui, &g, &map, &rope, style_key, first_row);
+        self.paint_minimap(ui, &g, &map);
         self.paint_scrollbars(ui, &g, &map, max_y, max_x, &mut output);
         if self.view.find.open {
             self.find_bar(ui, &g, &mut output);
@@ -1053,6 +1218,27 @@ impl<'a> Editor<'a> {
             return;
         }
         let pressed_here = response.contains_pointer() && (primary_pressed || middle_pressed);
+        if pressed_here && primary_pressed {
+            // Minimap: a click outside the slider centers that line; then
+            // (or on the slider) dragging scrolls.
+            if let Some((rect, mg)) = self
+                .minimap_geometry(g, map)
+                .filter(|(rect, _)| rect.contains(pointer))
+            {
+                let y = pointer.y - rect.top();
+                if y < mg.slider_top || y > mg.slider_top + mg.slider_height {
+                    let row = map.row_of_line(mg.line_at(y));
+                    let max_y = self.max_scroll_y(g, map);
+                    self.view.scroll.y =
+                        (row as f32 * g.row_height - g.text.height() * 0.5).clamp(0.0, max_y);
+                }
+                self.view.drag = Some(DragKind::Minimap {
+                    scroll: self.view.scroll.y,
+                    pointer_y: pointer.y,
+                });
+                return;
+            }
+        }
         if pressed_here {
             // Scrollbar.
             if g.vbar.contains(pointer) {
@@ -1202,6 +1388,14 @@ impl<'a> Editor<'a> {
             Some(_) if !any_down || released && !any_down => {
                 self.view.drag = None;
                 self.buffer.break_undo_group();
+            }
+            Some(DragKind::Minimap { scroll, pointer_y }) => {
+                if let Some((_, mg)) = self.minimap_geometry(g, map) {
+                    let max_y = self.max_scroll_y(g, map);
+                    let ratio = mg.drag_ratio(max_y);
+                    self.view.scroll.y =
+                        (scroll + (pointer.y - pointer_y) * ratio).clamp(0.0, max_y);
+                }
             }
             Some(DragKind::Scrollbar { grab }) => {
                 let max_y = self.max_scroll_y(g, map);
@@ -1543,12 +1737,16 @@ impl<'a> Editor<'a> {
         let marker =
             |line: usize| g.vbar.top() + map.row_of_line(line) as f32 / rows * g.vbar.height();
         let marker_x = g.vbar.right() - 5.0;
+        // With the minimap on, the marks are drawn there instead.
+        let marks = g.minimap.is_none();
         let mark = |y: f32, color: Color32| {
-            painter.rect_filled(
-                Rect::from_min_size(pos2(marker_x, y), vec2(4.0, 2.5)),
-                CornerRadius::ZERO,
-                color,
-            );
+            if marks {
+                painter.rect_filled(
+                    Rect::from_min_size(pos2(marker_x, y), vec2(4.0, 2.5)),
+                    CornerRadius::ZERO,
+                    color,
+                );
+            }
         };
         for (line, git) in &self.decorations.git {
             let color = match git {

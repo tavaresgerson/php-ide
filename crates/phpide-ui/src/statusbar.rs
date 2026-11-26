@@ -101,7 +101,10 @@ fn navigation_bar_contents(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
         .ws
         .active_buffer()
         .and_then(|buffer| buffer.path.clone());
-    ui.horizontal_wrapped(|ui| {
+    let trail = app.structure_trail();
+    // One line that never wraps: the bar keeps its height, so the editor
+    // above it never moves.
+    ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Project:").weak());
         if ui
             .link(
@@ -134,6 +137,19 @@ fn navigation_bar_contents(app: &mut PhpIdeApp, ui: &mut egui::Ui) {
                 egui::Popup::menu(&response).show(|ui| {
                     folder_menu(app, ui, &parent, &dir);
                 });
+            }
+        }
+        // Then the declarations around the caret (class, method…).
+        for (label, line) in trail {
+            ui.label(egui::RichText::new("›").weak());
+            if ui
+                .add(egui::Button::new(egui::RichText::new(label).weak()).frame(false))
+                .clicked()
+            {
+                if let Some(buf) = app.ws.active_buffer_mut() {
+                    buf.request_cursor(line, 0);
+                }
+                app.editors.request_focus();
             }
         }
     });

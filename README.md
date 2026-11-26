@@ -5,7 +5,7 @@ source under MIT OR Apache-2.0, with no proprietary components.
 
 > **Status: release candidate for 1.0.** The code editor (multi-cursor,
 > incremental highlighting, folding, split, find/replace; smooth on
-> 50k-line files), PhpStorm's navigation and shortcuts, PHP intelligence on
+> 50k-line files; minimap), PhpStorm's navigation and shortcuts, PHP intelligence on
 > the bundled PHPantom language server (completion, documentation,
 > parameter info, rename, quick fixes, formatting, hierarchies, code
 > lenses; intelephense and phpactor also work), run configurations, the Xdebug
@@ -106,7 +106,7 @@ through tree-sitter.
 | Ctrl+Q / Ctrl+P | Quick Documentation / Parameter Info |
 | Alt+Enter / Shift+F6 / Ctrl+Alt+L | Context actions / Rename symbol / Reformat code |
 | Ctrl+F12 | File Structure |
-| Ctrl+B / Ctrl+Alt+B / Ctrl+U | Go to definition / implementation / super method |
+| Ctrl+B / Ctrl+Alt+B / Ctrl+U | Go to definition / implementation / super method (in Markdown, Ctrl+B / Ctrl+I: bold / italic) |
 | Ctrl+H / Ctrl+Alt+H | Type Hierarchy / Call Hierarchy |
 | Ctrl+W / Ctrl+Shift+W | Extend / Shrink Selection |
 | Ctrl+click | Go to definition, or follow a link (`require` paths) |
@@ -127,7 +127,7 @@ through tree-sitter.
 | Ctrl+Shift+` / Ctrl+Alt+Z | Git branches / Rollback |
 | F7 / Shift+F7 (in a diff) | Next / previous change |
 | Alt+1…0, Alt+F12, F12 | Tool windows, Terminal (keeps the keys while focused), last tool window |
-| Alt+Insert / Shift+F6 / Delete | New / Rename / Delete in the Project view (typing searches) |
+| Alt+Insert / Shift+F6 / Delete | New (files from templates) / Rename / Delete in the Project view (typing searches) |
 | Ctrl+Shift+F12 / Shift+Esc | Hide all tool windows (maximize editor) / Hide active |
 | Space (Project view) | Quick Preview |
 | Alt+Enter (in Find Action) | Assign a shortcut to the action |

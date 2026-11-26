@@ -15,7 +15,7 @@
 | `phpide-vcs` | Git through the `git` CLI: repo detection, porcelain `-z` status (conflicts, renames, ignored), diff and comparison of any two sides (`compare`: HEAD, index, working tree, revision; one-hunk patches through `git apply`), stage/unstage/rollback, branches and the operation in progress, log with graph data, commands with streamed output that never prompt (`commands`), line markers, blame |
 | `phpide-icons` | Tabler Icons 3.2 (outline) under semantic names, SVG → polyline parser (all path commands), file-type mapping |
 | `phpide-db` | Database Tools (frozen until v1.0): SQLite/PostgreSQL/MariaDB drivers, secrets, console, grid, optimistic edits |
-| `phpide-editor` | The code editor: multi-cursor selections, motions and edit commands, incremental tree-sitter highlighting, folds, find/replace, and the egui widget (virtualized painting, input, gutter layers) |
+| `phpide-editor` | The code editor: multi-cursor selections, motions and edit commands, incremental tree-sitter highlighting, folds, find/replace, the minimap (`view/minimap.rs`: blocks drawn on a worker thread from a `HighlightSource` snapshot), and the egui widget (virtualized painting, input, gutter layers) |
 | `phpide-ui` | egui/eframe application (binary `phpide-ui`) |
 
 Dependency direction: `phpide-ui` depends on every crate; domain crates
@@ -74,13 +74,15 @@ Still synchronous on the UI thread: opening and saving a file, reading
 | `terminal_panel.rs` | Terminal tool window: sessions as tabs, grid painting, selection, keys, links |
 | `app_vcs.rs` | Git actions of the window (commit, push, update, branches, rollback, diffs) and what happens when they finish |
 | `commit_panel.rs`, `diff_view.rs`, `vcs_panel.rs` | Commit tool window; side-by-side diff tabs; Version Control tool window (log, graph, console) and the branch popup |
-| `app_editor.rs` | Editor panes: decorations from app state, breadcrumbs, split layout, editor output (breakpoints, Ctrl+click, completion triggers) |
+| `app_editor.rs` | Editor panes: decorations from app state, the structure trail of the navigation bar, split layout, editor output (breakpoints, Ctrl+click, completion triggers) |
 | `editor_area.rs` | Per-buffer `Syntax` and `EditorView`, the split pane, focus |
 | `services/` | Background I/O and OS owners: `git` (status, branch, remote URL), `files` (tree, index, attached roots), `file_ops`, `desktop` (file manager, terminal), `windows` (registry of project windows and the session to reopen), `system_fonts` (monospaced families from fontconfig) |
 | `color_scheme.rs`, `settings_editor.rs` | Color scheme overrides (theme → Language Defaults → language) and the Color Scheme / Font settings pages |
 | `notifications.rs` | Event Log fed by `ws.message`; errors and warnings become toasts |
 | `toolwindows.rs` | Tool window registry, stripes and `dock()` (left/right/bottom panel or floating window per tool window) |
 | `design/` | Design system: `tokens.rs` (the only place with color literals), `theme.rs` (Dark/Light/High Contrast, density, applied to `egui::Style`; `design::current(ctx)` returns the active theme), `fonts.rs`, `components/`, `gallery.rs`, `snapshot.rs` (CPU renderer for snapshot tests) |
+| `markdown_view.rs`, `markdown_doc.rs` | Markdown editor: toolbar, layouts and the live preview; the Markdown parser it renders (CommonMark blocks, GFM tables and tasks). Text actions and list continuation live in `phpide-editor/src/markdown.rs` |
+| `file_templates.rs` | File templates of New in the Project view |
 | `project_tree.rs`, `header.rs`, `tabs.rs`, `statusbar.rs`, `welcome.rs`, … | Individual shell surfaces |
 | `ui_tests.rs`, `gate_*.rs` | Interaction tests (`egui_kittest`) and gates |
 

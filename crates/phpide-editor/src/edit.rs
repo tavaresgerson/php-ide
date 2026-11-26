@@ -20,6 +20,8 @@ pub struct EditConfig {
     pub auto_pairs: bool,
     pub line_comment: Option<String>,
     pub block_comment: Option<(String, String)>,
+    /// Markdown: Enter continues lists and quotes.
+    pub markdown: bool,
 }
 
 impl Default for EditConfig {
@@ -30,6 +32,7 @@ impl Default for EditConfig {
             auto_pairs: true,
             line_comment: Some("//".into()),
             block_comment: Some(("/*".into(), "*/".into())),
+            markdown: false,
         }
     }
 }
@@ -211,6 +214,11 @@ fn dedent_once(indent: &str, config: &EditConfig) -> String {
 pub fn newline(rope: &Rope, selection: &Selection, config: &EditConfig) -> Edit {
     per_range(selection, EditKind::Typing, |range| {
         let (start, end) = (range.start(), range.end());
+        if config.markdown {
+            if let Some((change, caret)) = crate::markdown::continue_list(rope, start, end) {
+                return self::change(change, caret, caret);
+            }
+        }
         let line = rope.char_to_line(start);
         let line_start = rope.line_to_char(line);
         let indent: String = indentation(rope, line)

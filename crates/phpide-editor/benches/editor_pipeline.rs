@@ -6,6 +6,9 @@
 //! whole widget (layout, highlight, painting) and egui's tessellation; only
 //! the GPU upload is missing.
 //!
+//! The largest file runs twice: without and with the minimap (Phase 12:
+//! the minimap must keep the Phase 3 numbers).
+//!
 //! Run: `cargo bench -p phpide-editor --bench editor_pipeline`
 
 use std::path::Path;
@@ -15,9 +18,15 @@ use eframe::egui::{self, Event, RawInput};
 use phpide_core::fixtures::large_php_document;
 use phpide_core::Buffer;
 use phpide_editor::decorations::Decorations;
-use phpide_editor::{Editor, EditorStyle, EditorView, Syntax};
+use phpide_editor::{Editor, EditorOptions, EditorStyle, EditorView, MinimapOptions, Syntax};
 
-const SIZES: [usize; 3] = [2_000, 10_000, 50_000];
+/// File sizes, and whether the minimap is on.
+const RUNS: [(usize, bool); 4] = [
+    (2_000, false),
+    (10_000, false),
+    (50_000, false),
+    (50_000, true),
+];
 const FRAME_BUDGET_MS: f64 = 16.6;
 const OPEN_BUDGET_MS: f64 = 300.0;
 
@@ -27,6 +36,7 @@ struct Pane {
     buffer: Buffer,
     view: EditorView,
     syntax: Syntax,
+    options: EditorOptions,
     time: f64,
 }
 
@@ -52,10 +62,13 @@ impl Pane {
             buffer,
             view,
             syntax,
+            options,
             ..
         } = self;
         let mut full = ctx.run_ui(raw, |ui| {
-            Editor::new("bench", buffer, view, syntax, style, &decorations).show(ui);
+            Editor::new("bench", buffer, view, syntax, style, &decorations)
+                .options(options.clone())
+                .show(ui);
         });
         let shapes = std::mem::take(&mut full.shapes);
         let primitives = ctx.tessellate(shapes, full.pixels_per_point);
@@ -96,9 +109,12 @@ fn main() {
     let ctx = egui::Context::default();
     let style = EditorStyle::from_visuals(&egui::Visuals::dark(), 14.0);
 
-    for lines in SIZES {
+    for (lines, minimap) in RUNS {
         let text = large_php_document(lines);
         let total = text.lines().count();
+        if minimap {
+            println!("with the minimap");
+        }
 
         // Open: buffer + syntax + first painted frame.
         let t0 = Instant::now();
@@ -111,6 +127,13 @@ fn main() {
             buffer,
             view: EditorView::new(),
             syntax,
+            options: EditorOptions {
+                minimap: MinimapOptions {
+                    enabled: minimap,
+                    ..MinimapOptions::default()
+                },
+                ..EditorOptions::default()
+            },
             time: 0.0,
         };
         pane.ctx
